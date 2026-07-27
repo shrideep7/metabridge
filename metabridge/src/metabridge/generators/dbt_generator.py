@@ -344,6 +344,16 @@ def _write_sources_yaml(pipeline: Pipeline, root: Path) -> None:
             if t.columns:
                 tbl["columns"] = [{"name": c.name, "data_type": _dbt_type(c)}
                                   for c in t.columns]
+                if any(_decimal_needs_fallback(c) for c in t.columns):
+                    pipeline.issues.append(ConversionIssue(
+                        severity=IssueSeverity.WARNING,
+                        code="NUMERIC_PRECISION_FALLBACK",
+                        message="Source %s has decimal column(s) without "
+                                "declared precision — using documented "
+                                "fallback decimal(%d,%d)"
+                                % (t.name, *_DECIMAL_FALLBACK), obj=t.name,
+                        suggestion="Declare precision/scale in the manifest to "
+                                   "preserve exact numeric types."))
             entry["tables"].append(tbl)  # type: ignore[attr-defined]
         src_entries.append(entry)
     (root / "models" / "staging").mkdir(parents=True, exist_ok=True)
