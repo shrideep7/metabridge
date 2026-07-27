@@ -157,9 +157,16 @@ def save_connection(connector: str, params: Dict[str, str],
                     r.pop("last_test", None)
                     r.pop("last_analysis", None)
                 if save_secrets and secrets:
-                    r["secrets"] = secrets
-                elif not save_secrets:
-                    r.pop("secrets", None)   # explicit opt-out clears stored
+                    r["secrets"] = secrets        # caller supplied a fresh secret
+                elif (not save_secrets) or params_changed:
+                    # Explicit opt-out, OR a retarget: a stored credential must
+                    # never follow a caller-chosen NEW target that the caller
+                    # did not re-authenticate to. Otherwise a user who can edit
+                    # a connection but cannot read its stored secret (only a
+                    # has_secrets flag is ever returned) could repoint it at a
+                    # host they control and capture the secret via test/
+                    # introspect/load. Renaming (params unchanged) keeps it.
+                    r.pop("secrets", None)
                 _write(rows)
                 return _public(r)
         raise KeyError("Unknown connection: %s" % conn_id)

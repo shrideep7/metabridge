@@ -2939,7 +2939,6 @@ async function loadSavedConnections() {
       + '<br>' + health + '</div>'
       + '<div class="acts">' + primary
       + (liveActs && canLive ? ' <button class="secondary" data-act="test" data-id="' + x.id + '">Test</button>'
-        + (st === 'CONNECTED' ? ' <button class="secondary" data-act="analyze" data-id="' + x.id + '">Analyze</button>' : '')
         + ' <button class="secondary" data-act="load" data-id="' + x.id + '" title="Upload sample data to load — accepts .xlsx, .csv, .tsv or .json">Load data</button>'
         + '<input type="file" id="loadFile_' + x.id + '" accept=".xlsx,.csv,.tsv,.json" style="display:none">' : '')
       + '</div><div id="connOut_' + x.id + '"></div></div>';
@@ -3344,8 +3343,12 @@ function renderMarketplace() {
       + '</div><div class="foot">' + foot + '</div></div>';
   }).join('');
   $('#connGrid').querySelectorAll('.conn').forEach(el => {
-    el.onclick = () => openConnector(el.dataset.key);
-    el.onkeydown = ev => { if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); openConnector(el.dataset.key); } };
+    // a connected tile ("Configure") edits the existing connection; an
+    // unconnected tile creates a new one
+    const open = () => { const cn = connectionFor(el.dataset.key);
+      openConnector(el.dataset.key, cn && cn.id); };
+    el.onclick = open;
+    el.onkeydown = ev => { if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); open(); } };
   });
 }
 
@@ -3388,11 +3391,11 @@ $('#newConnBtn').onclick = openNewConnectionPicker;
 async function openConnector(key, connId) {
   const c = allConnectors.find(x => x.key === key);
   const sup = c.supports || {};
-  // EDIT mode: preload from the saved connection (by id, else the one for
-  // this connector). Non-secret params preload from storage; secret fields
-  // stay blank (secrets are never returned) with a "keep stored" hint.
-  const editRow = connId ? allConnections.find(x => x.id === connId)
-                         : connectionFor(key);
+  // EDIT mode is entered ONLY with an explicit connId (the saved-connection
+  // card and connected marketplace tiles pass it). Create entry points (the
+  // New Connection picker) pass no id, so they never preload or overwrite an
+  // existing row — they always create a new connection.
+  const editRow = connId ? allConnections.find(x => x.id === connId) : null;
   const saved = (editRow && editRow.params) || {};
   const fieldRows = c.fields.map(f => {
     const req = f.required
@@ -3445,9 +3448,12 @@ async function openConnector(key, connId) {
     const missing = [];
     $('#modalBody').querySelectorAll('input[data-field]').forEach(i => {
       if (i.dataset.required && !i.value.trim()) {
-        // a stored secret satisfies "required" only when we are NOT about to
-        // send params to a live probe (test/analyze need the actual value)
-        if (i.dataset.secret && !requireSecrets && editRow && editRow.has_secrets) return;
+        // secret fields are exempt from the required check on Save/Generate
+        // (requireSecrets=false) — the server's _missing_required only
+        // demands non-secret fields (secrets resolve from MB_* env vars at
+        // use time). Live probes (Test/Analyze) pass requireSecrets=true and
+        // still demand the actual secret value.
+        if (i.dataset.secret && !requireSecrets) return;
         missing.push((i.previousElementSibling.textContent || '').replace('*', '').replace('🔒', '').replace('(optional)', '').trim());
       }
     });
