@@ -101,20 +101,31 @@ def _collect(pipeline: Pipeline, twin: Optional[dict]) -> dict:
     n_map = len(mappings)
     n_src = len(sources)
 
-    # every field we can see: source columns + target-boundary ports
-    fields = []                          # (owner, name, datatype, nullable)
+    # every field we can see: source columns + target-boundary ports.
+    # (owner, name, datatype, nullable, type_declared) — type_declared is
+    # False when the column carried no known type and fell back to "string".
+    fields = []
     for s in sources:
         for c in s.columns:
-            fields.append((s.name, c.name, c.datatype, c.nullable))
+            fields.append((s.name, c.name, c.datatype, c.nullable,
+                           getattr(c, "type_declared", True)))
     for m in mappings:
         for t in m.transformations:
             if t.type == TransformationType.TARGET:
                 for p in t.ports:
-                    fields.append((m.name, p.name, p.datatype, p.nullable))
+                    fields.append((m.name, p.name, p.datatype, p.nullable,
+                                   getattr(p, "type_declared", True)))
     n_fields = len(fields)
 
-    text_fields = [f for f in fields if f[2] == "string"]
+    # An untyped fallback ("string" with no declared type) is NOT credible
+    # embedding text — counting it as such let untyped schemas score HIGHER
+    # than well-typed ones. Only genuine, declared string columns count as
+    # text; untyped fields are tracked so readiness can be penalized and the
+    # penalty explained in the report.
+    untyped_fields = [f for f in fields if not f[4]]
+    text_fields = [f for f in fields if f[2] == "string" and f[4]]
     longtext_fields = [f for f in fields if _LONGTEXT_RE.search(f[1])]
+    typed_longtext_fields = [f for f in longtext_fields if f[4]]
     doc_fields = [f for f in fields
                   if f[2] == "binary" or _DOC_RE.search(f[1])]
     notnull_fields = [f for f in fields if not f[3]]
@@ -231,7 +242,9 @@ def _collect(pipeline: Pipeline, twin: Optional[dict]) -> dict:
     return {
         "n_map": n_map, "n_src": n_src, "n_fields": n_fields,
         "fields": fields, "text_fields": text_fields,
-        "longtext_fields": longtext_fields, "doc_fields": doc_fields,
+        "longtext_fields": longtext_fields,
+        "typed_longtext_fields": typed_longtext_fields,
+        "untyped_fields": untyped_fields, "doc_fields": doc_fields,
         "notnull_fields": notnull_fields,
         "described_map": described_map, "glossary_map": glossary_map,
         "described_tr": described_tr, "schema_declared": schema_declared,
@@ -289,17 +302,25 @@ def _dimensions(s: dict) -> Dict[str, dict]:
     # which would be a constant 100.
     described = _pct(len(s["described_map"]), n_map)
     schemas = _pct(len(s["schema_declared"]), s["n_src"] or 1)
-    typed = _pct(sum(1 for f in s["fields"] if f[2] and f[2] != "string"),
-                 n_fields)
+    # a field is well-typed only if it carries a KNOWN declared type; the
+    # "string" fallback for a missing/unknown type is not a real type signal
+    typed = _pct(sum(1 for f in s["fields"]
+                     if f[4] and f[2] and f[2] != "string"), n_fields)
+    n_untyped = len(s["untyped_fields"])
+    untyped_pct = _pct(n_untyped, n_fields)
     d["metadata_quality"] = _dim(
         0.45 * described + 0.30 * typed + 0.25 * schemas, 0.10,
         {"described_objects_pct": described, "schemas_declared_pct":
          schemas, "specifically_typed_fields_pct": typed,
+         "untyped_fields": n_untyped, "untyped_field_pct": untyped_pct,
          "fields": s["n_fields"]},
         ["%d/%d objects carry a description" %
          (len(s["described_map"]), n_map)] +
         ([] if described >= 60 else
-         ["thin object documentation weakens every downstream AI use"]))
+         ["thin object documentation weakens every downstream AI use"]) +
+        ([] if not n_untyped else
+         ["%d/%d field(s) have no declared type (fell back to string) — "
+          "typing them improves every AI use" % (n_untyped, n_fields)]))
 
     # business glossary: business-grade descriptions + domains
     gloss = _pct(len(s["glossary_map"]), n_map)
@@ -414,17 +435,30 @@ def _dimensions(s: dict) -> Dict[str, dict]:
          if sched and incr_cov else
          ["freshness signals weak — re-embedding cadence will lag data"]))
 
-    # vectorization readiness: embeddable text surface
+    # vectorization readiness: embeddable text surface. Only DECLARED string
+    # columns count toward the text ratio; untyped fallbacks are recorded as
+    # a penalty so a schema with missing types can never out-score an
+    # otherwise-identical well-typed one on embeddability.
     text_ratio = _pct(len(s["text_fields"]), n_fields)
-    vec = 0.6 * min(100, 8 * len(s["longtext_fields"])) + 0.4 * text_ratio
+    untyped_pct_v = _pct(len(s["untyped_fields"]), n_fields)
+    type_penalty = round(min(35.0, 0.35 * untyped_pct_v), 1)
+    vec = (0.6 * min(100, 8 * len(s["longtext_fields"]))
+           + 0.4 * text_ratio - type_penalty)
+    vfind = (["%d free-text field(s) are strong embedding candidates" %
+              len(s["longtext_fields"])] if s["longtext_fields"] else
+             ["little free text — favour row-as-document over chunking"])
+    if s["untyped_fields"]:
+        vfind.append(
+            "%d field(s) lack a declared type — kept usable for processing "
+            "but not credited as embeddable text (readiness penalty "
+            "-%s applied)" % (len(s["untyped_fields"]), type_penalty))
     d["vectorization_readiness"] = _dim(
         vec, 0.08,
         {"text_fields": len(s["text_fields"]),
          "free_text_fields": len(s["longtext_fields"]),
-         "text_field_pct": text_ratio},
-        (["%d free-text field(s) are strong embedding candidates" %
-          len(s["longtext_fields"])] if s["longtext_fields"] else
-         ["little free text — favour row-as-document over chunking"]))
+         "text_field_pct": text_ratio,
+         "untyped_fields": len(s["untyped_fields"]),
+         "type_quality_penalty": type_penalty}, vfind)
 
     # document quality: long-text / semi-structured content
     doc = min(100, 12 * len(s["doc_fields"]) + 6 * len(s["longtext_fields"]))
@@ -831,6 +865,8 @@ def assess_ai_readiness(path: str, source_format: str = "",
         "source_format": fmt,
         "source_label": FORMAT_LABELS.get(fmt, fmt),
         "project": pipeline.name,
+        "object_count": s["n_map"],
+        "field_count": s["n_fields"],
         "ai_readiness_score": {
             "score": overall,
             "band": _band(overall),

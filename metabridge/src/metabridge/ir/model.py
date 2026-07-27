@@ -81,6 +81,12 @@ class Port:
     # that computes this port. Empty string = pass-through.
     expression: str = ""
     direction: str = "INPUT_OUTPUT"  # INPUT | OUTPUT | INPUT_OUTPUT | VARIABLE
+    # Whether a source type was actually DECLARED for this column (any
+    # non-empty type, even one outside the canonical map like VARIANT/UUID),
+    # vs. the "string" fallback used when the type is missing/undefined. The
+    # fallback stays usable for processing, but assessment records a missing
+    # type as a data-quality penalty rather than a genuine string column.
+    type_declared: bool = True
 
 
 @dataclass

@@ -64,6 +64,64 @@ def _sev_counts(pipeline: Pipeline) -> Dict[str, int]:
     return out
 
 
+# ---------------------------------------------------------------------------
+# Application grouping — deterministic and identifier-safe.
+#
+# The application/module a migration object belongs to is a GROUPING KEY, not
+# free text. It is NEVER derived from raw SQL or comments (a comment like
+# "-- Author: Jane" must not become an application called "-- Author"), and
+# never carries structural punctuation such as ':'. Precedence, documented:
+#   1. explicit application/module/project metadata on the object
+#   2. a validated project identifier
+#   3. the safe fallback "Unassigned"
+# ---------------------------------------------------------------------------
+
+UNASSIGNED_GROUP = "Unassigned"
+_GROUP_META_KEYS = ("application", "app", "module", "subject_area",
+                    "project", "domain")
+# a valid group identifier. The real guard against comment/SQL fragments is
+# the structural blacklist + comment-lead check below; this allowlist is kept
+# permissive so legitimate names survive — Unicode word chars (café, マート),
+# and common punctuation (R&D, Sales+Marketing, Finance, EU, team@core,
+# _staging, 50% Load). Structural chars (':' / \\ | quotes etc.) are still
+# rejected by the blacklist, never reaching this pattern.
+_VALID_GROUP_RE = re.compile(r"^[\w&+%-][\w &+,@.%-]*$", re.UNICODE)
+_COMMENT_LEAD = ("--", "#", "/*", "*", "//")
+
+
+def _sanitize_group(value) -> str:
+    """Return a clean application-group identifier, or "" if the value is
+    unusable (empty, comment-derived, or carrying structural special
+    characters such as ':'). Rejecting — rather than trimming — a bad value
+    is deliberate: a comment fragment is not a real application name."""
+    v = " ".join(str(value or "").split())          # collapse whitespace
+    if not v or v.startswith(_COMMENT_LEAD):
+        return ""
+    # reject anything with structural / comment / SQL punctuation
+    if any(ch in v for ch in ":;/\\\n\r\t*?\"'`=<>()[]{}|"):
+        return ""
+    if not _VALID_GROUP_RE.match(v):
+        return ""
+    return v[:60]
+
+
+def _application_group(mapping, pipeline: Pipeline) -> str:
+    """Deterministic application group for one object, by documented
+    precedence. Raw SQL / origin / comments are never consulted."""
+    props = getattr(mapping, "properties", {}) or {}
+    # 1. explicit application/module/project metadata on the object
+    for key in _GROUP_META_KEYS:
+        g = _sanitize_group(props.get(key))
+        if g:
+            return g
+    # 2. a validated project identifier
+    g = _sanitize_group(getattr(pipeline, "name", ""))
+    if g:
+        return g
+    # 3. safe fallback
+    return UNASSIGNED_GROUP
+
+
 def assess(path: str, source_format: str = "") -> dict:
     """Parse-only assessment. Never converts, never calls an LLM."""
     fmt = source_format or detect_format(path)
@@ -91,8 +149,10 @@ def assess(path: str, source_format: str = "") -> dict:
                        if i.severity == IssueSeverity.MANUAL)
         objects.append({
             "object": m.name,
-            "kind": (m.origin.split(":")[0] if ":" in (m.origin or "")
-                     else "mapping"),
+            # a stable structural label — NEVER derived from raw SQL/origin
+            # (which would leak comment fragments and ':' into the data)
+            "kind": "mapping",
+            "application_group": _application_group(m, pipeline),
             "load_strategy": m.load_strategy.value,
             "transformations": len([t for t in m.transformations
                                     if t.name != "__OUTPUT__"]),
@@ -107,11 +167,10 @@ def assess(path: str, source_format: str = "") -> dict:
             "status": ("MANUAL_REVIEW" if n_manual else "AUTOMATED"),
         })
 
-    # ---- application inventory (group by origin/prefix) --------------------
+    # ---- application inventory (deterministic grouping, never comments) ----
     apps: Dict[str, dict] = {}
     for o in objects:
-        base = o["kind"] if o["kind"] != "mapping" else \
-            re.split(r"[_.]", o["object"])[0]
+        base = o["application_group"]
         app = apps.setdefault(base, {"application": base, "objects": 0,
                                      "manual_items": 0,
                                      "complexity_scores": []})

@@ -1341,50 +1341,67 @@ def etl_report(migration_id: str, format: str = "json"):
 @app.post("/api/assessment")
 async def assessment_run(request: Request):
     """{"files": [...]} or {"from_job": id} or {"connection_id": id
-    (introspectable live connection)} -> full assessment + exports."""
+    (introspectable live connection)} -> full assessment + exports.
+    Every path is wrapped so a parse/export failure returns a clear error
+    and marks the job failed — the job is never left stranded 'running'."""
     from metabridge.assessment.engine import assess
     from metabridge.assessment.exports import export_all
-    body = await request.json()
+    body = await _json_object(request)
     job_dir = _new_job("assessment")
-    if body.get("connection_id"):
-        # assess a connected system from its live introspection.
-        # resolve_params returns the flat param dict; the connector key
-        # lives on the stored row (get_connection), not on that dict.
-        from metabridge.connections_store import (get_connection,
-                                                  resolve_params)
-        from metabridge.livecheck import introspect
-        cid = str(body["connection_id"])
-        row = get_connection(cid)
-        if row is None:
-            _finish_job(job_dir, status="failed",
-                        error="Unknown connection")
-            raise HTTPException(404, "Unknown connection")
-        try:
-            params = resolve_params(cid)
-        except PermissionError as e:
-            _finish_job(job_dir, status="failed", error=str(e))
-            raise HTTPException(409, str(e))
-        result = introspect(row["connector"], params)
-        root = job_dir / "input"
-        root.mkdir(parents=True, exist_ok=True)
-        (root / "tables.yml").write_text(result.get("manifest_yaml",
-                                                    ""))
-        source = ""
-    elif body.get("from_job"):
-        root = _job_input_root(_job_dir(str(body["from_job"])))
-        source = str(body.get("source_format", "") or "")
-    else:
-        root = _write_inline_files(body.get("files"), job_dir / "input")
-        source = str(body.get("source_format", "") or "")
     try:
-        a = assess(str(root), source)
-    except (ValueError, FileNotFoundError) as e:
+        if body.get("connection_id"):
+            # assess a connected system from its live introspection.
+            from metabridge.connections_store import (get_connection,
+                                                      resolve_params)
+            from metabridge.livecheck import introspect
+            cid = str(body["connection_id"])
+            row = get_connection(cid)
+            if row is None:
+                raise HTTPException(404, "Unknown connection")
+            try:
+                params = resolve_params(cid)
+            except PermissionError as e:
+                raise HTTPException(409, str(e))
+            result = introspect(row["connector"], params)
+            if not result.get("ok"):
+                raise HTTPException(422, "Could not introspect the "
+                                    "connection: %s"
+                                    % (result.get("error") or "unknown"))
+            root = job_dir / "input"
+            root.mkdir(parents=True, exist_ok=True)
+            (root / "tables.yml").write_text(result.get("manifest_yaml", ""))
+            source = ""
+        elif body.get("from_job"):
+            root = _job_input_root(_job_dir(str(body["from_job"])))
+            source = str(body.get("source_format", "") or "")
+        else:
+            # tree-preserving so a project keeps its folder layout (parsers
+            # need models/ etc.); descend into a single wrapping top dir
+            root = _write_tree_files(body.get("files"), job_dir / "input")
+            entries = [p for p in root.iterdir()
+                       if not p.name.startswith(".")]
+            if len(entries) == 1 and entries[0].is_dir():
+                root = entries[0]
+            source = str(body.get("source_format", "") or "")
+        try:
+            a = assess(str(root), source)
+        except (ValueError, FileNotFoundError) as e:
+            raise HTTPException(422, str(e))
+        out = job_dir / "output"
+        exports = export_all(a, str(out))
+        meta = _finish_job(job_dir, source_format=a["source_format"])
+        # explicit empty-result signal for the UI (valid parse, nothing to
+        # assess) vs. a genuine success with objects
+        empty = (a.get("executive_summary", {}) or {}).get(
+            "objects_total", 0) == 0
+        return {"assessment_id": meta["id"], "exports": exports,
+                "empty": empty, **a}
+    except HTTPException:
+        _finish_job(job_dir, status="failed", error="request rejected")
+        raise
+    except Exception as e:                       # never strand the job
         _finish_job(job_dir, status="failed", error=str(e))
-        raise HTTPException(422, str(e))
-    out = job_dir / "output"
-    exports = export_all(a, str(out))
-    meta = _finish_job(job_dir, source_format=a["source_format"])
-    return {"assessment_id": meta["id"], "exports": exports, **a}
+        raise HTTPException(422, "Assessment failed: %s" % e)
 
 
 @app.get("/api/assessment/{assessment_id}")
@@ -1441,6 +1458,10 @@ async def ai_readiness_run(request: Request):
             except PermissionError as e:
                 raise HTTPException(409, str(e))
             result = introspect(row["connector"], params)
+            if not result.get("ok"):
+                raise HTTPException(422, "Could not introspect the "
+                                    "connection: %s"
+                                    % (result.get("error") or "unknown"))
             root = job_dir / "input"
             root.mkdir(parents=True, exist_ok=True)
             (root / "tables.yml").write_text(
@@ -1471,7 +1492,10 @@ async def ai_readiness_run(request: Request):
         out = job_dir / "output"
         exports = export_all(a, str(out))
         meta = _finish_job(job_dir, source_format=a["source_format"])
-        return {"assessment_id": meta["id"], "exports": exports, **a}
+        empty = (a.get("object_count", 0) == 0
+                 and a.get("field_count", 0) == 0)
+        return {"assessment_id": meta["id"], "exports": exports,
+                "empty": empty, **a}
     except HTTPException:
         _finish_job(job_dir, status="failed", error="request rejected")
         raise
