@@ -75,8 +75,10 @@ RULES: List[Rule] = [
     # rule below (no blanket exclusion of "fingerprint").
     Rule("pii.online.device_fingerprint",
          r"(device|browser|visitor|client|canvas|audio|webgl|tls|ssl|ja3|"
-         r"hardware|machine|session|user|app|installation)[-_]?fingerprint"
-         r"|fingerprint[-_]?(id|hash|token|value|signature|string)",
+         r"hardware|machine|session|user|app|installation|os|network|net|"
+         r"screen|gpu|cpu|cookie|font|tcp|http|header|ua|user[-_]?agent|"
+         r"agent|platform|host)[-_]?fingerprint"
+         r"|fingerprint[-_]?(id|hash|token|value|signature|string|uuid|key)",
          "personal data (online identifier, Rec. 30)",
          "device identifier — CPRA sensitive", "", "MEDIUM"),
     Rule("pii.special.biometric",
@@ -418,10 +420,12 @@ def render_html(r: dict) -> str:
     cls_rows = "".join(
         "<tr><td>%s</td><td>%s</td><td style='font-family:monospace'>%s</td>"
         "<td style='font-family:monospace'>%s</td><td>%s</td><td>%s</td>"
-        "<td>%s <span style='color:#889'>(%s confidence)</span></td></tr>"
+        "<td>%s <span style='color:#889'>(%s confidence)</span>"
+        "<div style='color:#889;font-size:11px'>%s</div></td></tr>"
         % (e(c["mapping"]), e(c["node_kind"]), e(c["column"]), e(c["category"]),
            e(c["gdpr"]), e(c["ccpa"]),
-           e(c.get("reason", "")), e(c.get("confidence", "") or "—"))
+           e(c.get("reason", "")), e(c.get("confidence", "") or "—"),
+           e(c.get("evidence", "")))
         for c in r["classifications"])
     f_rows = "".join(
         "<tr><td><span style='color:%s;font-weight:700'>%s</span></td>"
