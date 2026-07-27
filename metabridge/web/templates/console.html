@@ -321,8 +321,13 @@
 <div class="topbar">
   <span class="crumb" id="crumb">Workspace / <b>Overview</b></span>
   <div class="gsearch">
-    <input id="gSearch" type="search" placeholder="Search assets, pipelines, migrations...  (&#8984;K)"
-           aria-label="Global search" autocomplete="off">
+    <input id="gSearch" type="search" name="mb-global-search" placeholder="Search assets, pipelines, migrations...  (&#8984;K)"
+           aria-label="Global search" autocomplete="off" autocorrect="off"
+           autocapitalize="off" spellcheck="false" readonly
+           data-1p-ignore data-lpignore="true" data-form-type="other">
+    <!-- readonly by default: Chromium/Edge ignore autocomplete=off and would
+         otherwise autofill the saved login email into this field (and refill
+         it on SPA re-renders). It becomes editable on genuine user focus. -->
     <div class="hits" id="gHits" role="listbox"></div>
   </div>
   <a class="hlp" href="/docs" target="_blank" title="Help & API docs">Help</a>
@@ -1751,8 +1756,19 @@ document.querySelectorAll('nav a[data-page]').forEach(a => a.onclick = () => {
 });
 
 /* global search: navigation + real jobs + saved connections (Cmd/Ctrl+K) */
+// The field starts readonly so browser autofill can't push the login email
+// into it on load or on SPA re-render; a real user interaction makes it
+// editable, and it re-arms when left empty so autofill never gets another shot.
+(function () {
+  const gs = $('#gSearch');
+  const enable = () => gs.removeAttribute('readonly');
+  gs.addEventListener('focus', enable);
+  gs.addEventListener('pointerdown', enable);
+  gs.addEventListener('blur', () => { if (!gs.value) gs.setAttribute('readonly', ''); });
+  window.gSearchFocus = () => { enable(); gs.focus(); };
+})();
 document.addEventListener('keydown', ev => {
-  if ((ev.metaKey || ev.ctrlKey) && ev.key.toLowerCase() === 'k') { ev.preventDefault(); $('#gSearch').focus(); }
+  if ((ev.metaKey || ev.ctrlKey) && ev.key.toLowerCase() === 'k') { ev.preventDefault(); window.gSearchFocus(); }
   if (ev.key === 'Escape') $('#gHits').style.display = 'none';
 });
 let gJobsCache = null;
