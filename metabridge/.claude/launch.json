@@ -1,0 +1,19 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "metabridge-web",
+      "runtimeExecutable": ".venv/bin/python",
+      "runtimeArgs": [
+        "-m",
+        "uvicorn",
+        "web.app:app",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "8377"
+      ],
+      "port": 8377
+    }
+  ]
+}

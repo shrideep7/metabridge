@@ -1,0 +1,13 @@
+name: retail_analytics
+version: "1.0.0"
+config-version: 2
+profile: retail
+
+model-paths: ["models"]
+
+models:
+  retail_analytics:
+    staging:
+      +materialized: view
+    marts:
+      +materialized: table

@@ -1,0 +1,32 @@
+<?xml version="1.0"?>
+<template encoding-version="1.2">
+  <description>Syslog to Kafka flow</description>
+  <name>syslog_flow</name>
+  <snippet>
+    <processors>
+      <id>p1</id>
+      <name>ListenSyslog</name>
+      <type>org.apache.nifi.processors.standard.ListenSyslog</type>
+    </processors>
+    <processors>
+      <id>p2</id>
+      <name>TransformRecord</name>
+      <type>org.apache.nifi.processors.standard.UpdateRecord</type>
+    </processors>
+    <processors>
+      <id>p3</id>
+      <name>PublishKafka</name>
+      <type>org.apache.nifi.processors.kafka.pubsub.PublishKafka_2_6</type>
+    </processors>
+    <connections>
+      <source><id>p1</id></source>
+      <destination><id>p2</id></destination>
+      <selectedRelationships>success</selectedRelationships>
+    </connections>
+    <connections>
+      <source><id>p2</id></source>
+      <destination><id>p3</id></destination>
+      <selectedRelationships>success</selectedRelationships>
+    </connections>
+  </snippet>
+</template>

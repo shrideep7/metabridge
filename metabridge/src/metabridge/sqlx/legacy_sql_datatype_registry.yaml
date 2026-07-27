@@ -1,0 +1,213 @@
+# ==========================================================================
+# MetaBridge AI Legacy SQL Datatype Registry (Phase 3, section 11)
+# --------------------------------------------------------------------------
+# Source dialect type -> canonical type (+ loss warnings). Canonical ->
+# target rendering is the existing type engine's job (sqlx/type_engine).
+# ==========================================================================
+
+canonical_types:
+- STRING
+- FIXED_STRING
+- INTEGER
+- BIG_INTEGER
+- DECIMAL
+- FLOAT
+- BOOLEAN
+- DATE
+- TIME
+- TIMESTAMP
+- TIMESTAMP_TZ
+- BINARY
+- CLOB
+- BLOB
+- JSON
+- XML
+- ARRAY
+- STRUCT
+- GEOGRAPHY
+mappings:
+  oracle:
+    NUMBER:
+      canonical: DECIMAL
+      warnings:
+      - "unbounded NUMBER defaults to DECIMAL(38,6) \u2014 declare precision to\
+        \ avoid scale loss"
+    NUMBER(p):
+      canonical: INTEGER
+      warnings: []
+    NUMBER(p,s):
+      canonical: DECIMAL
+      warnings: []
+    VARCHAR2:
+      canonical: STRING
+      warnings:
+      - "Oracle treats '' as NULL \u2014 every target distinguishes them; review\
+        \ equality/NOT NULL filters"
+    NVARCHAR2:
+      canonical: STRING
+      warnings:
+      - unicode width semantics change (bytes vs chars)
+    CHAR:
+      canonical: FIXED_STRING
+      warnings:
+      - blank padding comparison semantics differ
+    DATE:
+      canonical: TIMESTAMP
+      warnings:
+      - "Oracle DATE carries TIME \u2014 mapping to a pure DATE silently drops time-of-day;\
+        \ TIMESTAMP is the safe default"
+    TIMESTAMP:
+      canonical: TIMESTAMP
+      warnings: []
+    TIMESTAMP WITH TIME ZONE:
+      canonical: TIMESTAMP_TZ
+      warnings:
+      - timezone normalization differs per target
+    CLOB:
+      canonical: CLOB
+      warnings:
+      - "maps to STRING on all cloud targets \u2014 size limits apply (Snowflake\
+        \ 16MB, BigQuery 10MB row)"
+    BLOB:
+      canonical: BLOB
+      warnings:
+      - maps to BINARY/BYTES; consider external/object storage for large payloads
+    XMLTYPE:
+      canonical: XML
+      warnings:
+      - "no native XML on most targets \u2014 stored as STRING; XQuery logic needs\
+        \ manual conversion"
+    RAW:
+      canonical: BINARY
+      warnings: []
+  teradata:
+    BYTEINT:
+      canonical: INTEGER
+      warnings: []
+    SMALLINT:
+      canonical: INTEGER
+      warnings: []
+    INTEGER:
+      canonical: INTEGER
+      warnings: []
+    BIGINT:
+      canonical: BIG_INTEGER
+      warnings: []
+    DECIMAL:
+      canonical: DECIMAL
+      warnings: []
+    FLOAT:
+      canonical: FLOAT
+      warnings: []
+    VARCHAR:
+      canonical: STRING
+      warnings:
+      - "CASESPECIFIC/NOT CASESPECIFIC comparison semantics are Teradata-only \u2014\
+        \ targets are case-sensitive by default"
+    CHAR:
+      canonical: FIXED_STRING
+      warnings: []
+    CLOB:
+      canonical: CLOB
+      warnings:
+      - maps to STRING
+    BYTE:
+      canonical: BINARY
+      warnings: []
+    VARBYTE:
+      canonical: BINARY
+      warnings: []
+    DATE:
+      canonical: DATE
+      warnings: []
+    TIME:
+      canonical: TIME
+      warnings:
+      - "no TIME type on Databricks \u2014 stored as STRING/TIMESTAMP"
+    TIMESTAMP:
+      canonical: TIMESTAMP
+      warnings: []
+    TIMESTAMP WITH TIME ZONE:
+      canonical: TIMESTAMP_TZ
+      warnings:
+      - timezone loss risk
+    PERIOD:
+      canonical: STRUCT
+      warnings:
+      - "PERIOD has no target equivalent \u2014 split into begin/end columns"
+  sqlserver:
+    INT:
+      canonical: INTEGER
+      warnings: []
+    BIGINT:
+      canonical: BIG_INTEGER
+      warnings: []
+    SMALLINT:
+      canonical: INTEGER
+      warnings: []
+    TINYINT:
+      canonical: INTEGER
+      warnings:
+      - TINYINT is UNSIGNED (0-255) on SQL Server, signed elsewhere
+    DECIMAL:
+      canonical: DECIMAL
+      warnings: []
+    NUMERIC:
+      canonical: DECIMAL
+      warnings: []
+    MONEY:
+      canonical: DECIMAL
+      warnings:
+      - "MONEY is DECIMAL(19,4) with rounding quirks \u2014 verify financial rounding\
+        \ after conversion"
+    FLOAT:
+      canonical: FLOAT
+      warnings: []
+    BIT:
+      canonical: BOOLEAN
+      warnings:
+      - BIT 0/1 vs TRUE/FALSE literals in predicates
+    VARCHAR:
+      canonical: STRING
+      warnings: []
+    NVARCHAR:
+      canonical: STRING
+      warnings:
+      - "UTF-16 to UTF-8 \u2014 length semantics change; collation is lost"
+    VARCHAR(MAX):
+      canonical: STRING
+      warnings: []
+    TEXT:
+      canonical: CLOB
+      warnings:
+      - deprecated type
+    DATETIME:
+      canonical: TIMESTAMP
+      warnings:
+      - "DATETIME rounds to 3.33ms ticks \u2014 checksum comparisons across platforms\
+        \ can differ at millisecond precision"
+    DATETIME2:
+      canonical: TIMESTAMP
+      warnings: []
+    DATETIMEOFFSET:
+      canonical: TIMESTAMP_TZ
+      warnings:
+      - offset preservation differs per target
+    DATE:
+      canonical: DATE
+      warnings: []
+    TIME:
+      canonical: TIME
+      warnings: []
+    UNIQUEIDENTIFIER:
+      canonical: STRING
+      warnings:
+      - GUID stored as STRING(36); no native type on most targets
+    VARBINARY:
+      canonical: BINARY
+      warnings: []
+    XML:
+      canonical: XML
+      warnings:
+      - "no native XML on cloud targets \u2014 stored as STRING; XQuery/.value()\
+        \ calls need manual conversion"

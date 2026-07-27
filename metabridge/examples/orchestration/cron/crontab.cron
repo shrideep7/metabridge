@@ -1,0 +1,4 @@
+# archive old extracts
+30 1 * * * /opt/etl/archive_extracts.sh
+# refresh currency rates
+@hourly /opt/etl/fetch_rates.sh --source ecb

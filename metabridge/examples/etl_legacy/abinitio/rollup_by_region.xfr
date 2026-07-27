@@ -1,0 +1,6 @@
+out :: rollup(in) =
+begin
+  out.region :: in.region;
+  out.customer_count :: count(in.customer_id);
+  out.total_balance :: sum(in.balance);
+end;

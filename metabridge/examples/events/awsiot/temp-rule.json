@@ -1,0 +1,5 @@
+{"rules": [
+  {"ruleName": "high_temp_alert", "qos": 1,
+   "sql": "SELECT deviceId, temperature, timestamp() AS ts FROM 'sensors/+/temperature' WHERE temperature > 80",
+   "actions": [{"kinesis": {"streamName": "orders-firehose"}}, {"sns": {"targetArn": "arn:oncall"}}]}
+]}

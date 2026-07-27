@@ -1,0 +1,19 @@
+{"queues": [
+   {"name": "payments.inbound", "vhost": "/", "durable": true,
+    "arguments": {"x-queue-type": "quorum", "x-message-ttl": 86400000,
+                  "x-dead-letter-exchange": "payments.dlx"}},
+   {"name": "payments.dlx", "vhost": "/", "durable": true, "arguments": {}}
+ ],
+ "exchanges": [
+   {"name": "payments", "vhost": "/", "type": "topic", "durable": true},
+   {"name": "payments.dlx", "vhost": "/", "type": "fanout", "durable": true}
+ ],
+ "bindings": [
+   {"source": "payments", "vhost": "/", "destination": "payments.inbound",
+    "destination_type": "queue", "routing_key": "payment.settled.#"},
+   {"source": "payments.dlx", "vhost": "/", "destination": "payments.dlx",
+    "destination_type": "queue", "routing_key": ""}
+ ],
+ "permissions": [
+   {"user": "payments_svc", "vhost": "/", "configure": "", "write": "payments.*", "read": "payments.*"}
+ ]}

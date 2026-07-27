@@ -1,0 +1,22 @@
+{
+  "Workflow": {
+    "Name": "nightly_refresh",
+    "Graph": {
+      "Nodes": [
+        {"Type": "TRIGGER", "Name": "t_sched", "UniqueId": "n1",
+         "TriggerDetails": {"Trigger": {"Type": "SCHEDULED", "Schedule": "cron(0 2 * * ? *)"}}},
+        {"Type": "JOB", "Name": "stage_orders", "UniqueId": "n2"},
+        {"Type": "TRIGGER", "Name": "t_after_stage", "UniqueId": "n3",
+         "TriggerDetails": {"Trigger": {"Type": "CONDITIONAL",
+           "Predicate": {"Conditions": [{"JobName": "stage_orders", "State": "SUCCEEDED"}]}}}},
+        {"Type": "JOB", "Name": "build_marts", "UniqueId": "n4"},
+        {"Type": "CRAWLER", "Name": "crawl_marts", "UniqueId": "n5"}
+      ],
+      "Edges": [
+        {"SourceId": "n1", "DestinationId": "n2"},
+        {"SourceId": "n3", "DestinationId": "n4"},
+        {"SourceId": "n4", "DestinationId": "n5"}
+      ]
+    }
+  }
+}

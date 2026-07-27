@@ -1,0 +1,28 @@
+{
+  "FIN_DAILY": {
+    "Type": "Folder",
+    "ControlmServer": "ctm-prod",
+    "extract_gl": {
+      "Type": "Job:Command",
+      "Command": "/opt/fin/extract_gl.sh",
+      "RunAs": "finuser",
+      "Host": "finbatch01",
+      "When": {"Schedule": "WEEKDAYS", "FromTime": "0200"},
+      "RerunLimit": {"Times": "2"},
+      "eventsToAdd": {"Type": "AddEvents", "Events": [{"Event": "GL_EXTRACTED"}]}
+    },
+    "load_gl": {
+      "Type": "Job:Database:SQLScript",
+      "FilePath": "/opt/fin/load_gl.sql",
+      "RunAs": "dbuser",
+      "eventsToWaitFor": {"Type": "WaitForEvents", "Events": [{"Event": "GL_EXTRACTED"}]},
+      "eventsToAdd": {"Type": "AddEvents", "Events": [{"Event": "GL_LOADED"}]},
+      "Notify1": {"Type": "Notification", "On": "Failure", "To": "fin-oncall@example.com"}
+    },
+    "reconcile": {
+      "Type": "Job:Command",
+      "Command": "/opt/fin/reconcile.sh",
+      "eventsToWaitFor": {"Type": "WaitForEvents", "Events": [{"Event": "GL_LOADED"}]}
+    }
+  }
+}

@@ -1,0 +1,10 @@
+.LOGON tdprod/loader,;
+.SET WIDTH 254
+DELETE FROM stage.customer_delta;
+.IF ERRORCODE <> 0 THEN .QUIT 12;
+.IMPORT VARTEXT ',' FILE=/data/in/customers.csv
+.EXPORT REPORT FILE=/data/out/load_report.txt
+SEL COUNT(*) FROM stage.customer_delta;
+.EXPORT RESET
+.IF ERRORCODE <> 0 THEN .QUIT 16;
+.LOGOFF;

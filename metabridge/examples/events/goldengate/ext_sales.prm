@@ -1,0 +1,5 @@
+EXTRACT ext_sales
+USERIDALIAS gg_admin
+EXTTRAIL ./dirdat/sa
+TABLE sales.orders;
+TABLE sales.order_items;

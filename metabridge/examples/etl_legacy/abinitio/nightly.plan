@@ -1,0 +1,6 @@
+plan "nightly"
+task "LoadCustomers" runs "load_customers.mp"
+task "ArchiveInputs" runs "archive.ksh"
+after "LoadCustomers" -> "ArchiveInputs"
+on_failure "LoadCustomers" -> "PageOncall"
+task "PageOncall" runs "notify.ksh"

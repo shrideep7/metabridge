@@ -1,0 +1,404 @@
+# ============================================================================
+# MetaBridge AI Semantic Data Types
+# ----------------------------------------------------------------------------
+# The single declared source of canonical-type <-> platform-type knowledge.
+# Application code goes through sqlx.type_engine.TypeMappingEngine — no
+# hardcoded type tables elsewhere.
+#
+# Per platform entry:
+#   type:          render template ({length} {precision} {scale} placeholders)
+#   bare:          rendering when no parameters are known (default: template
+#                  with the parameter list stripped)
+#   aliases:       native names that PARSE to this canonical type
+#   max_length / max_precision / max_scale:  platform limits (warnings)
+#   tz: true       the rendered type preserves time zone information
+#   implicit: true the platform has no native type; this is a conventional
+#                  stand-in (engine emits an implicit_conversion warning)
+#   unsupported: true + fallback + workaround:  honest gap
+# ============================================================================
+
+STRING:
+  description: "Variable-length character data"
+  params: [length]
+  platforms:
+    oracle:      {type: "VARCHAR2({length})", bare: "VARCHAR2(4000)", max_length: 32767,
+                  aliases: [varchar2, nvarchar2, varchar, clob, nclob, long]}
+    snowflake:   {type: "VARCHAR({length})", bare: "VARCHAR", max_length: 16777216,
+                  aliases: [varchar, string, text, char varying]}
+    databricks:  {type: "STRING", bare: "STRING",
+                  aliases: [string, varchar]}
+    bigquery:    {type: "STRING", bare: "STRING",
+                  aliases: [string]}
+    redshift:    {type: "VARCHAR({length})", bare: "VARCHAR(256)", max_length: 65535,
+                  aliases: [varchar, character varying, text, bpchar]}
+    synapse:     {type: "NVARCHAR({length})", bare: "NVARCHAR(4000)", max_length: 4000,
+                  aliases: [nvarchar, varchar]}
+    sqlserver:   {type: "NVARCHAR({length})", bare: "NVARCHAR(MAX)", max_length: 4000,
+                  aliases: [nvarchar, varchar, text, ntext]}
+    postgres:    {type: "VARCHAR({length})", bare: "TEXT", max_length: 10485760,
+                  aliases: [varchar, character varying, text]}
+    teradata:    {type: "VARCHAR({length})", bare: "VARCHAR(32000)", max_length: 64000,
+                  aliases: [varchar, character varying, clob]}
+    ansi:        {type: "VARCHAR({length})", bare: "VARCHAR",
+                  aliases: [varchar, character varying, string, text]}
+    informatica: {type: "string({length})", bare: "string(255)", max_length: 104857600,
+                  aliases: [string, nstring, text, ntext]}
+
+FIXED_STRING:
+  description: "Fixed-length, blank-padded character data"
+  params: [length]
+  platforms:
+    oracle:      {type: "CHAR({length})", bare: "CHAR(1)", max_length: 2000,
+                  aliases: [char, nchar, character]}
+    snowflake:   {type: "CHAR({length})", bare: "CHAR(1)",
+                  aliases: [char, character, nchar]}
+    databricks:  {type: "CHAR({length})", bare: "CHAR(1)",
+                  aliases: [char]}
+    bigquery:    {type: "STRING", bare: "STRING", implicit: true,
+                  aliases: []}
+    redshift:    {type: "CHAR({length})", bare: "CHAR(1)", max_length: 4096,
+                  aliases: [char, character, nchar]}
+    synapse:     {type: "NCHAR({length})", bare: "NCHAR(1)", max_length: 4000,
+                  aliases: [nchar, char]}
+    sqlserver:   {type: "NCHAR({length})", bare: "NCHAR(1)", max_length: 4000,
+                  aliases: [nchar, char]}
+    postgres:    {type: "CHAR({length})", bare: "CHAR(1)",
+                  aliases: [char, character, bpchar]}
+    teradata:    {type: "CHAR({length})", bare: "CHAR(1)", max_length: 64000,
+                  aliases: [char, character]}
+    ansi:        {type: "CHAR({length})", bare: "CHAR(1)",
+                  aliases: [char, character]}
+    informatica: {type: "string({length})", bare: "string(1)", implicit: true,
+                  aliases: []}
+
+INTEGER:
+  description: "32-bit signed integer"
+  params: []
+  platforms:
+    oracle:      {type: "NUMBER(10)", implicit: true, aliases: [pls_integer, binary_integer]}
+    snowflake:   {type: "INTEGER", aliases: [int, integer, smallint, tinyint, byteint]}
+    databricks:  {type: "INT", aliases: [int, integer, smallint, tinyint]}
+    bigquery:    {type: "INT64", implicit: true, aliases: []}
+    redshift:    {type: "INTEGER", aliases: [int, integer, int4, smallint, int2]}
+    synapse:     {type: "INT", aliases: [int, smallint, tinyint]}
+    sqlserver:   {type: "INT", aliases: [int, smallint, tinyint]}
+    postgres:    {type: "INTEGER", aliases: [int, integer, int4, smallint, int2, serial]}
+    teradata:    {type: "INTEGER", aliases: [int, integer, smallint, byteint]}
+    ansi:        {type: "INTEGER", aliases: [int, integer, smallint, tinyint]}
+    informatica: {type: "integer", aliases: [integer, small integer]}
+
+BIG_INTEGER:
+  description: "64-bit signed integer"
+  params: []
+  platforms:
+    oracle:      {type: "NUMBER(19)", implicit: true, aliases: []}
+    snowflake:   {type: "BIGINT", aliases: [bigint]}
+    databricks:  {type: "BIGINT", aliases: [bigint, long]}
+    bigquery:    {type: "INT64", aliases: [int64]}
+    redshift:    {type: "BIGINT", aliases: [bigint, int8]}
+    synapse:     {type: "BIGINT", aliases: [bigint]}
+    sqlserver:   {type: "BIGINT", aliases: [bigint]}
+    postgres:    {type: "BIGINT", aliases: [bigint, int8, bigserial]}
+    teradata:    {type: "BIGINT", aliases: [bigint]}
+    ansi:        {type: "BIGINT", aliases: [bigint]}
+    informatica: {type: "bigint", aliases: [bigint]}
+
+DECIMAL:
+  description: "Exact fixed-point number"
+  params: [precision, scale]
+  platforms:
+    oracle:      {type: "NUMBER({precision},{scale})", bare: "NUMBER",
+                  max_precision: 38, max_scale: 127,
+                  aliases: [number, numeric, decimal, dec, money]}
+    snowflake:   {type: "NUMBER({precision},{scale})", bare: "NUMBER(38,0)",
+                  max_precision: 38, max_scale: 37,
+                  aliases: [number, numeric, decimal]}
+    databricks:  {type: "DECIMAL({precision},{scale})", bare: "DECIMAL(38,6)",
+                  max_precision: 38, max_scale: 38,
+                  aliases: [decimal, numeric, dec]}
+    bigquery:    {type: "BIGNUMERIC({precision},{scale})", bare: "NUMERIC",
+                  max_precision: 76, max_scale: 38,
+                  aliases: [numeric, bignumeric, decimal, bigdecimal]}
+    redshift:    {type: "DECIMAL({precision},{scale})", bare: "DECIMAL(18,0)",
+                  max_precision: 38, max_scale: 37,
+                  aliases: [decimal, numeric]}
+    synapse:     {type: "DECIMAL({precision},{scale})", bare: "DECIMAL(18,0)",
+                  max_precision: 38, max_scale: 38,
+                  aliases: [decimal, numeric, money, smallmoney]}
+    sqlserver:   {type: "DECIMAL({precision},{scale})", bare: "DECIMAL(18,0)",
+                  max_precision: 38, max_scale: 38,
+                  aliases: [decimal, numeric, money, smallmoney]}
+    postgres:    {type: "NUMERIC({precision},{scale})", bare: "NUMERIC",
+                  max_precision: 1000, max_scale: 1000,
+                  aliases: [numeric, decimal, money]}
+    teradata:    {type: "DECIMAL({precision},{scale})", bare: "DECIMAL(18,0)",
+                  max_precision: 38, max_scale: 38,
+                  aliases: [decimal, numeric, number]}
+    ansi:        {type: "DECIMAL({precision},{scale})", bare: "DECIMAL",
+                  max_precision: 38, max_scale: 38,
+                  aliases: [decimal, numeric]}
+    informatica: {type: "decimal({precision},{scale})", bare: "decimal(28,0)",
+                  max_precision: 28, max_scale: 28,
+                  aliases: [decimal]}
+
+FLOAT:
+  description: "Approximate floating-point number"
+  params: []
+  platforms:
+    oracle:      {type: "BINARY_DOUBLE", aliases: [binary_double, binary_float, float]}
+    snowflake:   {type: "FLOAT", aliases: [float, float4, float8, double, real, double precision]}
+    databricks:  {type: "DOUBLE", aliases: [double, float, real]}
+    bigquery:    {type: "FLOAT64", aliases: [float64]}
+    redshift:    {type: "DOUBLE PRECISION", aliases: [double precision, float8, real, float4, float]}
+    synapse:     {type: "FLOAT", aliases: [float, real]}
+    sqlserver:   {type: "FLOAT", aliases: [float, real]}
+    postgres:    {type: "DOUBLE PRECISION", aliases: [double precision, float8, real, float4]}
+    teradata:    {type: "FLOAT", aliases: [float, real, double precision]}
+    ansi:        {type: "DOUBLE PRECISION", aliases: [double, double precision, float, real]}
+    informatica: {type: "double", aliases: [double, real, float]}
+
+BOOLEAN:
+  description: "True/false"
+  params: []
+  platforms:
+    oracle:      {type: "NUMBER(1)", implicit: true,
+                  workaround: "0/1 convention; BOOLEAN in 23c+", aliases: []}
+    snowflake:   {type: "BOOLEAN", aliases: [boolean, bool]}
+    databricks:  {type: "BOOLEAN", aliases: [boolean, bool]}
+    bigquery:    {type: "BOOL", aliases: [bool, boolean]}
+    redshift:    {type: "BOOLEAN", aliases: [boolean, bool]}
+    synapse:     {type: "BIT", implicit: true, aliases: [bit]}
+    sqlserver:   {type: "BIT", implicit: true, aliases: [bit]}
+    postgres:    {type: "BOOLEAN", aliases: [boolean, bool]}
+    teradata:    {type: "BYTEINT", implicit: true,
+                  workaround: "0/1 convention", aliases: []}
+    ansi:        {type: "BOOLEAN", aliases: [boolean, bool]}
+    informatica: {type: "integer", implicit: true,
+                  workaround: "0/1 convention", aliases: []}
+
+DATE:
+  description: "Calendar date (no time)"
+  params: []
+  platforms:
+    oracle:      {type: "DATE", implicit: true,
+                  workaround: "Oracle DATE carries time — truncate on load",
+                  aliases: []}
+    snowflake:   {type: "DATE", aliases: [date]}
+    databricks:  {type: "DATE", aliases: [date]}
+    bigquery:    {type: "DATE", aliases: [date]}
+    redshift:    {type: "DATE", aliases: [date]}
+    synapse:     {type: "DATE", aliases: [date]}
+    sqlserver:   {type: "DATE", aliases: [date]}
+    postgres:    {type: "DATE", aliases: [date]}
+    teradata:    {type: "DATE", aliases: [date]}
+    ansi:        {type: "DATE", aliases: [date]}
+    informatica: {type: "date/time", implicit: true, aliases: []}
+
+TIME:
+  description: "Time of day (no date)"
+  params: []
+  platforms:
+    oracle:      {unsupported: true, fallback: "VARCHAR2(8)",
+                  workaround: "Store as INTERVAL DAY TO SECOND or string"}
+    snowflake:   {type: "TIME", aliases: [time]}
+    databricks:  {unsupported: true, fallback: "STRING",
+                  workaround: "No TIME type — store as STRING 'HH:MM:SS'"}
+    bigquery:    {type: "TIME", aliases: [time]}
+    redshift:    {type: "TIME", aliases: [time, timetz]}
+    synapse:     {type: "TIME", aliases: [time]}
+    sqlserver:   {type: "TIME", aliases: [time]}
+    postgres:    {type: "TIME", aliases: [time]}
+    teradata:    {type: "TIME", aliases: [time]}
+    ansi:        {type: "TIME", aliases: [time]}
+    informatica: {unsupported: true, fallback: "string(8)",
+                  workaround: "date/time with dummy date, or string"}
+
+TIMESTAMP:
+  description: "Date and time, no time zone"
+  params: []
+  platforms:
+    oracle:      {type: "TIMESTAMP", aliases: [timestamp, date]}
+    snowflake:   {type: "TIMESTAMP_NTZ", aliases: [timestamp_ntz, timestampntz, timestamp, datetime]}
+    databricks:  {type: "TIMESTAMP_NTZ", aliases: [timestamp_ntz, timestamp]}
+    bigquery:    {type: "DATETIME", aliases: [datetime]}
+    redshift:    {type: "TIMESTAMP", aliases: [timestamp, timestamp without time zone]}
+    synapse:     {type: "DATETIME2", aliases: [datetime2, datetime, smalldatetime]}
+    sqlserver:   {type: "DATETIME2", aliases: [datetime2, datetime, smalldatetime]}
+    postgres:    {type: "TIMESTAMP", aliases: [timestamp, timestamp without time zone]}
+    teradata:    {type: "TIMESTAMP", aliases: [timestamp]}
+    ansi:        {type: "TIMESTAMP", aliases: [timestamp, datetime]}
+    informatica: {type: "date/time", aliases: [date/time, datetime]}
+
+TIMESTAMP_TZ:
+  description: "Date and time WITH time zone"
+  params: []
+  platforms:
+    oracle:      {type: "TIMESTAMP WITH TIME ZONE", tz: true,
+                  aliases: [timestamp with time zone, timestamp with local time zone]}
+    snowflake:   {type: "TIMESTAMP_TZ", tz: true,
+                  aliases: [timestamp_tz, timestamptz, timestamp_ltz, timestampltz]}
+    databricks:  {type: "TIMESTAMP", implicit: true,
+                  workaround: "Normalized to UTC on write (session-tz semantics)",
+                  aliases: []}
+    bigquery:    {type: "TIMESTAMP", tz: true, aliases: [timestamp]}
+    redshift:    {type: "TIMESTAMPTZ", tz: true,
+                  aliases: [timestamptz, timestamp with time zone]}
+    synapse:     {type: "DATETIMEOFFSET", tz: true, aliases: [datetimeoffset]}
+    sqlserver:   {type: "DATETIMEOFFSET", tz: true, aliases: [datetimeoffset]}
+    postgres:    {type: "TIMESTAMPTZ", tz: true,
+                  aliases: [timestamptz, timestamp with time zone]}
+    teradata:    {type: "TIMESTAMP WITH TIME ZONE", tz: true,
+                  aliases: [timestamp with time zone]}
+    ansi:        {type: "TIMESTAMP WITH TIME ZONE", tz: true,
+                  aliases: [timestamp with time zone]}
+    informatica: {type: "date/time", implicit: true,
+                  workaround: "Time zone is LOST — convert to UTC before load",
+                  aliases: []}
+
+BINARY:
+  description: "Raw bytes"
+  params: [length]
+  platforms:
+    oracle:      {type: "RAW({length})", bare: "BLOB", max_length: 32767,
+                  aliases: [raw, blob, long raw]}
+    snowflake:   {type: "BINARY({length})", bare: "BINARY", max_length: 8388608,
+                  aliases: [binary, varbinary]}
+    databricks:  {type: "BINARY", bare: "BINARY", aliases: [binary]}
+    bigquery:    {type: "BYTES", bare: "BYTES", aliases: [bytes]}
+    redshift:    {type: "VARBYTE({length})", bare: "VARBYTE", max_length: 1024000,
+                  aliases: [varbyte]}
+    synapse:     {type: "VARBINARY({length})", bare: "VARBINARY(8000)", max_length: 8000,
+                  aliases: [varbinary, binary, image]}
+    sqlserver:   {type: "VARBINARY({length})", bare: "VARBINARY(MAX)", max_length: 8000,
+                  aliases: [varbinary, binary, image]}
+    postgres:    {type: "BYTEA", bare: "BYTEA", aliases: [bytea]}
+    teradata:    {type: "VARBYTE({length})", bare: "VARBYTE(64000)", max_length: 64000,
+                  aliases: [varbyte, byte, blob]}
+    ansi:        {type: "VARBINARY({length})", bare: "VARBINARY", aliases: [varbinary, binary]}
+    informatica: {type: "binary", bare: "binary", aliases: [binary]}
+
+JSON:
+  description: "JSON document"
+  params: []
+  platforms:
+    oracle:      {type: "JSON", aliases: [json]}
+    snowflake:   {type: "VARIANT", implicit: true, aliases: []}
+    databricks:  {type: "STRING", implicit: true,
+                  workaround: "STRING + from_json, or VARIANT (DBR 15.3+)",
+                  aliases: []}
+    bigquery:    {type: "JSON", aliases: [json]}
+    redshift:    {type: "SUPER", implicit: true, aliases: []}
+    synapse:     {type: "NVARCHAR(4000)", implicit: true,
+                  workaround: "Query with OPENJSON/JSON_VALUE", aliases: []}
+    sqlserver:   {type: "NVARCHAR(MAX)", implicit: true,
+                  workaround: "Query with OPENJSON/JSON_VALUE", aliases: []}
+    postgres:    {type: "JSONB", aliases: [jsonb, json]}
+    teradata:    {type: "JSON", aliases: [json]}
+    ansi:        {type: "JSON", aliases: [json]}
+    informatica: {unsupported: true, fallback: "string(65535)",
+                  workaround: "Hierarchy parser / string passthrough"}
+
+VARIANT:
+  description: "Semi-structured value of any type"
+  params: []
+  platforms:
+    oracle:      {unsupported: true, fallback: "JSON",
+                  workaround: "JSON column"}
+    snowflake:   {type: "VARIANT", aliases: [variant]}
+    databricks:  {type: "VARIANT", aliases: [variant]}
+    bigquery:    {type: "JSON", implicit: true, aliases: []}
+    redshift:    {type: "SUPER", implicit: true, aliases: [super]}
+    synapse:     {unsupported: true, fallback: "NVARCHAR(4000)",
+                  workaround: "Serialize to JSON string"}
+    sqlserver:   {type: "SQL_VARIANT", implicit: true,
+                  workaround: "SQL_VARIANT holds scalars only — JSON string for structures",
+                  aliases: [sql_variant]}
+    postgres:    {type: "JSONB", implicit: true, aliases: []}
+    teradata:    {unsupported: true, fallback: "JSON",
+                  workaround: "JSON column"}
+    ansi:        {type: "JSON", implicit: true, aliases: []}
+    informatica: {unsupported: true, fallback: "string(65535)",
+                  workaround: "String passthrough"}
+
+ARRAY:
+  description: "Ordered collection of values"
+  params: []
+  platforms:
+    oracle:      {unsupported: true, fallback: "JSON",
+                  workaround: "VARRAY/nested table, or JSON array"}
+    snowflake:   {type: "ARRAY", aliases: [array]}
+    databricks:  {type: "ARRAY<STRING>", bare: "ARRAY<STRING>", aliases: [array]}
+    bigquery:    {type: "ARRAY<STRING>", bare: "ARRAY<STRING>", aliases: [array]}
+    redshift:    {type: "SUPER", implicit: true, aliases: []}
+    synapse:     {unsupported: true, fallback: "NVARCHAR(4000)",
+                  workaround: "Normalize into rows or JSON string"}
+    sqlserver:   {unsupported: true, fallback: "NVARCHAR(MAX)",
+                  workaround: "Normalize into rows or JSON string"}
+    postgres:    {type: "TEXT[]", bare: "TEXT[]", aliases: []}
+    teradata:    {unsupported: true, fallback: "JSON",
+                  workaround: "Normalize into rows"}
+    ansi:        {type: "ARRAY", aliases: [array]}
+    informatica: {unsupported: true, fallback: "string(65535)",
+                  workaround: "Normalizer transformation"}
+
+MAP:
+  description: "Key-value collection"
+  params: []
+  platforms:
+    oracle:      {unsupported: true, fallback: "JSON", workaround: "JSON object"}
+    snowflake:   {type: "OBJECT", implicit: true, aliases: [object]}
+    databricks:  {type: "MAP<STRING,STRING>", bare: "MAP<STRING,STRING>", aliases: [map]}
+    bigquery:    {unsupported: true, fallback: "JSON",
+                  workaround: "ARRAY<STRUCT<key,value>> or JSON"}
+    redshift:    {type: "SUPER", implicit: true, aliases: []}
+    synapse:     {unsupported: true, fallback: "NVARCHAR(4000)",
+                  workaround: "JSON string"}
+    sqlserver:   {unsupported: true, fallback: "NVARCHAR(MAX)",
+                  workaround: "JSON string"}
+    postgres:    {type: "JSONB", implicit: true, aliases: [hstore]}
+    teradata:    {unsupported: true, fallback: "JSON", workaround: "JSON object"}
+    ansi:        {type: "MAP", aliases: [map]}
+    informatica: {unsupported: true, fallback: "string(65535)",
+                  workaround: "Key/value normalization"}
+
+STRUCT:
+  description: "Nested record with named fields"
+  params: []
+  platforms:
+    oracle:      {unsupported: true, fallback: "JSON",
+                  workaround: "Object types, or JSON"}
+    snowflake:   {type: "OBJECT", implicit: true, aliases: []}
+    databricks:  {type: "STRUCT<>", bare: "STRUCT<>", aliases: [struct]}
+    bigquery:    {type: "STRUCT<>", bare: "STRUCT<>", aliases: [struct, record]}
+    redshift:    {type: "SUPER", implicit: true, aliases: []}
+    synapse:     {unsupported: true, fallback: "NVARCHAR(4000)",
+                  workaround: "Flatten into columns"}
+    sqlserver:   {unsupported: true, fallback: "NVARCHAR(MAX)",
+                  workaround: "Flatten into columns"}
+    postgres:    {type: "JSONB", implicit: true,
+                  workaround: "Composite types where modeled", aliases: []}
+    teradata:    {unsupported: true, fallback: "JSON",
+                  workaround: "Flatten into columns"}
+    ansi:        {type: "ROW", aliases: [row]}
+    informatica: {unsupported: true, fallback: "string(65535)",
+                  workaround: "Flatten into ports"}
+
+GEOGRAPHY:
+  description: "Geospatial value (points, lines, polygons; WGS84)"
+  params: []
+  platforms:
+    oracle:      {type: "SDO_GEOMETRY", implicit: true, aliases: [sdo_geometry]}
+    snowflake:   {type: "GEOGRAPHY", aliases: [geography, geometry]}
+    databricks:  {unsupported: true, fallback: "STRING",
+                  workaround: "WKT string + spatial functions (Mosaic/H3)"}
+    bigquery:    {type: "GEOGRAPHY", aliases: [geography]}
+    redshift:    {type: "GEOMETRY", implicit: true, aliases: [geometry, geography]}
+    synapse:     {unsupported: true, fallback: "NVARCHAR(MAX)",
+                  workaround: "WKT string (no spatial types in dedicated pools)"}
+    sqlserver:   {type: "GEOGRAPHY", aliases: [geography, geometry]}
+    postgres:    {type: "GEOGRAPHY", aliases: [geography, geometry],
+                  workaround: "requires PostGIS extension"}
+    teradata:    {type: "ST_GEOMETRY", implicit: true, aliases: [st_geometry]}
+    ansi:        {type: "GEOGRAPHY", aliases: []}
+    informatica: {unsupported: true, fallback: "string(65535)",
+                  workaround: "WKT string passthrough"}

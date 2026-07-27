@@ -1,0 +1,42 @@
+# SAP S/4HANA -> Snowflake ingestion manifest
+# Run: metabridge scaffold examples/sap_to_snowflake/tables.yml \
+#        --source sap_s4 --target snowflake --source-region eu --target-region eu
+tables:
+  - name: KNA1                    # customer master
+    schema: SAPSR3
+    target_name: stg_customer_master
+    incremental_column: ERDAT
+    unique_key: [KUNNR]
+    columns:
+      - {name: KUNNR, type: numc}       # customer number
+      - {name: NAME1, type: nvarchar}   # customer name  -> PII
+      - {name: STRAS, type: nvarchar}   # street address -> PII
+      - {name: ORT01, type: nvarchar}   # city
+      - {name: PSTLZ, type: nvarchar}   # postal code    -> PII
+      - {name: LAND1, type: nvarchar}   # country
+      - {name: TELF1, type: nvarchar}   # phone          -> PII
+      - {name: SMTP_ADDR, type: nvarchar}  # email       -> PII
+      - {name: ERDAT, type: dats}       # created on
+
+  - name: VBAK                    # sales order headers
+    schema: SAPSR3
+    target_name: stg_sales_orders
+    incremental_column: AEDAT
+    unique_key: [VBELN]
+    columns:
+      - {name: VBELN, type: numc}
+      - {name: AUDAT, type: dats}
+      - {name: NETWR, type: curr}
+      - {name: WAERK, type: cuky}
+      - {name: KUNNR, type: numc}
+      - {name: AEDAT, type: dats}
+
+  - name: MARA                    # material master (no PII)
+    schema: SAPSR3
+    target_name: stg_materials
+    columns:
+      - {name: MATNR, type: nvarchar}
+      - {name: MTART, type: nvarchar}
+      - {name: MATKL, type: nvarchar}
+      - {name: MEINS, type: unit}
+      - {name: BRGEW, type: quan}

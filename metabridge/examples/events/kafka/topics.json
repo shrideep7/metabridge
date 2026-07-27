@@ -1,0 +1,11 @@
+{"topics": [
+  {"name": "orders.v1", "partitions": 12, "replication_factor": 3,
+   "config": {"retention.ms": "604800000", "cleanup.policy": "delete",
+              "compression.type": "lz4", "min.insync.replicas": "2"}},
+  {"name": "orders.enriched", "partitions": 12, "replication_factor": 3,
+   "config": {"retention.ms": "259200000", "cleanup.policy": "delete"}},
+  {"name": "customers.compacted", "partitions": 6, "replication_factor": 3,
+   "config": {"cleanup.policy": "compact", "compression.type": "zstd"}},
+  {"name": "orders.dlq", "partitions": 3, "replication_factor": 1,
+   "config": {"retention.ms": "1209600000"}}
+]}

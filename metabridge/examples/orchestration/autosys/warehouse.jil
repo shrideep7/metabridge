@@ -1,0 +1,25 @@
+/* nightly warehouse box */
+insert_job: WH_NIGHTLY_BOX   job_type: b
+owner: autosys@prod
+date_conditions: 1
+days_of_week: mo,tu,we,th,fr
+start_times: "02:00"
+alarm_if_fail: 1
+
+insert_job: WH_EXTRACT   job_type: c
+box_name: WH_NIGHTLY_BOX
+command: /opt/wh/extract.sh
+machine: whbatch01
+n_retrys: 2
+term_run_time: 60
+
+insert_job: WH_LOAD   job_type: c
+box_name: WH_NIGHTLY_BOX
+command: /opt/wh/load.sh
+machine: whbatch01
+condition: s(WH_EXTRACT)
+max_run_alarm: 90
+
+insert_job: WH_NOTIFY_FAIL   job_type: c
+command: /opt/wh/page_oncall.sh
+condition: f(WH_LOAD)

@@ -1,0 +1,1130 @@
+# ============================================================================
+# MetaBridge AI Semantic Function Registry
+# ----------------------------------------------------------------------------
+# The single source of truth for semantic-function -> platform-function
+# knowledge. Nothing in application code may hardcode these mappings; code
+# loads this file through sqlx.registry.FunctionRegistry.
+#
+# Entry format:
+#   SEMANTIC_NAME:
+#     category: one of the registry categories
+#     description: what the function MEANS (intent, not syntax)
+#     args: [argument names]           # documentation of the argument order
+#     platforms:
+#       <platform>: "NAME"             # plain function -> NAME(arg0, arg1, ...)
+#       <platform>: "TPL({0}, {1})"    # template -> formatted with args
+#       <platform>:                    # honest gap
+#         unsupported: true
+#         workaround: "how a human ports it"
+#
+# Platforms: oracle, snowflake, databricks, bigquery, redshift, synapse,
+#            sqlserver, postgres, teradata, ansi, informatica
+# 'ansi' is mandatory for every function (the canonical rendering).
+# ============================================================================
+
+# ---------------------------------------------------------------------------
+# NULL FUNCTIONS
+# ---------------------------------------------------------------------------
+NULL_COALESCE:
+  category: "null"
+  description: "First non-null value of the arguments"
+  args: [value, fallback]
+  platforms:
+    oracle: "NVL"
+    snowflake: "COALESCE"
+    databricks: "COALESCE"
+    bigquery: "COALESCE"
+    redshift: "COALESCE"
+    synapse: "COALESCE"
+    sqlserver: "COALESCE"        # ISNULL(a,b) also valid for 2 args
+    postgres: "COALESCE"
+    teradata: "COALESCE"
+    ansi: "COALESCE"
+    informatica: "IIF(ISNULL({0}), {1}, {0})"
+
+NULL_IF:
+  category: "null"
+  description: "NULL when the two arguments are equal, else the first"
+  args: [value, match]
+  platforms:
+    oracle: "NULLIF"
+    snowflake: "NULLIF"
+    databricks: "NULLIF"
+    bigquery: "NULLIF"
+    redshift: "NULLIF"
+    synapse: "NULLIF"
+    sqlserver: "NULLIF"
+    postgres: "NULLIF"
+    teradata: "NULLIF"
+    ansi: "NULLIF"
+    informatica: "IIF({0} = {1}, NULL, {0})"
+
+IS_NULL_CHECK:
+  category: "null"
+  description: "Boolean test: is the value NULL"
+  args: [value]
+  platforms:
+    oracle: "{0} IS NULL"
+    snowflake: "{0} IS NULL"
+    databricks: "{0} IS NULL"
+    bigquery: "{0} IS NULL"
+    redshift: "{0} IS NULL"
+    synapse: "{0} IS NULL"
+    sqlserver: "{0} IS NULL"
+    postgres: "{0} IS NULL"
+    teradata: "{0} IS NULL"
+    ansi: "{0} IS NULL"
+    informatica: "ISNULL({0})"
+
+ZERO_IF_NULL:
+  category: "null"
+  description: "Value, or zero when NULL"
+  args: [value]
+  platforms:
+    oracle: "NVL({0}, 0)"
+    snowflake: "ZEROIFNULL"
+    databricks: "COALESCE({0}, 0)"
+    bigquery: "COALESCE({0}, 0)"
+    redshift: "COALESCE({0}, 0)"
+    synapse: "COALESCE({0}, 0)"
+    sqlserver: "ISNULL({0}, 0)"
+    postgres: "COALESCE({0}, 0)"
+    teradata: "ZEROIFNULL"
+    ansi: "COALESCE({0}, 0)"
+    informatica: "IIF(ISNULL({0}), 0, {0})"
+
+# ---------------------------------------------------------------------------
+# CONDITIONAL FUNCTIONS
+# ---------------------------------------------------------------------------
+CONDITIONAL:
+  category: conditional
+  description: "If condition then A else B"
+  args: [condition, then_value, else_value]
+  platforms:
+    oracle: "CASE WHEN {0} THEN {1} ELSE {2} END"
+    snowflake: "IFF({0}, {1}, {2})"
+    databricks: "IF({0}, {1}, {2})"
+    bigquery: "IF({0}, {1}, {2})"
+    redshift: "CASE WHEN {0} THEN {1} ELSE {2} END"
+    synapse: "IIF({0}, {1}, {2})"
+    sqlserver: "IIF({0}, {1}, {2})"
+    postgres: "CASE WHEN {0} THEN {1} ELSE {2} END"
+    teradata: "CASE WHEN {0} THEN {1} ELSE {2} END"
+    ansi: "CASE WHEN {0} THEN {1} ELSE {2} END"
+    informatica: "IIF({0}, {1}, {2})"
+
+VALUE_MAP:
+  category: conditional
+  description: "Map a value through pairs (simple CASE / DECODE)"
+  args: [value, search1, result1, default]
+  platforms:
+    oracle: "DECODE"
+    snowflake: "DECODE"
+    databricks: "CASE {0} WHEN {1} THEN {2} ELSE {3} END"
+    bigquery: "CASE {0} WHEN {1} THEN {2} ELSE {3} END"
+    redshift: "DECODE"
+    synapse: "CASE {0} WHEN {1} THEN {2} ELSE {3} END"
+    sqlserver: "CASE {0} WHEN {1} THEN {2} ELSE {3} END"
+    postgres: "CASE {0} WHEN {1} THEN {2} ELSE {3} END"
+    teradata: "CASE {0} WHEN {1} THEN {2} ELSE {3} END"
+    ansi: "CASE {0} WHEN {1} THEN {2} ELSE {3} END"
+    informatica: "DECODE"
+
+GREATEST_VALUE:
+  category: conditional
+  description: "Largest of the arguments"
+  args: [values...]
+  platforms:
+    oracle: "GREATEST"
+    snowflake: "GREATEST"
+    databricks: "GREATEST"
+    bigquery: "GREATEST"
+    redshift: "GREATEST"
+    synapse:
+      unsupported: true
+      workaround: "Use a CASE expression or (SELECT MAX(v) FROM (VALUES ...))"
+    sqlserver: "GREATEST"        # SQL Server 2022+
+    postgres: "GREATEST"
+    teradata: "GREATEST"
+    ansi: "GREATEST"
+    informatica: "GREATEST"
+
+LEAST_VALUE:
+  category: conditional
+  description: "Smallest of the arguments"
+  args: [values...]
+  platforms:
+    oracle: "LEAST"
+    snowflake: "LEAST"
+    databricks: "LEAST"
+    bigquery: "LEAST"
+    redshift: "LEAST"
+    synapse:
+      unsupported: true
+      workaround: "Use a CASE expression or (SELECT MIN(v) FROM (VALUES ...))"
+    sqlserver: "LEAST"           # SQL Server 2022+
+    postgres: "LEAST"
+    teradata: "LEAST"
+    ansi: "LEAST"
+    informatica: "LEAST"
+
+# ---------------------------------------------------------------------------
+# DATE FUNCTIONS
+# ---------------------------------------------------------------------------
+CURRENT_DATE_VALUE:
+  category: date
+  description: "Today's date (no time component)"
+  args: []
+  platforms:
+    oracle: "TRUNC(SYSDATE)"
+    snowflake: "CURRENT_DATE()"
+    databricks: "CURRENT_DATE()"
+    bigquery: "CURRENT_DATE()"
+    redshift: "CURRENT_DATE"
+    synapse: "CAST(GETDATE() AS DATE)"
+    sqlserver: "CAST(GETDATE() AS DATE)"
+    postgres: "CURRENT_DATE"
+    teradata: "CURRENT_DATE"
+    ansi: "CURRENT_DATE"
+    informatica: "TRUNC(SYSDATE)"
+
+CURRENT_DATETIME:
+  category: timestamp
+  description: "Current date and time"
+  args: []
+  platforms:
+    oracle: "SYSDATE"
+    snowflake: "CURRENT_TIMESTAMP()"
+    databricks: "CURRENT_TIMESTAMP()"
+    bigquery: "CURRENT_TIMESTAMP()"
+    redshift: "GETDATE()"
+    synapse: "GETDATE()"
+    sqlserver: "GETDATE()"
+    postgres: "CURRENT_TIMESTAMP"
+    teradata: "CURRENT_TIMESTAMP"
+    ansi: "CURRENT_TIMESTAMP"
+    informatica: "SYSDATE"
+
+DATE_ADD_INTERVAL:
+  category: date
+  description: "Add N units to a date/timestamp"
+  args: [date, unit, amount]
+  platforms:
+    oracle: "{0} + INTERVAL '{2}' {1}"
+    snowflake: "DATEADD({1}, {2}, {0})"
+    databricks: "DATEADD({1}, {2}, {0})"
+    bigquery: "DATE_ADD({0}, INTERVAL {2} {1})"
+    redshift: "DATEADD({1}, {2}, {0})"
+    synapse: "DATEADD({1}, {2}, {0})"
+    sqlserver: "DATEADD({1}, {2}, {0})"
+    postgres: "{0} + INTERVAL '{2} {1}'"
+    teradata: "{0} + INTERVAL '{2}' {1}"
+    ansi: "{0} + INTERVAL '{2}' {1}"
+    informatica: "ADD_TO_DATE({0}, '{1}', {2})"
+
+DATE_DIFF_INTERVAL:
+  category: date
+  description: "Difference between two dates in units (end - start)"
+  args: [unit, start, end]
+  platforms:
+    oracle: "({2} - {1})"        # days; other units need EXTRACT arithmetic
+    snowflake: "DATEDIFF({0}, {1}, {2})"
+    databricks: "DATEDIFF({0}, {1}, {2})"
+    bigquery: "DATE_DIFF({2}, {1}, {0})"
+    redshift: "DATEDIFF({0}, {1}, {2})"
+    synapse: "DATEDIFF({0}, {1}, {2})"
+    sqlserver: "DATEDIFF({0}, {1}, {2})"
+    postgres: "EXTRACT(EPOCH FROM ({2} - {1}))"
+    teradata: "({2} - {1})"
+    ansi: "({2} - {1})"
+    informatica: "DATE_DIFF({2}, {1}, '{0}')"
+
+DATE_TRUNCATE:
+  category: date
+  description: "Truncate a date/timestamp to a unit boundary"
+  args: [unit, value]
+  platforms:
+    oracle: "TRUNC({1}, '{0}')"
+    snowflake: "DATE_TRUNC('{0}', {1})"
+    databricks: "DATE_TRUNC('{0}', {1})"
+    bigquery: "DATE_TRUNC({1}, {0})"
+    redshift: "DATE_TRUNC('{0}', {1})"
+    synapse: "DATETRUNC({0}, {1})"
+    sqlserver: "DATETRUNC({0}, {1})"     # SQL Server 2022+
+    postgres: "DATE_TRUNC('{0}', {1})"
+    teradata: "TRUNC({1}, '{0}')"
+    ansi: "DATE_TRUNC('{0}', {1})"
+    informatica: "TRUNC({1}, '{0}')"
+
+DATE_PART_EXTRACT:
+  category: date
+  description: "Extract a component (year/month/day/...) from a date"
+  args: [unit, value]
+  platforms:
+    oracle: "EXTRACT({0} FROM {1})"
+    snowflake: "DATE_PART('{0}', {1})"
+    databricks: "EXTRACT({0} FROM {1})"
+    bigquery: "EXTRACT({0} FROM {1})"
+    redshift: "DATE_PART('{0}', {1})"
+    synapse: "DATEPART({0}, {1})"
+    sqlserver: "DATEPART({0}, {1})"
+    postgres: "EXTRACT({0} FROM {1})"
+    teradata: "EXTRACT({0} FROM {1})"
+    ansi: "EXTRACT({0} FROM {1})"
+    informatica: "GET_DATE_PART({1}, '{0}')"
+
+LAST_DAY_OF_MONTH:
+  category: date
+  description: "Last day of the month containing the date"
+  args: [value]
+  platforms:
+    oracle: "LAST_DAY"
+    snowflake: "LAST_DAY"
+    databricks: "LAST_DAY"
+    bigquery: "LAST_DAY"
+    redshift: "LAST_DAY"
+    synapse: "EOMONTH"
+    sqlserver: "EOMONTH"
+    postgres: "(DATE_TRUNC('month', {0}) + INTERVAL '1 month - 1 day')::date"
+    teradata: "LAST_DAY"
+    ansi: "LAST_DAY"
+    informatica: "LAST_DAY"
+
+DATE_FORMAT_TO_STRING:
+  category: date
+  description: "Format a date/timestamp as a string with a mask"
+  args: [value, format_mask]
+  platforms:
+    oracle: "TO_CHAR"
+    snowflake: "TO_CHAR"
+    databricks: "DATE_FORMAT"
+    bigquery: "FORMAT_TIMESTAMP({1}, {0})"
+    redshift: "TO_CHAR"
+    synapse: "FORMAT"
+    sqlserver: "FORMAT"
+    postgres: "TO_CHAR"
+    teradata: "TO_CHAR"
+    ansi: "TO_CHAR"
+    informatica: "TO_CHAR({0}, {1})"
+
+STRING_TO_DATE:
+  category: date
+  description: "Parse a string into a date with a mask"
+  args: [value, format_mask]
+  platforms:
+    oracle: "TO_DATE"
+    snowflake: "TO_DATE"
+    databricks: "TO_DATE"
+    bigquery: "PARSE_DATE({1}, {0})"
+    redshift: "TO_DATE"
+    synapse: "CONVERT(DATE, {0})"
+    sqlserver: "CONVERT(DATE, {0})"
+    postgres: "TO_DATE"
+    teradata: "TO_DATE"
+    ansi: "TO_DATE"
+    informatica: "TO_DATE({0}, {1})"
+
+EPOCH_TO_TIMESTAMP:
+  category: timestamp
+  description: "Convert unix epoch seconds to a timestamp"
+  args: [epoch_seconds]
+  platforms:
+    oracle: "TO_DATE('1970-01-01','YYYY-MM-DD') + {0}/86400"
+    snowflake: "TO_TIMESTAMP({0})"
+    databricks: "FROM_UNIXTIME({0})"
+    bigquery: "TIMESTAMP_SECONDS({0})"
+    redshift: "TIMESTAMP 'epoch' + {0} * INTERVAL '1 second'"
+    synapse: "DATEADD(second, {0}, '1970-01-01')"
+    sqlserver: "DATEADD(second, {0}, '1970-01-01')"
+    postgres: "TO_TIMESTAMP({0})"
+    teradata:
+      unsupported: true
+      workaround: "CAST(DATE '1970-01-01' AS TIMESTAMP) + ({0} * INTERVAL '1' SECOND)"
+    ansi: "TO_TIMESTAMP({0})"
+    informatica: "ADD_TO_DATE(TO_DATE('1970-01-01','YYYY-MM-DD'), 'SS', {0})"
+
+# ---------------------------------------------------------------------------
+# STRING FUNCTIONS
+# ---------------------------------------------------------------------------
+STRING_LENGTH:
+  category: string
+  description: "Number of characters in a string"
+  args: [value]
+  platforms:
+    oracle: "LENGTH"
+    snowflake: "LENGTH"
+    databricks: "LENGTH"
+    bigquery: "LENGTH"
+    redshift: "LEN"
+    synapse: "LEN"
+    sqlserver: "LEN"
+    postgres: "LENGTH"
+    teradata: "CHAR_LENGTH"
+    ansi: "LENGTH"
+    informatica: "LENGTH"
+
+STRING_UPPER:
+  category: string
+  description: "Uppercase"
+  args: [value]
+  platforms: {oracle: UPPER, snowflake: UPPER, databricks: UPPER,
+              bigquery: UPPER, redshift: UPPER, synapse: UPPER,
+              sqlserver: UPPER, postgres: UPPER, teradata: UPPER,
+              ansi: UPPER, informatica: UPPER}
+
+STRING_LOWER:
+  category: string
+  description: "Lowercase"
+  args: [value]
+  platforms: {oracle: LOWER, snowflake: LOWER, databricks: LOWER,
+              bigquery: LOWER, redshift: LOWER, synapse: LOWER,
+              sqlserver: LOWER, postgres: LOWER, teradata: LOWER,
+              ansi: LOWER, informatica: LOWER}
+
+STRING_TRIM:
+  category: string
+  description: "Remove leading and trailing whitespace"
+  args: [value]
+  platforms:
+    oracle: "TRIM"
+    snowflake: "TRIM"
+    databricks: "TRIM"
+    bigquery: "TRIM"
+    redshift: "TRIM"
+    synapse: "TRIM"
+    sqlserver: "TRIM"            # 2017+; LTRIM(RTRIM()) before
+    postgres: "TRIM"
+    teradata: "TRIM"
+    ansi: "TRIM"
+    informatica: "LTRIM(RTRIM({0}))"
+
+STRING_SUBSTRING:
+  category: string
+  description: "Substring by position and length (1-based)"
+  args: [value, start, length]
+  platforms:
+    oracle: "SUBSTR"
+    snowflake: "SUBSTR"
+    databricks: "SUBSTR"
+    bigquery: "SUBSTR"
+    redshift: "SUBSTRING"
+    synapse: "SUBSTRING"
+    sqlserver: "SUBSTRING"
+    postgres: "SUBSTRING"
+    teradata: "SUBSTR"
+    ansi: "SUBSTRING"
+    informatica: "SUBSTR"
+
+STRING_POSITION:
+  category: string
+  description: "1-based position of a substring (0 when absent)"
+  args: [haystack, needle]
+  platforms:
+    oracle: "INSTR({0}, {1})"
+    snowflake: "POSITION({1}, {0})"
+    databricks: "INSTR({0}, {1})"
+    bigquery: "STRPOS({0}, {1})"
+    redshift: "STRPOS({0}, {1})"
+    synapse: "CHARINDEX({1}, {0})"
+    sqlserver: "CHARINDEX({1}, {0})"
+    postgres: "STRPOS({0}, {1})"
+    teradata: "POSITION({1} IN {0})"
+    ansi: "POSITION({1} IN {0})"
+    informatica: "INSTR({0}, {1})"
+
+STRING_REPLACE:
+  category: string
+  description: "Replace all occurrences of a substring"
+  args: [value, search, replacement]
+  platforms:
+    oracle: "REPLACE"
+    snowflake: "REPLACE"
+    databricks: "REPLACE"
+    bigquery: "REPLACE"
+    redshift: "REPLACE"
+    synapse: "REPLACE"
+    sqlserver: "REPLACE"
+    postgres: "REPLACE"
+    teradata: "OREPLACE"
+    ansi: "REPLACE"
+    informatica: "REPLACESTR(0, {0}, {1}, {2})"
+
+STRING_CONCAT:
+  category: string
+  description: "Concatenate strings"
+  args: [left, right]
+  platforms:
+    oracle: "{0} || {1}"
+    snowflake: "{0} || {1}"
+    databricks: "CONCAT({0}, {1})"
+    bigquery: "CONCAT({0}, {1})"
+    redshift: "{0} || {1}"
+    synapse: "CONCAT({0}, {1})"
+    sqlserver: "CONCAT({0}, {1})"
+    postgres: "{0} || {1}"
+    teradata: "{0} || {1}"
+    ansi: "{0} || {1}"
+    informatica: "{0} || {1}"
+
+STRING_PAD_LEFT:
+  category: string
+  description: "Left-pad to a length with a fill character"
+  args: [value, length, fill]
+  platforms:
+    oracle: "LPAD"
+    snowflake: "LPAD"
+    databricks: "LPAD"
+    bigquery: "LPAD"
+    redshift: "LPAD"
+    synapse:
+      unsupported: true
+      workaround: "RIGHT(REPLICATE({2}, {1}) + {0}, {1})"
+    sqlserver:
+      unsupported: true
+      workaround: "RIGHT(REPLICATE({2}, {1}) + {0}, {1})"
+    postgres: "LPAD"
+    teradata: "LPAD"
+    ansi: "LPAD"
+    informatica: "LPAD"
+
+STRING_SPLIT_PART:
+  category: string
+  description: "N-th field of a delimited string (1-based)"
+  args: [value, delimiter, index]
+  platforms:
+    oracle:
+      unsupported: true
+      workaround: "REGEXP_SUBSTR({0}, '[^{1}]+', 1, {2})"
+    snowflake: "SPLIT_PART"
+    databricks: "SPLIT_PART"
+    bigquery: "SPLIT({0}, {1})[SAFE_OFFSET({2} - 1)]"
+    redshift: "SPLIT_PART"
+    synapse:
+      unsupported: true
+      workaround: "PARSENAME(REPLACE({0}, {1}, '.'), n) for <=4 fields"
+    sqlserver:
+      unsupported: true
+      workaround: "STRING_SPLIT + ROW_NUMBER, or PARSENAME for <=4 fields"
+    postgres: "SPLIT_PART"
+    teradata: "STRTOK({0}, {1}, {2})"
+    ansi: "SPLIT_PART"
+    informatica:
+      unsupported: true
+      workaround: "Nested INSTR/SUBSTR or REG_EXTRACT"
+
+STRING_INITCAP:
+  category: string
+  description: "Capitalize the first letter of each word"
+  args: [value]
+  platforms:
+    oracle: "INITCAP"
+    snowflake: "INITCAP"
+    databricks: "INITCAP"
+    bigquery: "INITCAP"
+    redshift: "INITCAP"
+    synapse:
+      unsupported: true
+      workaround: "Custom scalar function"
+    sqlserver:
+      unsupported: true
+      workaround: "Custom scalar function"
+    postgres: "INITCAP"
+    teradata: "INITCAP"
+    ansi: "INITCAP"
+    informatica: "INITCAP"
+
+# ---------------------------------------------------------------------------
+# NUMERIC FUNCTIONS
+# ---------------------------------------------------------------------------
+NUM_ROUND:
+  category: numeric
+  description: "Round to N decimal places"
+  args: [value, places]
+  platforms: {oracle: ROUND, snowflake: ROUND, databricks: ROUND,
+              bigquery: ROUND, redshift: ROUND, synapse: ROUND,
+              sqlserver: ROUND, postgres: ROUND, teradata: ROUND,
+              ansi: ROUND, informatica: ROUND}
+
+NUM_TRUNCATE:
+  category: numeric
+  description: "Truncate toward zero to N decimal places"
+  args: [value, places]
+  platforms:
+    oracle: "TRUNC"
+    snowflake: "TRUNC"
+    databricks: "TRUNC"          # numeric truncate
+    bigquery: "TRUNC"
+    redshift: "TRUNC"
+    synapse: "ROUND({0}, {1}, 1)"
+    sqlserver: "ROUND({0}, {1}, 1)"
+    postgres: "TRUNC"
+    teradata: "TRUNC"
+    ansi: "TRUNC"
+    informatica: "TRUNC"
+
+NUM_ABS:
+  category: numeric
+  description: "Absolute value"
+  args: [value]
+  platforms: {oracle: ABS, snowflake: ABS, databricks: ABS, bigquery: ABS,
+              redshift: ABS, synapse: ABS, sqlserver: ABS, postgres: ABS,
+              teradata: ABS, ansi: ABS, informatica: ABS}
+
+NUM_CEIL:
+  category: numeric
+  description: "Smallest integer >= value"
+  args: [value]
+  platforms:
+    oracle: "CEIL"
+    snowflake: "CEIL"
+    databricks: "CEIL"
+    bigquery: "CEIL"
+    redshift: "CEIL"
+    synapse: "CEILING"
+    sqlserver: "CEILING"
+    postgres: "CEIL"
+    teradata: "CEILING"
+    ansi: "CEIL"
+    informatica: "CEIL"
+
+NUM_FLOOR:
+  category: numeric
+  description: "Largest integer <= value"
+  args: [value]
+  platforms: {oracle: FLOOR, snowflake: FLOOR, databricks: FLOOR,
+              bigquery: FLOOR, redshift: FLOOR, synapse: FLOOR,
+              sqlserver: FLOOR, postgres: FLOOR, teradata: FLOOR,
+              ansi: FLOOR, informatica: FLOOR}
+
+NUM_MOD:
+  category: numeric
+  description: "Remainder of integer division"
+  args: [dividend, divisor]
+  platforms:
+    oracle: "MOD"
+    snowflake: "MOD"
+    databricks: "{0} % {1}"
+    bigquery: "MOD"
+    redshift: "MOD"
+    synapse: "{0} % {1}"
+    sqlserver: "{0} % {1}"
+    postgres: "MOD"
+    teradata: "{0} MOD {1}"
+    ansi: "MOD"
+    informatica: "MOD"
+
+NUM_POWER:
+  category: numeric
+  description: "Base raised to an exponent"
+  args: [base, exponent]
+  platforms: {oracle: POWER, snowflake: POWER, databricks: POWER,
+              bigquery: POWER, redshift: POWER, synapse: POWER,
+              sqlserver: POWER, postgres: POWER, teradata: "{0} ** {1}",
+              ansi: POWER, informatica: POWER}
+
+NUM_RANDOM:
+  category: numeric
+  description: "Pseudo-random value"
+  args: []
+  platforms:
+    oracle: "DBMS_RANDOM.VALUE"
+    snowflake: "RANDOM()"
+    databricks: "RAND()"
+    bigquery: "RAND()"
+    redshift: "RANDOM()"
+    synapse: "RAND()"
+    sqlserver: "RAND()"
+    postgres: "RANDOM()"
+    teradata: "RANDOM(0, 999999999)"
+    ansi: "RANDOM()"
+    informatica:
+      unsupported: true
+      workaround: "Use a sequence or source-side random"
+
+# ---------------------------------------------------------------------------
+# CONVERSION FUNCTIONS
+# ---------------------------------------------------------------------------
+TYPE_CAST:
+  category: conversion
+  description: "Convert a value to a type (error on failure)"
+  args: [value, type]
+  platforms:
+    oracle: "CAST({0} AS {1})"
+    snowflake: "CAST({0} AS {1})"
+    databricks: "CAST({0} AS {1})"
+    bigquery: "CAST({0} AS {1})"
+    redshift: "CAST({0} AS {1})"
+    synapse: "CAST({0} AS {1})"
+    sqlserver: "CAST({0} AS {1})"
+    postgres: "CAST({0} AS {1})"
+    teradata: "CAST({0} AS {1})"
+    ansi: "CAST({0} AS {1})"
+    informatica: "TO_CHAR/TO_DECIMAL/TO_DATE by target type"
+
+TYPE_SAFE_CAST:
+  category: conversion
+  description: "Convert to a type, NULL on failure (never errors)"
+  args: [value, type]
+  platforms:
+    oracle:
+      unsupported: true
+      workaround: "CAST({0} AS {1} DEFAULT NULL ON CONVERSION ERROR) (12.2+)"
+    snowflake: "TRY_CAST({0} AS {1})"
+    databricks: "TRY_CAST({0} AS {1})"
+    bigquery: "SAFE_CAST({0} AS {1})"
+    redshift:
+      unsupported: true
+      workaround: "CASE WHEN can_cast THEN CAST(...) END or COPY error handling"
+    synapse: "TRY_CAST({0} AS {1})"
+    sqlserver: "TRY_CAST({0} AS {1})"
+    postgres:
+      unsupported: true
+      workaround: "Custom function with EXCEPTION block"
+    teradata: "TRYCAST({0} AS {1})"
+    ansi: "TRY_CAST({0} AS {1})"
+    informatica:
+      unsupported: true
+      workaround: "IS_NUMBER/IS_DATE guard + conversion"
+
+TO_NUMBER_CONVERSION:
+  category: conversion
+  description: "Parse a string into a number"
+  args: [value]
+  platforms:
+    oracle: "TO_NUMBER"
+    snowflake: "TO_NUMBER"
+    databricks: "CAST({0} AS DECIMAL(38,6))"
+    bigquery: "CAST({0} AS NUMERIC)"
+    redshift: "CAST({0} AS DECIMAL(38,6))"
+    synapse: "CAST({0} AS DECIMAL(38,6))"
+    sqlserver: "CAST({0} AS DECIMAL(38,6))"
+    postgres: "CAST({0} AS NUMERIC)"
+    teradata: "TO_NUMBER"
+    ansi: "CAST({0} AS NUMERIC)"
+    informatica: "TO_DECIMAL({0})"
+
+# ---------------------------------------------------------------------------
+# JSON FUNCTIONS
+# ---------------------------------------------------------------------------
+JSON_EXTRACT_VALUE:
+  category: json
+  description: "Extract a scalar from JSON as text by path"
+  args: [json, path]
+  platforms:
+    oracle: "JSON_VALUE({0}, {1})"
+    snowflake: "GET_PATH(PARSE_JSON({0}), {1})::VARCHAR"
+    databricks: "GET_JSON_OBJECT({0}, {1})"
+    bigquery: "JSON_VALUE({0}, {1})"
+    redshift: "JSON_EXTRACT_PATH_TEXT({0}, {1})"
+    synapse: "JSON_VALUE({0}, {1})"
+    sqlserver: "JSON_VALUE({0}, {1})"
+    postgres: "{0}::jsonb #>> {1}"
+    teradata:
+      unsupported: true
+      workaround: "JSON_TABLE or JSONExtractValue method"
+    ansi: "JSON_VALUE({0}, {1})"
+    informatica:
+      unsupported: true
+      workaround: "Hierarchy parser / Java transformation"
+
+JSON_EXTRACT_OBJECT:
+  category: json
+  description: "Extract a JSON object/array by path (stays JSON)"
+  args: [json, path]
+  platforms:
+    oracle: "JSON_QUERY({0}, {1})"
+    snowflake: "GET_PATH(PARSE_JSON({0}), {1})"
+    databricks: "GET_JSON_OBJECT({0}, {1})"
+    bigquery: "JSON_QUERY({0}, {1})"
+    redshift: "JSON_EXTRACT_PATH_TEXT({0}, {1})"
+    synapse: "JSON_QUERY({0}, {1})"
+    sqlserver: "JSON_QUERY({0}, {1})"
+    postgres: "{0}::jsonb #> {1}"
+    teradata:
+      unsupported: true
+      workaround: "JSON_TABLE"
+    ansi: "JSON_QUERY({0}, {1})"
+    informatica:
+      unsupported: true
+      workaround: "Hierarchy parser"
+
+JSON_PARSE_TEXT:
+  category: json
+  description: "Parse a JSON string into a native JSON value"
+  args: [value]
+  platforms:
+    oracle: "JSON({0})"
+    snowflake: "PARSE_JSON"
+    databricks: "FROM_JSON({0}, schema)"
+    bigquery: "PARSE_JSON"
+    redshift: "JSON_PARSE"
+    synapse:
+      unsupported: true
+      workaround: "Store as NVARCHAR; query with JSON_VALUE/OPENJSON"
+    sqlserver:
+      unsupported: true
+      workaround: "Store as NVARCHAR; query with JSON_VALUE/OPENJSON"
+    postgres: "{0}::jsonb"
+    teradata: "NEW JSON({0})"
+    ansi: "JSON({0})"
+    informatica:
+      unsupported: true
+      workaround: "Hierarchy parser"
+
+# ---------------------------------------------------------------------------
+# ARRAY FUNCTIONS
+# ---------------------------------------------------------------------------
+ARRAY_BUILD:
+  category: array
+  description: "Construct an array from values"
+  args: [values...]
+  platforms:
+    oracle:
+      unsupported: true
+      workaround: "Nested table / VARRAY types"
+    snowflake: "ARRAY_CONSTRUCT"
+    databricks: "ARRAY"
+    bigquery: "[{0}]"
+    redshift: "ARRAY({0})"
+    synapse:
+      unsupported: true
+      workaround: "No array type — normalize into rows"
+    sqlserver:
+      unsupported: true
+      workaround: "No array type — normalize into rows"
+    postgres: "ARRAY[{0}]"
+    teradata:
+      unsupported: true
+      workaround: "Use ARRAY type (rarely enabled) or normalize"
+    ansi: "ARRAY[{0}]"
+    informatica:
+      unsupported: true
+      workaround: "Normalizer transformation"
+
+ARRAY_LENGTH_OF:
+  category: array
+  description: "Number of elements in an array"
+  args: [array]
+  platforms:
+    oracle:
+      unsupported: true
+      workaround: "CARDINALITY on collection types"
+    snowflake: "ARRAY_SIZE"
+    databricks: "SIZE"
+    bigquery: "ARRAY_LENGTH"
+    redshift: "GET_ARRAY_LENGTH"
+    synapse:
+      unsupported: true
+      workaround: "No array type"
+    sqlserver:
+      unsupported: true
+      workaround: "No array type"
+    postgres: "ARRAY_LENGTH({0}, 1)"
+    teradata:
+      unsupported: true
+      workaround: "CARDINALITY"
+    ansi: "CARDINALITY({0})"
+    informatica:
+      unsupported: true
+      workaround: "Normalizer + aggregator count"
+
+ARRAY_FLATTEN_ROWS:
+  category: array
+  description: "Explode an array into one row per element"
+  args: [array]
+  platforms:
+    oracle:
+      unsupported: true
+      workaround: "TABLE(collection) join"
+    snowflake: "LATERAL FLATTEN(INPUT => {0})"
+    databricks: "EXPLODE({0})"
+    bigquery: "UNNEST({0})"
+    redshift:
+      unsupported: true
+      workaround: "Recursive CTE or staged normalization"
+    synapse:
+      unsupported: true
+      workaround: "No array type"
+    sqlserver:
+      unsupported: true
+      workaround: "OPENJSON for JSON arrays"
+    postgres: "UNNEST({0})"
+    teradata:
+      unsupported: true
+      workaround: "STRTOK_SPLIT_TO_TABLE for delimited strings"
+    ansi: "UNNEST({0})"
+    informatica:
+      unsupported: true
+      workaround: "Normalizer transformation"
+
+ARRAY_AGGREGATE:
+  category: array
+  description: "Aggregate values from rows into an array"
+  args: [value]
+  platforms:
+    oracle: "COLLECT"
+    snowflake: "ARRAY_AGG"
+    databricks: "COLLECT_LIST"
+    bigquery: "ARRAY_AGG"
+    redshift: "ARRAY_AGG"
+    synapse:
+      unsupported: true
+      workaround: "STRING_AGG then split downstream"
+    sqlserver:
+      unsupported: true
+      workaround: "STRING_AGG or JSON_QUERY aggregation"
+    postgres: "ARRAY_AGG"
+    teradata:
+      unsupported: true
+      workaround: "XMLAGG / TD_ARRAY_AGG where enabled"
+    ansi: "ARRAY_AGG"
+    informatica:
+      unsupported: true
+      workaround: "Denormalizer/aggregator pattern"
+
+# ---------------------------------------------------------------------------
+# REGEX FUNCTIONS
+# ---------------------------------------------------------------------------
+REGEX_MATCH:
+  category: regex
+  description: "Boolean: does the value match the pattern"
+  args: [value, pattern]
+  platforms:
+    oracle: "REGEXP_LIKE({0}, {1})"
+    snowflake: "REGEXP_LIKE({0}, {1})"
+    databricks: "{0} RLIKE {1}"
+    bigquery: "REGEXP_CONTAINS({0}, {1})"
+    redshift: "{0} ~ {1}"
+    synapse:
+      unsupported: true
+      workaround: "LIKE approximations or CLR function"
+    sqlserver:
+      unsupported: true
+      workaround: "LIKE approximations or CLR function"
+    postgres: "{0} ~ {1}"
+    teradata: "REGEXP_SIMILAR({0}, {1}) = 1"
+    ansi: "REGEXP_LIKE({0}, {1})"
+    informatica: "REG_MATCH({0}, {1})"
+
+REGEX_REPLACE_ALL:
+  category: regex
+  description: "Replace every match of a pattern"
+  args: [value, pattern, replacement]
+  platforms:
+    oracle: "REGEXP_REPLACE"
+    snowflake: "REGEXP_REPLACE"
+    databricks: "REGEXP_REPLACE"
+    bigquery: "REGEXP_REPLACE"
+    redshift: "REGEXP_REPLACE"
+    synapse:
+      unsupported: true
+      workaround: "Nested REPLACE or CLR function"
+    sqlserver:
+      unsupported: true
+      workaround: "Nested REPLACE or CLR function"
+    postgres: "REGEXP_REPLACE({0}, {1}, {2}, 'g')"
+    teradata: "REGEXP_REPLACE"
+    ansi: "REGEXP_REPLACE"
+    informatica: "REG_REPLACE({0}, {1}, {2})"
+
+REGEX_EXTRACT_GROUP:
+  category: regex
+  description: "Extract the first match (or group) of a pattern"
+  args: [value, pattern]
+  platforms:
+    oracle: "REGEXP_SUBSTR"
+    snowflake: "REGEXP_SUBSTR"
+    databricks: "REGEXP_EXTRACT"
+    bigquery: "REGEXP_EXTRACT"
+    redshift: "REGEXP_SUBSTR"
+    synapse:
+      unsupported: true
+      workaround: "SUBSTRING+PATINDEX approximations"
+    sqlserver:
+      unsupported: true
+      workaround: "SUBSTRING+PATINDEX approximations"
+    postgres: "SUBSTRING({0} FROM {1})"
+    teradata: "REGEXP_SUBSTR"
+    ansi: "REGEXP_SUBSTR"
+    informatica: "REG_EXTRACT({0}, {1})"
+
+# ---------------------------------------------------------------------------
+# WINDOW FUNCTIONS
+# ---------------------------------------------------------------------------
+WIN_ROW_NUMBER:
+  category: window
+  description: "Sequential row number within a partition"
+  args: []
+  platforms: {oracle: ROW_NUMBER, snowflake: ROW_NUMBER,
+              databricks: ROW_NUMBER, bigquery: ROW_NUMBER,
+              redshift: ROW_NUMBER, synapse: ROW_NUMBER,
+              sqlserver: ROW_NUMBER, postgres: ROW_NUMBER,
+              teradata: ROW_NUMBER, ansi: ROW_NUMBER,
+              informatica: "unsupported-in-expressions; use Rank tx or variable ports"}
+
+WIN_RANK:
+  category: window
+  description: "Rank with gaps"
+  args: []
+  platforms: {oracle: RANK, snowflake: RANK, databricks: RANK,
+              bigquery: RANK, redshift: RANK, synapse: RANK,
+              sqlserver: RANK, postgres: RANK, teradata: RANK, ansi: RANK,
+              informatica: "Rank transformation"}
+
+WIN_DENSE_RANK:
+  category: window
+  description: "Rank without gaps"
+  args: []
+  platforms: {oracle: DENSE_RANK, snowflake: DENSE_RANK,
+              databricks: DENSE_RANK, bigquery: DENSE_RANK,
+              redshift: DENSE_RANK, synapse: DENSE_RANK,
+              sqlserver: DENSE_RANK, postgres: DENSE_RANK,
+              teradata: DENSE_RANK, ansi: DENSE_RANK,
+              informatica: "Rank transformation (dense)"}
+
+WIN_LAG:
+  category: window
+  description: "Value from a previous row in the partition"
+  args: [value, offset]
+  platforms: {oracle: LAG, snowflake: LAG, databricks: LAG, bigquery: LAG,
+              redshift: LAG, synapse: LAG, sqlserver: LAG, postgres: LAG,
+              teradata: LAG, ansi: LAG,
+              informatica: "variable-port pattern (prev-row state)"}
+
+WIN_LEAD:
+  category: window
+  description: "Value from a following row in the partition"
+  args: [value, offset]
+  platforms: {oracle: LEAD, snowflake: LEAD, databricks: LEAD,
+              bigquery: LEAD, redshift: LEAD, synapse: LEAD,
+              sqlserver: LEAD, postgres: LEAD, teradata: LEAD, ansi: LEAD,
+              informatica: "requires sorter + variable-port lookahead"}
+
+WIN_NTILE:
+  category: window
+  description: "Bucket rows into N groups"
+  args: [buckets]
+  platforms: {oracle: NTILE, snowflake: NTILE, databricks: NTILE,
+              bigquery: NTILE, redshift: NTILE, synapse: NTILE,
+              sqlserver: NTILE, postgres: NTILE, teradata:
+              {unsupported: true, workaround: "QUANTILE({0}, ...)"},
+              ansi: NTILE,
+              informatica: "Rank tx + bucket expression"}
+
+# ---------------------------------------------------------------------------
+# HASH FUNCTIONS
+# ---------------------------------------------------------------------------
+HASH_MD5:
+  category: hash
+  description: "MD5 hex digest"
+  args: [value]
+  platforms:
+    oracle: "STANDARD_HASH({0}, 'MD5')"
+    snowflake: "MD5"
+    databricks: "MD5"
+    bigquery: "TO_HEX(MD5({0}))"
+    redshift: "MD5"
+    synapse: "CONVERT(VARCHAR(32), HASHBYTES('MD5', {0}), 2)"
+    sqlserver: "CONVERT(VARCHAR(32), HASHBYTES('MD5', {0}), 2)"
+    postgres: "MD5"
+    teradata:
+      unsupported: true
+      workaround: "HASHROW (non-MD5) or UDF"
+    ansi: "MD5"
+    informatica: "MD5"
+
+HASH_SHA256:
+  category: hash
+  description: "SHA-256 hex digest"
+  args: [value]
+  platforms:
+    oracle: "STANDARD_HASH({0}, 'SHA256')"
+    snowflake: "SHA2({0}, 256)"
+    databricks: "SHA2({0}, 256)"
+    bigquery: "TO_HEX(SHA256({0}))"
+    redshift: "SHA2({0}, 256)"
+    synapse: "CONVERT(VARCHAR(64), HASHBYTES('SHA2_256', {0}), 2)"
+    sqlserver: "CONVERT(VARCHAR(64), HASHBYTES('SHA2_256', {0}), 2)"
+    postgres: "ENCODE(SHA256({0}::bytea), 'hex')"
+    teradata:
+      unsupported: true
+      workaround: "UDF"
+    ansi: "SHA2({0}, 256)"
+    informatica:
+      unsupported: true
+      workaround: "Java transformation or CRC32/MD5"
+
+HASH_DISTRIBUTION:
+  category: hash
+  description: "Fast non-cryptographic hash (bucketing/distribution)"
+  args: [value]
+  platforms:
+    oracle: "ORA_HASH"
+    snowflake: "HASH"
+    databricks: "HASH"
+    bigquery: "FARM_FINGERPRINT"
+    redshift: "FNV_HASH"
+    synapse: "CHECKSUM"
+    sqlserver: "CHECKSUM"
+    postgres: "HASHTEXT"
+    teradata: "HASHROW"
+    ansi: "HASH"
+    informatica: "CRC32"
+
+# ---------------------------------------------------------------------------
+# AGGREGATE FUNCTIONS
+# ---------------------------------------------------------------------------
+AGG_COUNT_DISTINCT:
+  category: aggregate
+  description: "Count of distinct values"
+  args: [value]
+  platforms:
+    oracle: "COUNT(DISTINCT {0})"
+    snowflake: "COUNT(DISTINCT {0})"
+    databricks: "COUNT(DISTINCT {0})"
+    bigquery: "COUNT(DISTINCT {0})"
+    redshift: "COUNT(DISTINCT {0})"
+    synapse: "COUNT(DISTINCT {0})"
+    sqlserver: "COUNT(DISTINCT {0})"
+    postgres: "COUNT(DISTINCT {0})"
+    teradata: "COUNT(DISTINCT {0})"
+    ansi: "COUNT(DISTINCT {0})"
+    informatica: "aggregator with distinct input"
+
+AGG_MEDIAN:
+  category: aggregate
+  description: "Median value"
+  args: [value]
+  platforms:
+    oracle: "MEDIAN"
+    snowflake: "MEDIAN"
+    databricks: "MEDIAN"
+    bigquery: "PERCENTILE_CONT({0}, 0.5) OVER ()"
+    redshift: "MEDIAN"
+    synapse: "PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY {0}) OVER ()"
+    sqlserver: "PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY {0}) OVER ()"
+    postgres: "PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY {0})"
+    teradata: "MEDIAN"
+    ansi: "MEDIAN"
+    informatica: "MEDIAN"
+
+AGG_STRING_JOIN:
+  category: aggregate
+  description: "Concatenate values from rows with a delimiter"
+  args: [value, delimiter]
+  platforms:
+    oracle: "LISTAGG({0}, {1})"
+    snowflake: "LISTAGG({0}, {1})"
+    databricks: "ARRAY_JOIN(COLLECT_LIST({0}), {1})"
+    bigquery: "STRING_AGG({0}, {1})"
+    redshift: "LISTAGG({0}, {1})"
+    synapse: "STRING_AGG({0}, {1})"
+    sqlserver: "STRING_AGG({0}, {1})"
+    postgres: "STRING_AGG({0}, {1})"
+    teradata:
+      unsupported: true
+      workaround: "XMLAGG(...) trim pattern"
+    ansi: "LISTAGG({0}, {1})"
+    informatica:
+      unsupported: true
+      workaround: "Denormalizer/expression accumulation"

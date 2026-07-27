@@ -1,0 +1,4 @@
+{"StreamDescription": {"StreamName": "orders-firehose",
+  "Shards": [{"ShardId": "0"}, {"ShardId": "1"}, {"ShardId": "2"}, {"ShardId": "3"}],
+  "RetentionPeriodHours": 48,
+  "StreamModeDetails": {"StreamMode": "PROVISIONED"}}}

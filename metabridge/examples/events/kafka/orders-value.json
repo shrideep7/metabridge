@@ -1,0 +1,3 @@
+{"subject": "orders.v1-value", "version": 3, "schemaType": "AVRO",
+ "compatibility": "BACKWARD",
+ "schema": "{\"type\":\"record\",\"name\":\"Order\",\"fields\":[{\"name\":\"order_id\",\"type\":\"string\"},{\"name\":\"customer_id\",\"type\":\"string\"},{\"name\":\"amount\",\"type\":\"double\"},{\"name\":\"event_ts\",\"type\":\"long\"}]}"}

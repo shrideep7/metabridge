@@ -1,0 +1,206 @@
+<?xml version="1.0"?>
+<DTS:Executable xmlns:DTS="www.microsoft.com/SqlServer/Dts"
+                DTS:ObjectName="LoadSales"
+                DTS:ExecutableType="Microsoft.Package"
+                DTS:VersionBuild="12">
+  <DTS:ConnectionManagers>
+    <DTS:ConnectionManager DTS:refId="Package.ConnectionManagers[OLTP]"
+                           DTS:ObjectName="OLTP" DTS:CreationName="OLEDB">
+      <DTS:ObjectData>
+        <DTS:ConnectionManager DTS:ConnectionString="Data Source=sqlprod01;Initial Catalog=SalesOLTP;Provider=SQLNCLI11;Integrated Security=SSPI;"/>
+      </DTS:ObjectData>
+    </DTS:ConnectionManager>
+    <DTS:ConnectionManager DTS:refId="Package.ConnectionManagers[DW]"
+                           DTS:ObjectName="DW" DTS:CreationName="OLEDB">
+      <DTS:ObjectData>
+        <DTS:ConnectionManager DTS:ConnectionString="Data Source=sqldw01;Initial Catalog=SalesDW;Provider=SQLNCLI11;Integrated Security=SSPI;"/>
+      </DTS:ObjectData>
+    </DTS:ConnectionManager>
+  </DTS:ConnectionManagers>
+  <DTS:Variables>
+    <DTS:Variable DTS:Namespace="User" DTS:ObjectName="LoadDate"
+                  DTS:EvaluateAsExpression="True" DTS:Expression="GETDATE()">
+      <DTS:VariableValue DTS:DataType="7"/>
+    </DTS:Variable>
+    <DTS:Variable DTS:Namespace="User" DTS:ObjectName="Region">
+      <DTS:VariableValue DTS:DataType="8">EMEA</DTS:VariableValue>
+    </DTS:Variable>
+  </DTS:Variables>
+  <DTS:PackageParameters>
+    <DTS:PackageParameter DTS:ObjectName="BatchId">
+      <DTS:Property DTS:Name="ParameterValue">0</DTS:Property>
+    </DTS:PackageParameter>
+  </DTS:PackageParameters>
+  <DTS:EventHandlers>
+    <DTS:EventHandler DTS:EventName="OnError"/>
+  </DTS:EventHandlers>
+  <DTS:Executables>
+    <DTS:Executable DTS:refId="Package\TruncateStage"
+                    DTS:ObjectName="TruncateStage"
+                    DTS:ExecutableType="Microsoft.ExecuteSQLTask">
+      <DTS:ObjectData>
+        <SQLTask:SqlTaskData
+            xmlns:SQLTask="www.microsoft.com/sqlserver/dts/tasks/sqltask"
+            SQLTask:SqlStatementSource="TRUNCATE TABLE stg.sales"/>
+      </DTS:ObjectData>
+    </DTS:Executable>
+    <DTS:Executable DTS:refId="Package\LoadRegionSummary"
+                    DTS:ObjectName="LoadRegionSummary"
+                    DTS:ExecutableType="Microsoft.ExecuteSQLTask">
+      <DTS:ObjectData>
+        <SQLTask:SqlTaskData
+            xmlns:SQLTask="www.microsoft.com/sqlserver/dts/tasks/sqltask"
+            SQLTask:SqlStatementSource="INSERT INTO dw.region_summary (region, total_amount) SELECT region, SUM(amount) FROM stg.sales GROUP BY region"/>
+      </DTS:ObjectData>
+    </DTS:Executable>
+    <DTS:Executable DTS:refId="Package\DFT_LoadSales"
+                    DTS:ObjectName="DFT_LoadSales"
+                    DTS:ExecutableType="Microsoft.Pipeline">
+      <DTS:ObjectData>
+        <pipeline>
+          <components>
+            <component refId="Package\DFT_LoadSales\SrcOrders"
+                       componentClassID="Microsoft.OLEDBSource" name="SrcOrders">
+              <properties>
+                <property name="OpenRowset">[dbo].[orders]</property>
+              </properties>
+              <connections>
+                <connection connectionManagerID="Package.ConnectionManagers[OLTP]"/>
+              </connections>
+              <outputs>
+                <output refId="Package\DFT_LoadSales\SrcOrders.Outputs[Out]" name="Out">
+                  <outputColumns>
+                    <outputColumn name="order_id" dataType="i4"/>
+                    <outputColumn name="customer_id" dataType="i4"/>
+                    <outputColumn name="amount" dataType="numeric"/>
+                    <outputColumn name="status" dataType="wstr"/>
+                    <outputColumn name="order_date" dataType="dbTimeStamp"/>
+                  </outputColumns>
+                </output>
+                <output refId="Package\DFT_LoadSales\SrcOrders.Outputs[Err]" name="Error Output"/>
+              </outputs>
+            </component>
+            <component refId="Package\DFT_LoadSales\DerivedCols"
+                       componentClassID="Microsoft.DerivedColumn" name="DerivedCols">
+              <outputs>
+                <output refId="Package\DFT_LoadSales\DerivedCols.Outputs[Out]" name="Out">
+                  <outputColumns>
+                    <outputColumn name="net_amount" dataType="numeric">
+                      <properties>
+                        <property name="FriendlyExpression">amount * 0.9</property>
+                      </properties>
+                    </outputColumn>
+                    <outputColumn name="is_high_value" dataType="bool">
+                      <properties>
+                        <property name="FriendlyExpression">amount &gt; 1000 ? 1 : 0</property>
+                      </properties>
+                    </outputColumn>
+                  </outputColumns>
+                </output>
+              </outputs>
+            </component>
+            <component refId="Package\DFT_LoadSales\LkpCustomer"
+                       componentClassID="Microsoft.Lookup" name="LkpCustomer">
+              <properties>
+                <property name="SqlCommand">select customer_id, customer_name, segment from dbo.customers</property>
+              </properties>
+              <inputs>
+                <input name="In">
+                  <inputColumns>
+                    <inputColumn cachedName="customer_id" name="customer_id">
+                      <properties>
+                        <property name="JoinToReferenceColumn">customer_id</property>
+                      </properties>
+                    </inputColumn>
+                  </inputColumns>
+                </input>
+              </inputs>
+              <outputs>
+                <output refId="Package\DFT_LoadSales\LkpCustomer.Outputs[Match]" name="Lookup Match Output">
+                  <outputColumns>
+                    <outputColumn name="customer_name" dataType="wstr"/>
+                    <outputColumn name="segment" dataType="wstr"/>
+                  </outputColumns>
+                </output>
+              </outputs>
+            </component>
+            <component refId="Package\DFT_LoadSales\SplitActive"
+                       componentClassID="Microsoft.ConditionalSplit" name="SplitActive">
+              <outputs>
+                <output refId="Package\DFT_LoadSales\SplitActive.Outputs[Shipped]" name="Shipped">
+                  <properties>
+                    <property name="FriendlyExpression">status == "SHIPPED" &amp;&amp; !ISNULL(customer_id)</property>
+                  </properties>
+                </output>
+              </outputs>
+            </component>
+            <component refId="Package\DFT_LoadSales\AggSales"
+                       componentClassID="Microsoft.Aggregate" name="AggSales">
+              <outputs>
+                <output refId="Package\DFT_LoadSales\AggSales.Outputs[Out]" name="Out">
+                  <outputColumns>
+                    <outputColumn name="customer_id" dataType="i4">
+                      <properties>
+                        <property name="AggregationType">0</property>
+                      </properties>
+                    </outputColumn>
+                    <outputColumn name="segment" dataType="wstr">
+                      <properties>
+                        <property name="AggregationType">0</property>
+                      </properties>
+                    </outputColumn>
+                    <outputColumn name="net_amount" dataType="numeric">
+                      <properties>
+                        <property name="AggregationType">3</property>
+                      </properties>
+                    </outputColumn>
+                  </outputColumns>
+                </output>
+              </outputs>
+            </component>
+            <component refId="Package\DFT_LoadSales\DstFact"
+                       componentClassID="Microsoft.OLEDBDestination" name="DstFact">
+              <properties>
+                <property name="OpenRowset">[dw].[fact_sales]</property>
+              </properties>
+              <inputs>
+                <input name="In">
+                  <inputColumns>
+                    <inputColumn name="customer_id"/>
+                    <inputColumn name="segment"/>
+                    <inputColumn name="net_amount"/>
+                  </inputColumns>
+                </input>
+              </inputs>
+            </component>
+          </components>
+          <paths>
+            <path startId="Package\DFT_LoadSales\SrcOrders.Outputs[Out]"
+                  endId="Package\DFT_LoadSales\DerivedCols.Inputs[In]"/>
+            <path startId="Package\DFT_LoadSales\DerivedCols.Outputs[Out]"
+                  endId="Package\DFT_LoadSales\LkpCustomer.Inputs[In]"/>
+            <path startId="Package\DFT_LoadSales\LkpCustomer.Outputs[Match]"
+                  endId="Package\DFT_LoadSales\SplitActive.Inputs[In]"/>
+            <path startId="Package\DFT_LoadSales\SplitActive.Outputs[Shipped]"
+                  endId="Package\DFT_LoadSales\AggSales.Inputs[In]"/>
+            <path startId="Package\DFT_LoadSales\AggSales.Outputs[Out]"
+                  endId="Package\DFT_LoadSales\DstFact.Inputs[In]"/>
+          </paths>
+        </pipeline>
+      </DTS:ObjectData>
+    </DTS:Executable>
+    <DTS:Executable DTS:refId="Package\NotifyFailure"
+                    DTS:ObjectName="NotifyFailure"
+                    DTS:ExecutableType="Microsoft.SendMailTask">
+      <DTS:ObjectData/>
+    </DTS:Executable>
+  </DTS:Executables>
+  <DTS:PrecedenceConstraints>
+    <DTS:PrecedenceConstraint DTS:From="Package\TruncateStage"
+                              DTS:To="Package\DFT_LoadSales"/>
+    <DTS:PrecedenceConstraint DTS:From="Package\DFT_LoadSales"
+                              DTS:To="Package\LoadRegionSummary"/>
+    <DTS:PrecedenceConstraint DTS:From="Package\DFT_LoadSales"
+                              DTS:To="Package\NotifyFailure" DTS:Value="1"/>
+  </DTS:PrecedenceConstraints>
+</DTS:Executable>

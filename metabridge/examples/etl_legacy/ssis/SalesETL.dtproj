@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project xmlns="www.microsoft.com/SqlServer/SSIS">
+  <Packages>
+    <Package Name="LoadSales.dtsx"/>
+    <Package Name="MasterLoad.dtsx"/>
+  </Packages>
+</Project>

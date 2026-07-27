@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Calculation:scenario xmlns:Calculation="http://www.sap.com/ndb/BiModelCalculation.ecore"
+    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" id="CV_SALES_SUMMARY">
+  <descriptions defaultDescription="Sales summary by customer"/>
+  <dataSources>
+    <DataSource id="VBAK_DS"><columnObject columnObjectName="VBAK"/></DataSource>
+    <DataSource id="KNA1_DS"><columnObject columnObjectName="KNA1"/></DataSource>
+  </dataSources>
+  <calculationViews>
+    <calculationView xsi:type="Calculation:ProjectionView" id="PROJ_ORDERS">
+      <input node="#VBAK_DS"/>
+      <viewAttribute id="VBELN"/>
+      <viewAttribute id="KUNNR"/>
+      <viewAttribute id="NETWR"/>
+      <viewAttribute id="ERDAT"/>
+      <calculatedViewAttribute id="ORDER_YEAR">
+        <formula>substring(erdat, 1, 4)</formula>
+      </calculatedViewAttribute>
+      <filter>netwr &gt; 0</filter>
+    </calculationView>
+    <calculationView xsi:type="Calculation:JoinView" id="JOIN_CUST" joinType="leftOuter">
+      <input node="#PROJ_ORDERS"/>
+      <input node="#KNA1_DS"/>
+      <viewAttribute id="VBELN"/>
+      <viewAttribute id="KUNNR"/>
+      <viewAttribute id="NETWR"/>
+      <viewAttribute id="ORDER_YEAR"/>
+      <viewAttribute id="NAME1"/>
+      <joinAttribute name="KUNNR"/>
+    </calculationView>
+    <calculationView xsi:type="Calculation:AggregationView" id="AGG_SALES">
+      <input node="#JOIN_CUST"/>
+      <viewAttribute id="KUNNR"/>
+      <viewAttribute id="NAME1"/>
+      <viewAttribute id="ORDER_YEAR"/>
+    </calculationView>
+  </calculationViews>
+  <logicalModel id="AGG_SALES">
+    <attribute id="KUNNR"/>
+    <attribute id="NAME1"/>
+    <attribute id="ORDER_YEAR"/>
+    <measure id="NETWR" aggregationType="sum"/>
+  </logicalModel>
+</Calculation:scenario>

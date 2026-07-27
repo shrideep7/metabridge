@@ -1,0 +1,3 @@
+{"deviceId": "sensor-42",
+ "properties": {"desired": {"reportingInterval": 60},
+                "reported": {"temperature": 71.5, "humidity": 40, "firmware": "2.1.0"}}}

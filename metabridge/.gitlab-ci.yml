@@ -1,0 +1,26 @@
+# MetaBridge CI — install dependencies and run the automated test suite.
+# The suite is ~1,745 tests and completes in well under a minute.
+stages:
+  - test
+
+variables:
+  PIP_CACHE_DIR: "$CI_PROJECT_DIR/.cache/pip"
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+
+test:
+  stage: test
+  image: python:3.11-slim
+  cache:
+    key: "$CI_COMMIT_REF_SLUG"
+    paths:
+      - .cache/pip
+  before_script:
+    - python -V
+    - pip install --upgrade pip
+    - pip install -e ".[web,dtd,dev,commercial]"
+  script:
+    - python -m pytest -q
+  rules:
+    # run on merge requests and on branch pushes (incl. main)
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    - if: '$CI_COMMIT_BRANCH'

@@ -1,0 +1,41 @@
+{
+  "Comment": "Order processing state machine",
+  "StartAt": "ExtractOrders",
+  "States": {
+    "ExtractOrders": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::glue:startJobRun.sync",
+      "Parameters": {"JobName": "extract_orders"},
+      "Retry": [{"ErrorEquals": ["States.ALL"], "MaxAttempts": 3, "IntervalSeconds": 30, "BackoffRate": 2.0}],
+      "Catch": [{"ErrorEquals": ["States.ALL"], "Next": "NotifyFailure"}],
+      "TimeoutSeconds": 3600,
+      "Next": "CheckVolume"
+    },
+    "CheckVolume": {
+      "Type": "Choice",
+      "Choices": [
+        {"Variable": "$.rowCount", "NumericGreaterThan": 0, "Next": "TransformParallel"}
+      ],
+      "Default": "NothingToDo"
+    },
+    "TransformParallel": {
+      "Type": "Parallel",
+      "Branches": [
+        {"StartAt": "LoadOrders", "States": {"LoadOrders": {"Type": "Task", "Resource": "arn:aws:states:::glue:startJobRun.sync", "End": true}}},
+        {"StartAt": "LoadReturns", "States": {"LoadReturns": {"Type": "Task", "Resource": "arn:aws:states:::glue:startJobRun.sync", "End": true}}}
+      ],
+      "Next": "PerRegion"
+    },
+    "PerRegion": {
+      "Type": "Map",
+      "ItemsPath": "$.regions",
+      "MaxConcurrency": 4,
+      "Iterator": {"StartAt": "RefreshRegion", "States": {"RefreshRegion": {"Type": "Task", "Resource": "arn:aws:lambda:::function:refresh", "End": true}}},
+      "Next": "Done"
+    },
+    "NothingToDo": {"Type": "Pass", "Next": "Done"},
+    "NotifyFailure": {"Type": "Task", "Resource": "arn:aws:sns:us-east-1:1:oncall", "Next": "FailState"},
+    "FailState": {"Type": "Fail", "Error": "LoadFailed"},
+    "Done": {"Type": "Succeed"}
+  }
+}

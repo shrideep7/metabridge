@@ -1,0 +1,30 @@
+# MetaBridge estate descriptor — the facts no parser can see
+domains:
+  - name: Sales
+    owner: sales-data@metafordata.com
+    match: ["order*", "*sales*", "fct_*", "loadsales*"]
+  - name: Customer
+    owner: cdo@metafordata.com
+    match: ["customer*", "dim_customer*", "stg_customer*"]
+applications:
+  - name: OrderPortal
+    technology: java
+    owner: portal-team@metafordata.com
+    reads: ["fact_sales"]
+apis:
+  - name: orders-api
+    technology: rest
+    reads: ["orders.v1"]
+    serves: ["OrderPortal"]
+dashboards:
+  - name: SalesDashboard
+    tool: PowerBI
+    owner: bi@metafordata.com
+    reads: ["fact_sales", "region_summary"]
+data_products:
+  - name: Sales360
+    owner: sales-data@metafordata.com
+    includes: ["fact_sales", "region_summary"]
+owners:
+  - name: dataeng@metafordata.com
+    objects: ["loadsales_dft_loadsales"]

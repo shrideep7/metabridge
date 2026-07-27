@@ -1,0 +1,9 @@
+{"pipelineConfig": {"title": "web_events",
+  "stages": [
+    {"instanceName": "KafkaConsumer_01", "stageName": "com_streamsets_pipeline_stage_origin_kafka_KafkaDSource_1",
+     "inputLanes": [], "outputLanes": ["lane_raw"]},
+    {"instanceName": "FieldMasker_01", "stageName": "com_streamsets_pipeline_stage_processor_fieldmask_FieldMaskDProcessor_1",
+     "inputLanes": ["lane_raw"], "outputLanes": ["lane_masked"]},
+    {"instanceName": "SnowflakeTarget_01", "stageName": "com_streamsets_pipeline_stage_destination_snowflake_SnowflakeDTarget_1",
+     "inputLanes": ["lane_masked"], "outputLanes": []}
+  ]}}

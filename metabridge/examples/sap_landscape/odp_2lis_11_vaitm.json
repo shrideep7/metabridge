@@ -1,0 +1,16 @@
+{
+  "odp": {
+    "name": "2LIS_11_VAITM",
+    "context": "SAPI",
+    "source_object": "VBAP",
+    "delta_method": "ABR",
+    "description": "Sales order items",
+    "fields": [
+      {"name": "VBELN", "type": "CHAR", "key": true},
+      {"name": "POSNR", "type": "NUMC", "key": true},
+      {"name": "MATNR", "type": "CHAR"},
+      {"name": "NETWR", "type": "CURR"},
+      {"name": "KWMENG", "type": "QUAN"}
+    ]
+  }
+}

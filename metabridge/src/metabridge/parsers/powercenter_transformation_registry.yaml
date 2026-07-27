@@ -1,0 +1,790 @@
+# ============================================================================
+# MetaBridge AI PowerCenter Transformation Semantic Registry
+# ----------------------------------------------------------------------------
+# The single declared source of PowerCenter-transformation conversion
+# knowledge. Application code resolves transformations through
+# parsers.pc_registry.PCTransformationRegistry — transformation logic is
+# never scattered through source code.
+#
+# Per entry:
+#   powercenter_type        display name as PowerCenter calls it
+#   aliases                 TYPE strings seen in real POWERMART exports
+#   cir_type                canonical semantic classification
+#   automation_level        FULL | HIGH | PARTIAL | LOW | MANUAL
+#   dbt_strategy            how it lands in a dbt project
+#   databricks_strategy     how it lands on Databricks
+#   requires_manual_review  true when a human must sign off
+#   semantic_handler        dispatch id in the conversion engine
+#   row_semantics           passive | active | generator | boundary
+#   native_in_engine        true = the MetaBridge AI parser/generators convert
+#                           it today; false = registry-guided manual queue
+#   notes / workaround      honest migration guidance
+#
+# automation_level meaning:
+#   FULL     converts without assumptions
+#   HIGH     converts; documented assumptions (verify flagged items)
+#   PARTIAL  core converts; edge semantics need review
+#   LOW      skeleton/strategy generated; logic ported by hand
+#   MANUAL   no automated equivalent; workaround documented
+# ============================================================================
+
+SOURCE_QUALIFIER:
+  powercenter_type: "Source Qualifier"
+  aliases: ["Source Qualifier"]
+  cir_type: SOURCE
+  automation_level: FULL
+  dbt_strategy: staging_model
+  databricks_strategy: source_query
+  requires_manual_review: false
+  semantic_handler: handle_source_qualifier
+  row_semantics: passive
+  native_in_engine: true
+  notes: "SQL overrides carried through and re-validated; joins in the SQ become explicit joins."
+
+EXPRESSION:
+  powercenter_type: "Expression"
+  aliases: ["Expression"]
+  cir_type: EXPRESSION
+  automation_level: HIGH
+  dbt_strategy: select_expression
+  databricks_strategy: select_expression
+  requires_manual_review: false
+  semantic_handler: handle_expression
+  row_semantics: passive
+  native_in_engine: true
+  notes: "Port expressions translated via the semantic function registry; variable ports expanded transitively."
+
+FILTER:
+  powercenter_type: "Filter"
+  aliases: ["Filter"]
+  cir_type: FILTER
+  automation_level: FULL
+  dbt_strategy: where_clause
+  databricks_strategy: where_clause
+  requires_manual_review: false
+  semantic_handler: handle_filter
+  row_semantics: active
+  native_in_engine: true
+
+JOINER:
+  powercenter_type: "Joiner"
+  aliases: ["Joiner"]
+  cir_type: JOIN
+  automation_level: FULL
+  dbt_strategy: sql_join
+  databricks_strategy: sql_join
+  requires_manual_review: false
+  semantic_handler: handle_joiner
+  row_semantics: active
+  native_in_engine: true
+  notes: "Master/detail outer maps to LEFT/RIGHT; sorted-input hint is a performance detail, not semantics."
+
+LOOKUP:
+  powercenter_type: "Lookup"
+  aliases: ["Lookup Procedure"]
+  cir_type: LOOKUP
+  automation_level: HIGH
+  dbt_strategy: join_or_correlated_lookup
+  databricks_strategy: join_or_broadcast_join
+  requires_manual_review: false
+  semantic_handler: handle_lookup
+  row_semantics: passive
+  native_in_engine: true
+  notes: "Multi-match policy differs: lookup returns one row, a join may return several — conversions are flagged for verification."
+
+AGGREGATOR:
+  powercenter_type: "Aggregator"
+  aliases: ["Aggregator"]
+  cir_type: AGGREGATE
+  automation_level: FULL
+  dbt_strategy: group_by_model
+  databricks_strategy: group_by_query
+  requires_manual_review: false
+  semantic_handler: handle_aggregator
+  row_semantics: active
+  native_in_engine: true
+
+SORTER:
+  powercenter_type: "Sorter"
+  aliases: ["Sorter"]
+  cir_type: SORT
+  automation_level: FULL
+  dbt_strategy: order_by
+  databricks_strategy: order_by
+  requires_manual_review: false
+  semantic_handler: handle_sorter
+  row_semantics: passive
+  native_in_engine: true
+  notes: "DISTINCT option becomes SELECT DISTINCT (active row semantics in that case)."
+
+ROUTER:
+  powercenter_type: "Router"
+  aliases: ["Router"]
+  cir_type: ROUTER
+  automation_level: HIGH
+  dbt_strategy: case_split_models
+  databricks_strategy: case_split_queries
+  requires_manual_review: false
+  semantic_handler: handle_router
+  row_semantics: active
+  native_in_engine: true
+  notes: "Each output group becomes a filtered branch; DEFAULT group is the negation of all others."
+
+UNION:
+  powercenter_type: "Union"
+  aliases: ["Union Transformation"]
+  cir_type: UNION
+  automation_level: FULL
+  dbt_strategy: union_all
+  databricks_strategy: union_all
+  requires_manual_review: false
+  semantic_handler: handle_union
+  row_semantics: active
+  native_in_engine: true
+  notes: "PowerCenter Union is UNION ALL — never deduplicating."
+
+RANK:
+  powercenter_type: "Rank"
+  aliases: ["Rank"]
+  cir_type: RANK
+  automation_level: HIGH
+  dbt_strategy: window_row_number
+  databricks_strategy: window_row_number
+  requires_manual_review: false
+  semantic_handler: handle_rank
+  row_semantics: active
+  native_in_engine: true
+  notes: "Top/Bottom-N via ROW_NUMBER() OVER (...) filtered to N; RANKINDEX becomes the window value."
+
+SEQUENCE_GENERATOR:
+  powercenter_type: "Sequence Generator"
+  aliases: ["Sequence"]
+  cir_type: SEQUENCE
+  automation_level: HIGH
+  dbt_strategy: surrogate_row_number
+  databricks_strategy: identity_or_monotonic_id
+  requires_manual_review: false
+  semantic_handler: handle_sequence
+  row_semantics: generator
+  native_in_engine: true
+  notes: "Warehouse sequences restart differently and may have gaps; CURRVAL semantics do not exist — flagged when used."
+
+UPDATE_STRATEGY:
+  powercenter_type: "Update Strategy"
+  aliases: ["Update Strategy"]
+  cir_type: UPDATE_STRATEGY
+  automation_level: PARTIAL
+  dbt_strategy: incremental_merge
+  databricks_strategy: merge_into
+  requires_manual_review: true
+  semantic_handler: handle_update_strategy
+  row_semantics: active
+  native_in_engine: true
+  notes: "DD_INSERT/DD_UPDATE map to merge; DD_REJECT/data-driven expressions need per-row review."
+
+NORMALIZER:
+  powercenter_type: "Normalizer"
+  aliases: ["Normalizer"]
+  cir_type: UNPIVOT
+  automation_level: HIGH
+  dbt_strategy: union_all_unpivot
+  databricks_strategy: union_all_or_stack
+  requires_manual_review: true
+  semantic_handler: handle_normalizer
+  row_semantics: active
+  native_in_engine: true
+  notes: "OCCURS groups restructure into occurrence branches + UNION ALL; GCID carries the occurrence index, GK is stamped per input row before the split. STACK()/native UNPIVOT offered as compact alternatives. Multi-group and unresolved-instance normalizers stay manual."
+
+STORED_PROCEDURE:
+  powercenter_type: "Stored Procedure"
+  aliases: ["Stored Procedure"]
+  cir_type: PROCEDURE_CALL
+  automation_level: MANUAL
+  dbt_strategy: manual_or_macro
+  databricks_strategy: uc_function_or_notebook
+  requires_manual_review: true
+  semantic_handler: handle_stored_procedure
+  row_semantics: passive
+  native_in_engine: false
+  workaround: "Decompose the procedure body into set-based SQL, or port it to a UC function / notebook task; connected SPs feeding ports usually become joins to a computed relation."
+
+SQL_TRANSFORMATION:
+  powercenter_type: "SQL Transformation"
+  aliases: ["SQL Transformation"]
+  cir_type: DYNAMIC_SQL
+  automation_level: LOW
+  dbt_strategy: manual_sql_model
+  databricks_strategy: spark_sql_block
+  requires_manual_review: true
+  semantic_handler: handle_sql_transformation
+  row_semantics: active
+  native_in_engine: false
+  workaround: "Static query mode converts to a model; dynamic (script/per-row) mode needs redesign — per-row SQL has no set-based equivalent."
+
+TRANSACTION_CONTROL:
+  powercenter_type: "Transaction Control"
+  aliases: ["Transaction Control"]
+  cir_type: TRANSACTION_CONTROL
+  automation_level: MANUAL
+  dbt_strategy: not_applicable_statement_txn
+  databricks_strategy: delta_transaction_note
+  requires_manual_review: true
+  semantic_handler: handle_transaction_control
+  row_semantics: passive
+  native_in_engine: false
+  workaround: "Warehouse statements are atomic; commit-point logic usually disappears. If it partitioned loads, replicate with batched runs."
+
+XML_SOURCE_QUALIFIER:
+  powercenter_type: "XML Source Qualifier"
+  aliases: ["XML Source Qualifier"]
+  cir_type: SOURCE
+  automation_level: PARTIAL
+  dbt_strategy: external_stage_parse
+  databricks_strategy: spark_xml_reader
+  requires_manual_review: true
+  semantic_handler: handle_xml_source
+  row_semantics: passive
+  native_in_engine: false
+  workaround: "Land the XML and parse with the target's native reader (spark-xml, Snowflake PARSE_XML); hierarchical groups flatten to models."
+
+XML_PARSER:
+  powercenter_type: "XML Parser"
+  aliases: ["XML Parser"]
+  cir_type: PARSE_XML
+  automation_level: LOW
+  dbt_strategy: manual_parse_functions
+  databricks_strategy: from_xml_expression
+  requires_manual_review: true
+  semantic_handler: handle_xml_parser
+  row_semantics: passive
+  native_in_engine: false
+
+XML_GENERATOR:
+  powercenter_type: "XML Generator"
+  aliases: ["XML Generator"]
+  cir_type: RENDER_XML
+  automation_level: LOW
+  dbt_strategy: manual_render_functions
+  databricks_strategy: to_xml_expression
+  requires_manual_review: true
+  semantic_handler: handle_xml_generator
+  row_semantics: passive
+  native_in_engine: false
+
+HTTP_TRANSFORMATION:
+  powercenter_type: "HTTP Transformation"
+  aliases: ["HTTP Transformation"]
+  cir_type: EXTERNAL_CALL
+  automation_level: MANUAL
+  dbt_strategy: manual_external_call
+  databricks_strategy: udf_or_rest_notebook
+  requires_manual_review: true
+  semantic_handler: handle_http
+  row_semantics: passive
+  native_in_engine: false
+  workaround: "Row-level HTTP calls do not belong in warehouse SQL — move to an ingestion/enrichment job (notebook, Lambda, connector)."
+
+JAVA_TRANSFORMATION:
+  powercenter_type: "Java Transformation"
+  aliases: ["Java Transformation"]
+  cir_type: CUSTOM_CODE
+  automation_level: LOW
+  dbt_strategy: manual_or_macro
+  databricks_strategy: pyspark_or_scala
+  requires_manual_review: true
+  semantic_handler: handle_java
+  row_semantics: active
+  native_in_engine: false
+  workaround: "Port the Java logic to PySpark/Scala on Databricks or a Python model/macro in dbt; the AI explainer summarizes intent from ports and expressions."
+
+EXTERNAL_PROCEDURE:
+  powercenter_type: "External Procedure"
+  aliases: ["External Procedure"]
+  cir_type: CUSTOM_CODE
+  automation_level: MANUAL
+  dbt_strategy: manual_reimplementation
+  databricks_strategy: manual_reimplementation
+  requires_manual_review: true
+  semantic_handler: handle_external_procedure
+  row_semantics: passive
+  native_in_engine: false
+  workaround: "COM/shared-library procedures must be reimplemented; source code is outside the repository export."
+
+CUSTOM_TRANSFORMATION:
+  powercenter_type: "Custom Transformation"
+  aliases: ["Custom Transformation"]
+  cir_type: CUSTOM_CODE
+  automation_level: MANUAL
+  dbt_strategy: manual_reimplementation
+  databricks_strategy: pyspark_udf
+  requires_manual_review: true
+  semantic_handler: handle_custom
+  row_semantics: active
+  native_in_engine: false
+
+MAPPLET:
+  powercenter_type: "Mapplet"
+  aliases: ["Mapplet"]
+  cir_type: SUBGRAPH
+  automation_level: HIGH
+  dbt_strategy: inlined_cte_chain
+  databricks_strategy: inlined_subquery
+  requires_manual_review: false
+  semantic_handler: handle_mapplet
+  row_semantics: boundary
+  native_in_engine: true
+  notes: "Inlined into the mapping graph with boundary rewiring; passive bypasses folded so generated SQL stays row-correct."
+
+INPUT_TRANSFORMATION:
+  powercenter_type: "Input Transformation"
+  aliases: ["Input Transformation", "Mapplet Input"]
+  cir_type: PASSTHROUGH
+  automation_level: FULL
+  dbt_strategy: passthrough
+  databricks_strategy: passthrough
+  requires_manual_review: false
+  semantic_handler: handle_passthrough
+  row_semantics: boundary
+  native_in_engine: true
+
+OUTPUT_TRANSFORMATION:
+  powercenter_type: "Output Transformation"
+  aliases: ["Output Transformation", "Mapplet Output"]
+  cir_type: PASSTHROUGH
+  automation_level: FULL
+  dbt_strategy: passthrough
+  databricks_strategy: passthrough
+  requires_manual_review: false
+  semantic_handler: handle_passthrough
+  row_semantics: boundary
+  native_in_engine: true
+
+DATA_MASKING:
+  powercenter_type: "Data Masking"
+  aliases: ["Data Masking"]
+  cir_type: MASKING
+  automation_level: PARTIAL
+  dbt_strategy: masking_macros
+  databricks_strategy: column_masks_or_functions
+  requires_manual_review: true
+  semantic_handler: handle_data_masking
+  row_semantics: passive
+  native_in_engine: false
+  workaround: "Re-express as target-native masking (Databricks column masks / Snowflake masking policies) — usually better governance than in-pipeline masking."
+
+ADDRESS_VALIDATOR:
+  powercenter_type: "Address Validator"
+  aliases: ["Address Validator"]
+  cir_type: DATA_QUALITY
+  automation_level: MANUAL
+  dbt_strategy: external_service
+  databricks_strategy: external_service
+  requires_manual_review: true
+  semantic_handler: handle_address_validator
+  row_semantics: passive
+  native_in_engine: false
+  workaround: "IDQ address validation is a licensed engine; replace with an address API (Loqate, Smarty, Google) via enrichment job."
+
+MATCH_TRANSFORMATION:
+  powercenter_type: "Match Transformation"
+  aliases: ["Match Transformation", "Match"]
+  cir_type: DATA_QUALITY
+  automation_level: MANUAL
+  dbt_strategy: manual_match_rules
+  databricks_strategy: ml_dedupe_or_join_rules
+  requires_manual_review: true
+  semantic_handler: handle_match
+  row_semantics: active
+  native_in_engine: false
+  workaround: "Fuzzy matching re-platforms to explicit rules (edit distance, phonetic) or an entity-resolution library (Splink/Zingg)."
+
+MERGE_TRANSFORMATION:
+  powercenter_type: "Merge Transformation"
+  aliases: ["Merge Transformation", "Merge"]
+  cir_type: MERGE_RECORDS
+  automation_level: PARTIAL
+  dbt_strategy: coalesce_priority_select
+  databricks_strategy: coalesce_priority_select
+  requires_manual_review: true
+  semantic_handler: handle_merge_records
+  row_semantics: passive
+  native_in_engine: false
+  workaround: "Best-record assembly becomes COALESCE over prioritized branches; verify priority order."
+
+LABELER:
+  powercenter_type: "Labeler"
+  aliases: ["Labeler"]
+  cir_type: DATA_QUALITY
+  automation_level: MANUAL
+  dbt_strategy: regex_macros
+  databricks_strategy: regex_functions
+  requires_manual_review: true
+  semantic_handler: handle_labeler
+  row_semantics: passive
+  native_in_engine: false
+
+PARSER_TRANSFORMATION:
+  powercenter_type: "Parser Transformation"
+  aliases: ["Parser Transformation", "Parser"]
+  cir_type: DATA_QUALITY
+  automation_level: PARTIAL
+  dbt_strategy: split_regex_expressions
+  databricks_strategy: split_regex_functions
+  requires_manual_review: true
+  semantic_handler: handle_parser
+  row_semantics: passive
+  native_in_engine: false
+  workaround: "Token/pattern parsing maps to regexp_extract / split; reference-table parsing needs the reference data migrated first."
+
+CLASSIFIER:
+  powercenter_type: "Classifier"
+  aliases: ["Classifier"]
+  cir_type: DATA_QUALITY
+  automation_level: MANUAL
+  dbt_strategy: manual_classification
+  databricks_strategy: ml_model_or_ai_functions
+  requires_manual_review: true
+  semantic_handler: handle_classifier
+  row_semantics: passive
+  native_in_engine: false
+
+ASSOCIATION:
+  powercenter_type: "Association"
+  aliases: ["Association"]
+  cir_type: DATA_QUALITY
+  automation_level: MANUAL
+  dbt_strategy: manual_grouping
+  databricks_strategy: graph_or_window_grouping
+  requires_manual_review: true
+  semantic_handler: handle_association
+  row_semantics: active
+  native_in_engine: false
+
+CONSOLIDATION:
+  powercenter_type: "Consolidation"
+  aliases: ["Consolidation"]
+  cir_type: DATA_QUALITY
+  automation_level: MANUAL
+  dbt_strategy: group_by_best_record
+  databricks_strategy: group_by_best_record
+  requires_manual_review: true
+  semantic_handler: handle_consolidation
+  row_semantics: active
+  native_in_engine: false
+
+KEY_GENERATOR:
+  powercenter_type: "Key Generator"
+  aliases: ["Key Generator"]
+  cir_type: KEY_GENERATION
+  automation_level: HIGH
+  dbt_strategy: surrogate_key_macro
+  databricks_strategy: hash_or_identity
+  requires_manual_review: false
+  semantic_handler: handle_key_generator
+  row_semantics: passive
+  native_in_engine: false
+  notes: "dbt_utils.generate_surrogate_key / md5-hash of the natural key is the durable replacement for sequence keys."
+
+EXCEPTION_TRANSFORMATION:
+  powercenter_type: "Exception"
+  aliases: ["Exception", "Bad Record Exception"]
+  cir_type: DATA_QUALITY
+  automation_level: PARTIAL
+  dbt_strategy: error_table_split
+  databricks_strategy: error_table_split
+  requires_manual_review: true
+  semantic_handler: handle_exception
+  row_semantics: active
+  native_in_engine: false
+  workaround: "Good/bad record routing becomes two models sharing the quality predicate; wire the bad-record model to alerting."
+
+DECISION:
+  powercenter_type: "Decision"
+  aliases: ["Decision"]
+  cir_type: EXPRESSION
+  automation_level: HIGH
+  dbt_strategy: case_expression
+  databricks_strategy: case_expression
+  requires_manual_review: false
+  semantic_handler: handle_decision
+  row_semantics: passive
+  native_in_engine: false
+  notes: "IDQ decision trees are nested CASE expressions."
+
+WINDOW_TRANSFORMATION:
+  powercenter_type: "Window"
+  aliases: ["Window"]
+  cir_type: WINDOW
+  automation_level: HIGH
+  dbt_strategy: window_functions
+  databricks_strategy: window_functions
+  requires_manual_review: false
+  semantic_handler: handle_window
+  row_semantics: passive
+  native_in_engine: false
+  notes: "Native SQL window functions are a superset of PowerCenter's windowing."
+
+WEB_SERVICES_CONSUMER:
+  powercenter_type: "Web Services Consumer"
+  aliases: ["Web Service Consumer", "Web Services Consumer"]
+  cir_type: EXTERNAL_CALL
+  automation_level: MANUAL
+  dbt_strategy: manual_external_call
+  databricks_strategy: udf_or_rest_notebook
+  requires_manual_review: true
+  semantic_handler: handle_ws_consumer
+  row_semantics: passive
+  native_in_engine: false
+
+WEB_SERVICES_HUB:
+  powercenter_type: "Web Services Hub"
+  aliases: ["Web Services Hub"]
+  cir_type: EXTERNAL_CALL
+  automation_level: MANUAL
+  dbt_strategy: not_applicable_inbound_api
+  databricks_strategy: model_serving_or_api_note
+  requires_manual_review: true
+  semantic_handler: handle_ws_hub
+  row_semantics: passive
+  native_in_engine: false
+  workaround: "Inbound web-service endpoints are an application concern, not a batch pipeline — re-home on an API layer."
+
+JMS_SOURCE:
+  powercenter_type: "JMS Source"
+  aliases: ["JMS Source Qualifier", "JMS Source"]
+  cir_type: STREAM_SOURCE
+  automation_level: MANUAL
+  dbt_strategy: not_applicable_streaming
+  databricks_strategy: structured_streaming_kafka
+  requires_manual_review: true
+  semantic_handler: handle_jms_source
+  row_semantics: passive
+  native_in_engine: false
+  workaround: "Queue consumption re-platforms to streaming ingestion (Kafka/Event Hubs -> Auto Loader / Structured Streaming)."
+
+JMS_TARGET:
+  powercenter_type: "JMS Target"
+  aliases: ["JMS Target"]
+  cir_type: STREAM_TARGET
+  automation_level: MANUAL
+  dbt_strategy: not_applicable_streaming
+  databricks_strategy: structured_streaming_sink
+  requires_manual_review: true
+  semantic_handler: handle_jms_target
+  row_semantics: passive
+  native_in_engine: false
+
+SAP_SOURCE:
+  powercenter_type: "SAP Source"
+  aliases: ["Application Source Qualifier", "SAP Source"]
+  cir_type: SOURCE
+  automation_level: PARTIAL
+  dbt_strategy: source_via_extractor
+  databricks_strategy: sap_connector_ingestion
+  requires_manual_review: true
+  semantic_handler: handle_sap_source
+  row_semantics: passive
+  native_in_engine: false
+  workaround: "Re-platform extraction to a connector (ODP/OData/SLT); 'metabridge scaffold' generates the ingestion layer, then downstream logic converts normally."
+
+SAP_TARGET:
+  powercenter_type: "SAP Target"
+  aliases: ["SAP Target"]
+  cir_type: TARGET
+  automation_level: MANUAL
+  dbt_strategy: manual_writeback
+  databricks_strategy: manual_writeback
+  requires_manual_review: true
+  semantic_handler: handle_sap_target
+  row_semantics: passive
+  native_in_engine: false
+  workaround: "Writing INTO SAP (IDoc/BAPI) is reverse integration — keep on an integration platform, not the warehouse."
+
+SALESFORCE_SOURCE:
+  powercenter_type: "Salesforce Source"
+  aliases: ["Salesforce Source"]
+  cir_type: SOURCE
+  automation_level: PARTIAL
+  dbt_strategy: source_via_connector
+  databricks_strategy: salesforce_connector_ingestion
+  requires_manual_review: true
+  semantic_handler: handle_salesforce_source
+  row_semantics: passive
+  native_in_engine: false
+
+SALESFORCE_TARGET:
+  powercenter_type: "Salesforce Target"
+  aliases: ["Salesforce Target"]
+  cir_type: TARGET
+  automation_level: MANUAL
+  dbt_strategy: reverse_etl_tool
+  databricks_strategy: reverse_etl_tool
+  requires_manual_review: true
+  semantic_handler: handle_salesforce_target
+  row_semantics: passive
+  native_in_engine: false
+  workaround: "Warehouse-to-Salesforce is reverse ETL (Census/Hightouch or the platform's own sync)."
+
+MQ_SOURCE:
+  powercenter_type: "MQ Source"
+  aliases: ["MQ Source Qualifier", "MQ Source"]
+  cir_type: STREAM_SOURCE
+  automation_level: MANUAL
+  dbt_strategy: not_applicable_streaming
+  databricks_strategy: structured_streaming_source
+  requires_manual_review: true
+  semantic_handler: handle_mq_source
+  row_semantics: passive
+  native_in_engine: false
+
+MQ_TARGET:
+  powercenter_type: "MQ Target"
+  aliases: ["MQ Target"]
+  cir_type: STREAM_TARGET
+  automation_level: MANUAL
+  dbt_strategy: not_applicable_streaming
+  databricks_strategy: structured_streaming_sink
+  requires_manual_review: true
+  semantic_handler: handle_mq_target
+  row_semantics: passive
+  native_in_engine: false
+
+FLAT_FILE_SOURCE:
+  powercenter_type: "Flat File Source"
+  aliases: ["Flat File Source"]
+  cir_type: SOURCE
+  automation_level: HIGH
+  dbt_strategy: seed_or_external_stage
+  databricks_strategy: autoloader_or_copy_into
+  requires_manual_review: false
+  semantic_handler: handle_flat_file_source
+  row_semantics: passive
+  native_in_engine: true
+  notes: "Small static files become dbt seeds; recurring feeds become external stages / Auto Loader."
+
+FLAT_FILE_TARGET:
+  powercenter_type: "Flat File Target"
+  aliases: ["Flat File Target"]
+  cir_type: TARGET
+  automation_level: HIGH
+  dbt_strategy: export_post_hook
+  databricks_strategy: write_csv_or_volume
+  requires_manual_review: false
+  semantic_handler: handle_flat_file_target
+  row_semantics: passive
+  native_in_engine: true
+
+DYNAMIC_LOOKUP:
+  powercenter_type: "Dynamic Lookup"
+  aliases: ["Dynamic Lookup"]
+  cir_type: LOOKUP
+  automation_level: PARTIAL
+  dbt_strategy: incremental_merge_dedupe
+  databricks_strategy: merge_dedupe_window
+  requires_manual_review: true
+  semantic_handler: handle_dynamic_lookup
+  row_semantics: passive
+  native_in_engine: false
+  workaround: "Dynamic cache = intra-run dedup/upsert semantics; re-express with ROW_NUMBER dedup before a MERGE, and verify first-vs-last-row policy."
+
+UNCONNECTED_LOOKUP:
+  powercenter_type: "Unconnected Lookup"
+  aliases: ["Unconnected Lookup"]
+  cir_type: LOOKUP
+  automation_level: PARTIAL
+  dbt_strategy: scalar_subquery_or_join
+  databricks_strategy: scalar_subquery
+  requires_manual_review: true
+  semantic_handler: handle_unconnected_lookup
+  row_semantics: passive
+  native_in_engine: false
+  workaround: ":LKP calls inside expressions become scalar subqueries or pre-joined columns; conditional call sites need CASE guards."
+
+CONNECTED_LOOKUP:
+  powercenter_type: "Connected Lookup"
+  aliases: ["Connected Lookup"]
+  cir_type: LOOKUP
+  automation_level: HIGH
+  dbt_strategy: sql_join
+  databricks_strategy: sql_join
+  requires_manual_review: false
+  semantic_handler: handle_lookup
+  row_semantics: passive
+  native_in_engine: true
+
+REUSABLE_TRANSFORMATION:
+  powercenter_type: "Reusable Transformation"
+  aliases: ["Reusable Transformation"]
+  cir_type: REUSE
+  automation_level: FULL
+  dbt_strategy: resolved_at_parse
+  databricks_strategy: resolved_at_parse
+  requires_manual_review: false
+  semantic_handler: handle_reusable
+  row_semantics: passive
+  native_in_engine: true
+  notes: "Folder-level definitions are resolved into each mapping at parse time."
+
+REUSABLE_SEQUENCE:
+  powercenter_type: "Reusable Sequence"
+  aliases: ["Reusable Sequence"]
+  cir_type: SEQUENCE
+  automation_level: HIGH
+  dbt_strategy: surrogate_row_number
+  databricks_strategy: identity_or_monotonic_id
+  requires_manual_review: false
+  semantic_handler: handle_sequence
+  row_semantics: generator
+  native_in_engine: true
+  workaround: "A shared sequence across mappings needs ONE surrogate source (identity column or key table) — per-model row_number would collide."
+
+STORED_PROCEDURE_PRELOAD:
+  powercenter_type: "Stored Procedure Pre-load"
+  aliases: ["Stored Procedure Pre-load"]
+  cir_type: PROCEDURE_CALL
+  automation_level: MANUAL
+  dbt_strategy: pre_hook
+  databricks_strategy: pre_notebook_task
+  requires_manual_review: true
+  semantic_handler: handle_sp_preload
+  row_semantics: passive
+  native_in_engine: false
+  workaround: "Pre-load SPs map naturally to dbt pre-hooks or an upstream orchestration task — the body still needs porting."
+
+STORED_PROCEDURE_POSTLOAD:
+  powercenter_type: "Stored Procedure Post-load"
+  aliases: ["Stored Procedure Post-load"]
+  cir_type: PROCEDURE_CALL
+  automation_level: MANUAL
+  dbt_strategy: post_hook
+  databricks_strategy: post_notebook_task
+  requires_manual_review: true
+  semantic_handler: handle_sp_postload
+  row_semantics: passive
+  native_in_engine: false
+
+SCD_TYPE_1:
+  powercenter_type: "Slowly Changing Dimension Type 1"
+  aliases: ["SCD Type 1"]
+  cir_type: SCD1
+  automation_level: HIGH
+  dbt_strategy: incremental_merge
+  databricks_strategy: merge_into
+  requires_manual_review: false
+  semantic_handler: handle_scd1
+  row_semantics: active
+  native_in_engine: true
+  notes: "Overwrite-in-place is a plain MERGE on the business key."
+
+SCD_TYPE_2:
+  powercenter_type: "Slowly Changing Dimension Type 2"
+  aliases: ["SCD Type 2"]
+  cir_type: SCD2
+  automation_level: HIGH
+  dbt_strategy: dbt_snapshot
+  databricks_strategy: delta_merge_scd2
+  requires_manual_review: true
+  semantic_handler: handle_scd2
+  row_semantics: active
+  native_in_engine: true
+  notes: "Effective-date/current-flag history maps to dbt snapshots or a two-statement Delta MERGE; validate history behavior on real data (reconciliation suite covers it)."

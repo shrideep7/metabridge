@@ -1,0 +1,63 @@
+{
+  "name": "pl_daily_sales",
+  "properties": {
+    "description": "Copy sales from OLTP, transform, publish",
+    "parameters": {"loadDate": {"type": "string", "defaultValue": "@utcnow()"}},
+    "variables": {"rowCount": {"type": "Integer", "defaultValue": 0}},
+    "activities": [
+      {
+        "name": "Copy Sales",
+        "type": "Copy",
+        "policy": {"retry": 3, "retryIntervalInSeconds": 60, "timeout": "0.02:00:00"},
+        "typeProperties": {"source": {"type": "SqlSource"}, "sink": {"type": "ParquetSink"}}
+      },
+      {
+        "name": "Check Rows",
+        "type": "Lookup",
+        "dependsOn": [{"activity": "Copy Sales", "dependencyConditions": ["Succeeded"]}],
+        "policy": {"retry": 0, "timeout": "0.00:10:00"},
+        "typeProperties": {"query": "SELECT COUNT(*) c FROM stg.sales"}
+      },
+      {
+        "name": "If Has Rows",
+        "type": "IfCondition",
+        "dependsOn": [{"activity": "Check Rows", "dependencyConditions": ["Succeeded"]}],
+        "typeProperties": {
+          "expression": {"value": "@greater(activity('Check Rows').output.firstRow.c, 0)"},
+          "ifTrueActivities": [
+            {"name": "Transform Sales", "type": "ExecuteDataFlow",
+             "policy": {"retry": 1, "timeout": "0.01:00:00"},
+             "typeProperties": {"dataFlow": {"referenceName": "df_sales"}}},
+            {"name": "Publish", "type": "ExecutePipeline",
+             "dependsOn": [{"activity": "Transform Sales", "dependencyConditions": ["Succeeded"]}],
+             "typeProperties": {"pipeline": {"referenceName": "pl_publish_marts"}}}
+          ],
+          "ifFalseActivities": [
+            {"name": "Alert No Data", "type": "Web",
+             "typeProperties": {"url": "https://hooks.example.com/alert", "method": "POST"}}
+          ]
+        }
+      },
+      {
+        "name": "ForEach Region",
+        "type": "ForEach",
+        "dependsOn": [{"activity": "If Has Rows", "dependencyConditions": ["Completed"]}],
+        "typeProperties": {
+          "items": {"value": "@pipeline().parameters.regions"},
+          "isSequential": false, "batchCount": 4,
+          "activities": [
+            {"name": "Refresh Region", "type": "SqlServerStoredProcedure",
+             "typeProperties": {"storedProcedureName": "dw.refresh_region"},
+             "linkedServiceName": {"referenceName": "ls_sqldw"}}
+          ]
+        }
+      },
+      {
+        "name": "On Fail Notify",
+        "type": "Web",
+        "dependsOn": [{"activity": "Copy Sales", "dependencyConditions": ["Failed"]}],
+        "typeProperties": {"url": "https://hooks.example.com/fail", "method": "POST"}
+      }
+    ]
+  }
+}

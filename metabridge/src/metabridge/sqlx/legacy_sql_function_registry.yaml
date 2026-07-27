@@ -1,0 +1,793 @@
+# ==========================================================================
+# MetaBridge AI Legacy SQL Function Registry (Phase 3, section 10)
+# --------------------------------------------------------------------------
+# Semantic function mappings for Oracle / Teradata / SQL Server sources.
+# target_implementations are BAKED FROM THE LIVE ENGINE (normalize +
+# transpile) — tests pin every automatic entry, so this file cannot
+# drift. MANUAL_REVIEW means the engine refuses to guess.
+# ==========================================================================
+
+functions:
+- source_dialect: oracle
+  source_function: NVL
+  category: 'NULL'
+  semantic_function: null_coalesce
+  example: SELECT NVL(a, 0) FROM t
+  risk_level: low
+  notes: ''
+  null_semantics_warning: ''
+  timezone_warning: ''
+  target_implementations:
+    snowflake: COALESCE(a, 0)
+    databricks: COALESCE(a, 0)
+    bigquery: COALESCE(a, 0)
+    redshift: COALESCE(a, 0)
+    synapse_fabric: COALESCE(a, 0)
+    postgres: COALESCE(a, 0)
+  automation: automatic
+- source_dialect: oracle
+  source_function: NVL2
+  category: 'NULL'
+  semantic_function: null_branch
+  example: SELECT NVL2(a, 'y', 'n') FROM t
+  risk_level: low
+  notes: NVL2(x, not_null_value, null_value) -> CASE
+  null_semantics_warning: ''
+  timezone_warning: ''
+  target_implementations:
+    snowflake: NVL2(a, 'y', 'n')
+    databricks: NVL2(a, 'y', 'n')
+    bigquery: CASE WHEN NOT a IS NULL THEN 'y' ELSE 'n' END
+    redshift: NVL2(a, 'y', 'n')
+    synapse_fabric: CASE WHEN NOT a IS NULL THEN 'y' ELSE 'n' END
+    postgres: CASE WHEN NOT a IS NULL THEN 'y' ELSE 'n' END
+  automation: automatic
+- source_dialect: oracle
+  source_function: DECODE
+  category: CONDITIONAL
+  semantic_function: multi_branch_choice
+  example: SELECT DECODE(x, 1, 'a', 'b') FROM t
+  risk_level: low
+  notes: ''
+  null_semantics_warning: "DECODE treats NULL = NULL as a MATCH; CASE does not \u2014\
+    \ the engine emits IS NULL branches for NULL search values"
+  timezone_warning: ''
+  target_implementations:
+    snowflake: CASE WHEN x = 1 THEN 'a' ELSE 'b' END
+    databricks: CASE WHEN x = 1 THEN 'a' ELSE 'b' END
+    bigquery: CASE WHEN x = 1 THEN 'a' ELSE 'b' END
+    redshift: CASE WHEN x = 1 THEN 'a' ELSE 'b' END
+    synapse_fabric: CASE WHEN x = 1 THEN 'a' ELSE 'b' END
+    postgres: CASE WHEN x = 1 THEN 'a' ELSE 'b' END
+  automation: automatic
+- source_dialect: oracle
+  source_function: TO_DATE
+  category: CONVERSION
+  semantic_function: string_to_date
+  example: SELECT TO_DATE(s, 'YYYY-MM-DD') FROM t
+  risk_level: medium
+  notes: format-model differences per target; invalid strings raise on some targets
+    and return NULL on others
+  null_semantics_warning: ''
+  timezone_warning: ''
+  target_implementations:
+    snowflake: DATE(s, 'yyyy-mm-DD')
+    databricks: TO_DATE(s)
+    bigquery: PARSE_DATE('%F', s)
+    redshift: TO_DATE(s, 'YYYY-MM-DD')
+    synapse_fabric: STR_TO_DATE(s, '%Y-%m-%d')
+    postgres: TO_DATE(s, 'YYYY-MM-DD')
+  automation: automatic
+- source_dialect: oracle
+  source_function: TO_CHAR
+  category: CONVERSION
+  semantic_function: value_to_string
+  example: SELECT TO_CHAR(d, 'YYYY-MM-DD') FROM t
+  risk_level: medium
+  notes: ''
+  null_semantics_warning: ''
+  timezone_warning: ''
+  target_implementations:
+    snowflake: CAST(d AS VARCHAR)
+    databricks: CAST(d AS STRING)
+    bigquery: CAST(d AS STRING)
+    redshift: CAST(d AS VARCHAR(MAX))
+    synapse_fabric: CAST(d AS VARCHAR(MAX))
+    postgres: CAST(d AS TEXT)
+  automation: automatic
+- source_dialect: oracle
+  source_function: TO_NUMBER
+  category: CONVERSION
+  semantic_function: string_to_number
+  example: SELECT TO_NUMBER(s) FROM t
+  risk_level: low
+  notes: ''
+  null_semantics_warning: ''
+  timezone_warning: ''
+  target_implementations:
+    snowflake: CAST(s AS DOUBLE)
+    databricks: CAST(s AS DOUBLE)
+    bigquery: CAST(s AS FLOAT64)
+    redshift: CAST(s AS DOUBLE PRECISION)
+    synapse_fabric: CAST(s AS FLOAT)
+    postgres: CAST(s AS DOUBLE PRECISION)
+  automation: automatic
+- source_dialect: oracle
+  source_function: TRUNC
+  category: DATE_TIME
+  semantic_function: date_trunc
+  example: SELECT TRUNC(d, 'MM') FROM t
+  risk_level: low
+  notes: numeric TRUNC(x, n) also supported; date form -> DATE_TRUNC
+  null_semantics_warning: ''
+  timezone_warning: ''
+  target_implementations:
+    snowflake: DATE_TRUNC('MM', d)
+    databricks: TRUNC(d, 'MM')
+    bigquery: DATE_TRUNC(d, MM)
+    redshift: DATE_TRUNC('MM', d)
+    synapse_fabric: DATE_TRUNC('MM', d)
+    postgres: DATE_TRUNC('MM', d)
+  automation: automatic
+- source_dialect: oracle
+  source_function: ADD_MONTHS
+  category: DATE_TIME
+  semantic_function: add_months
+  example: SELECT ADD_MONTHS(d, 3) FROM t
+  risk_level: low
+  notes: "end-of-month behavior: Oracle pins to last day when the source day exceeds\
+    \ the target month \u2014 verify per target"
+  null_semantics_warning: ''
+  timezone_warning: ''
+  target_implementations:
+    snowflake: ADD_MONTHS(d, 3)
+    databricks: ADD_MONTHS(d, 3)
+    bigquery: ADD_MONTHS(d, 3)
+    redshift: ADD_MONTHS(d, 3)
+    synapse_fabric: ADD_MONTHS(d, 3)
+    postgres: ADD_MONTHS(d, 3)
+  automation: automatic
+- source_dialect: oracle
+  source_function: MONTHS_BETWEEN
+  category: DATE_TIME
+  semantic_function: months_between
+  example: SELECT MONTHS_BETWEEN(d1, d2) FROM t
+  risk_level: medium
+  notes: "fractional result based on 31-day months \u2014 targets differ"
+  null_semantics_warning: ''
+  timezone_warning: ''
+  target_implementations:
+    snowflake: MONTHS_BETWEEN(d1, d2)
+    databricks: MONTHS_BETWEEN(d1, d2)
+    bigquery: MONTHS_BETWEEN(d1, d2)
+    redshift: MONTHS_BETWEEN(d1, d2)
+    synapse_fabric: MONTHS_BETWEEN(d1, d2)
+    postgres: MONTHS_BETWEEN(d1, d2)
+  automation: automatic
+- source_dialect: oracle
+  source_function: LAST_DAY
+  category: DATE_TIME
+  semantic_function: last_day_of_month
+  example: SELECT LAST_DAY(d) FROM t
+  risk_level: low
+  notes: ''
+  null_semantics_warning: ''
+  timezone_warning: ''
+  target_implementations:
+    snowflake: LAST_DAY(d)
+    databricks: LAST_DAY(d)
+    bigquery: LAST_DAY(d)
+    redshift: LAST_DAY(d)
+    synapse_fabric: EOMONTH(d)
+    postgres: CAST(DATE_TRUNC('MONTH', d) + INTERVAL '1 MONTH' - INTERVAL '1 DAY'
+      AS DATE)
+  automation: automatic
+- source_dialect: oracle
+  source_function: SYSDATE
+  category: DATE_TIME
+  semantic_function: current_timestamp
+  example: SELECT SYSDATE FROM t
+  risk_level: low
+  notes: ''
+  null_semantics_warning: ''
+  timezone_warning: SYSDATE is the DB server clock; CURRENT_TIMESTAMP is session-zoned
+    on most targets
+  target_implementations:
+    snowflake: CURRENT_TIMESTAMP()
+    databricks: CURRENT_TIMESTAMP()
+    bigquery: CURRENT_TIMESTAMP()
+    redshift: GETDATE()
+    synapse_fabric: GETDATE()
+    postgres: CURRENT_TIMESTAMP
+  automation: automatic
+- source_dialect: oracle
+  source_function: LISTAGG
+  category: AGGREGATE
+  semantic_function: string_aggregation
+  example: SELECT LISTAGG(name, ',') WITHIN GROUP (ORDER BY name) FROM t
+  risk_level: medium
+  notes: 'targets: LISTAGG (Snowflake/Redshift), STRING_AGG (BigQuery/Postgres/SQLServer),
+    ARRAY_JOIN+COLLECT_LIST (Databricks)'
+  null_semantics_warning: ''
+  timezone_warning: ''
+  target_implementations:
+    snowflake: LISTAGG(name) WITHIN GROUP (ORDER BY name, ',' NULLS FIRST)
+    databricks: LISTAGG(name, ',') WITHIN GROUP (ORDER BY name NULLS LAST, ',')
+    bigquery: STRING_AGG(name ORDER BY name, ',')
+    redshift: LISTAGG(name ORDER BY name, ',' NULLS FIRST)
+    synapse_fabric: STRING_AGG(name, ',') WITHIN GROUP (ORDER BY CASE WHEN name
+      IS NULL THEN 1 ELSE 0 END, name, ',')
+    postgres: STRING_AGG(name, ',' ORDER BY name, ',' NULLS FIRST)
+  automation: automatic
+- source_dialect: oracle
+  source_function: REGEXP_REPLACE
+  category: REGEX
+  semantic_function: regex_replace
+  example: SELECT REGEXP_REPLACE(s, '[0-9]+', 'N') FROM t
+  risk_level: medium
+  notes: regex flavor differences (POSIX vs RE2 on BigQuery)
+  null_semantics_warning: ''
+  timezone_warning: ''
+  target_implementations:
+    snowflake: REGEXP_REPLACE(s, '[0-9]+', 'N')
+    databricks: REGEXP_REPLACE(s, '[0-9]+', 'N')
+    bigquery: REGEXP_REPLACE(s, '[0-9]+', 'N')
+    redshift: REGEXP_REPLACE(s, '[0-9]+', 'N', 'g')
+    synapse_fabric: REGEXP_REPLACE(s, '[0-9]+', 'N')
+    postgres: REGEXP_REPLACE(s, '[0-9]+', 'N', 'g')
+  automation: automatic
+- source_dialect: oracle
+  source_function: SUBSTR
+  category: STRING
+  semantic_function: substring
+  example: SELECT SUBSTR(s, 2, 3) FROM t
+  risk_level: low
+  notes: ''
+  null_semantics_warning: "Oracle treats '' as NULL \u2014 string semantics differ\
+    \ everywhere else"
+  timezone_warning: ''
+  target_implementations:
+    snowflake: SUBSTRING(s, 2, 3)
+    databricks: SUBSTRING(s, 2, 3)
+    bigquery: SUBSTRING(s, 2, 3)
+    redshift: SUBSTRING(s FROM 2 FOR 3)
+    synapse_fabric: SUBSTRING(s, 2, 3)
+    postgres: SUBSTRING(s FROM 2 FOR 3)
+  automation: automatic
+- source_dialect: oracle
+  source_function: INSTR
+  category: STRING
+  semantic_function: position
+  example: SELECT INSTR(s, 'a') FROM t
+  risk_level: low
+  notes: ''
+  null_semantics_warning: ''
+  timezone_warning: ''
+  target_implementations:
+    snowflake: CHARINDEX('a', s)
+    databricks: LOCATE('a', s)
+    bigquery: INSTR(s, 'a')
+    redshift: POSITION('a' IN s)
+    synapse_fabric: CHARINDEX('a', s)
+    postgres: POSITION('a' IN s)
+  automation: automatic
+- source_dialect: oracle
+  source_function: STANDARD_HASH
+  category: HASH
+  semantic_function: hash
+  example: SELECT STANDARD_HASH(s, 'MD5') FROM t
+  risk_level: medium
+  notes: -> MD5/SHA per target; hex casing differs
+  null_semantics_warning: ''
+  timezone_warning: ''
+  target_implementations:
+    snowflake: STANDARD_HASH(s, 'MD5')
+    databricks: STANDARD_HASH(s, 'MD5')
+    bigquery: STANDARD_HASH(s, 'MD5')
+    redshift: STANDARD_HASH(s, 'MD5')
+    synapse_fabric: STANDARD_HASH(s, 'MD5')
+    postgres: STANDARD_HASH(s, 'MD5')
+  automation: automatic
+- source_dialect: teradata
+  source_function: ZEROIFNULL
+  category: 'NULL'
+  semantic_function: null_to_zero
+  example: SELECT ZEROIFNULL(x) FROM t
+  risk_level: low
+  notes: ''
+  null_semantics_warning: ''
+  timezone_warning: ''
+  target_implementations:
+    snowflake: COALESCE(x, 0)
+    databricks: COALESCE(x, 0)
+    bigquery: COALESCE(x, 0)
+    redshift: COALESCE(x, 0)
+    synapse_fabric: COALESCE(x, 0)
+    postgres: COALESCE(x, 0)
+  automation: automatic
+- source_dialect: teradata
+  source_function: NULLIFZERO
+  category: 'NULL'
+  semantic_function: zero_to_null
+  example: SELECT NULLIFZERO(x) FROM t
+  risk_level: low
+  notes: ''
+  null_semantics_warning: ''
+  timezone_warning: ''
+  target_implementations:
+    snowflake: NULLIF(x, 0)
+    databricks: NULLIF(x, 0)
+    bigquery: NULLIF(x, 0)
+    redshift: NULLIF(x, 0)
+    synapse_fabric: NULLIF(x, 0)
+    postgres: NULLIF(x, 0)
+  automation: automatic
+- source_dialect: teradata
+  source_function: OREPLACE
+  category: STRING
+  semantic_function: replace
+  example: SELECT OREPLACE(s, 'a', 'b') FROM t
+  risk_level: low
+  notes: ''
+  null_semantics_warning: ''
+  timezone_warning: ''
+  target_implementations:
+    snowflake: REPLACE(s, 'a', 'b')
+    databricks: REPLACE(s, 'a', 'b')
+    bigquery: REPLACE(s, 'a', 'b')
+    redshift: REPLACE(s, 'a', 'b')
+    synapse_fabric: REPLACE(s, 'a', 'b')
+    postgres: REPLACE(s, 'a', 'b')
+  automation: automatic
+- source_dialect: teradata
+  source_function: OTRANSLATE
+  category: STRING
+  semantic_function: translate
+  example: SELECT OTRANSLATE(s, 'ab', 'xy') FROM t
+  risk_level: low
+  notes: ''
+  null_semantics_warning: ''
+  timezone_warning: ''
+  target_implementations:
+    snowflake: TRANSLATE(s, 'ab', 'xy')
+    databricks: TRANSLATE(s, 'ab', 'xy')
+    bigquery: TRANSLATE(s, 'ab', 'xy')
+    redshift: TRANSLATE(s, 'ab', 'xy')
+    synapse_fabric: TRANSLATE(s, 'ab', 'xy')
+    postgres: TRANSLATE(s, 'ab', 'xy')
+  automation: automatic
+- source_dialect: teradata
+  source_function: INDEX
+  category: STRING
+  semantic_function: position
+  example: SELECT INDEX(s, 'a') FROM t
+  risk_level: low
+  notes: ''
+  null_semantics_warning: ''
+  timezone_warning: ''
+  target_implementations:
+    snowflake: CHARINDEX('a', s)
+    databricks: LOCATE('a', s)
+    bigquery: INSTR(s, 'a')
+    redshift: POSITION('a' IN s)
+    synapse_fabric: CHARINDEX('a', s)
+    postgres: POSITION('a' IN s)
+  automation: automatic
+- source_dialect: teradata
+  source_function: SUBSTR
+  category: STRING
+  semantic_function: substring
+  example: SELECT SUBSTR(s, 2, 3) FROM t
+  risk_level: low
+  notes: ''
+  null_semantics_warning: ''
+  timezone_warning: ''
+  target_implementations:
+    snowflake: SUBSTRING(s, 2, 3)
+    databricks: SUBSTRING(s, 2, 3)
+    bigquery: SUBSTRING(s, 2, 3)
+    redshift: SUBSTRING(s FROM 2 FOR 3)
+    synapse_fabric: SUBSTRING(s, 2, 3)
+    postgres: SUBSTRING(s FROM 2 FOR 3)
+  automation: automatic
+- source_dialect: teradata
+  source_function: CAST
+  category: CONVERSION
+  semantic_function: cast
+  example: SELECT CAST(x AS INTEGER) FROM t
+  risk_level: low
+  notes: ''
+  null_semantics_warning: ''
+  timezone_warning: ''
+  target_implementations:
+    snowflake: CAST(x AS INT)
+    databricks: CAST(x AS INT)
+    bigquery: CAST(x AS INT64)
+    redshift: CAST(x AS INTEGER)
+    synapse_fabric: CAST(x AS INTEGER)
+    postgres: CAST(x AS INT)
+  automation: automatic
+- source_dialect: teradata
+  source_function: RANDOM
+  category: NUMERIC
+  semantic_function: random_int
+  example: SELECT RANDOM(1, 100) FROM t
+  risk_level: high
+  notes: "RANDOM(lo, hi) is an integer range \u2014 no direct portable equivalent;\
+    \ FLOOR(RAND()*(hi-lo+1))+lo pattern; non-deterministic either way"
+  null_semantics_warning: ''
+  timezone_warning: ''
+  target_implementations:
+    snowflake: (100 - 1) * RANDOM() + 1
+    databricks: (100 - 1) * RAND() + 1
+    bigquery: (100 - 1) * RAND() + 1
+    redshift: (100 - 1) * RANDOM() + 1
+    synapse_fabric: (100 - 1) * RAND() + 1
+    postgres: (100 - 1) * RANDOM() + 1
+  automation: automatic_with_review
+- source_dialect: teradata
+  source_function: CURRENT_DATE
+  category: DATE_TIME
+  semantic_function: current_date
+  example: SELECT CURRENT_DATE FROM t
+  risk_level: low
+  notes: ''
+  null_semantics_warning: ''
+  timezone_warning: Teradata session timezone vs target session timezone
+  target_implementations:
+    snowflake: CURRENT_DATE
+    databricks: CURRENT_DATE
+    bigquery: CURRENT_DATE
+    redshift: CURRENT_DATE
+    synapse_fabric: GETDATE()
+    postgres: CURRENT_DATE
+  automation: automatic
+- source_dialect: teradata
+  source_function: CURRENT_TIMESTAMP
+  category: DATE_TIME
+  semantic_function: current_timestamp
+  example: SELECT CURRENT_TIMESTAMP FROM t
+  risk_level: low
+  notes: ''
+  null_semantics_warning: ''
+  timezone_warning: Teradata WITH TIME ZONE default differs per target
+  target_implementations:
+    snowflake: CURRENT_TIMESTAMP()
+    databricks: CURRENT_TIMESTAMP()
+    bigquery: CURRENT_TIMESTAMP()
+    redshift: GETDATE()
+    synapse_fabric: GETDATE()
+    postgres: CURRENT_TIMESTAMP
+  automation: automatic
+- source_dialect: teradata
+  source_function: TRIM
+  category: STRING
+  semantic_function: trim
+  example: SELECT TRIM(s) FROM t
+  risk_level: low
+  notes: ''
+  null_semantics_warning: ''
+  timezone_warning: ''
+  target_implementations:
+    snowflake: TRIM(s)
+    databricks: TRIM(s)
+    bigquery: TRIM(s)
+    redshift: TRIM(s)
+    synapse_fabric: TRIM(s)
+    postgres: TRIM(s)
+  automation: automatic
+- source_dialect: teradata
+  source_function: POSITION
+  category: STRING
+  semantic_function: position
+  example: SELECT POSITION('a' IN s) FROM t
+  risk_level: low
+  notes: ''
+  null_semantics_warning: ''
+  timezone_warning: ''
+  target_implementations:
+    snowflake: CHARINDEX('a', s)
+    databricks: LOCATE('a', s)
+    bigquery: INSTR(s, 'a')
+    redshift: POSITION('a' IN s)
+    synapse_fabric: CHARINDEX('a', s)
+    postgres: POSITION('a' IN s)
+  automation: automatic
+- source_dialect: sqlserver
+  source_function: ISNULL
+  category: 'NULL'
+  semantic_function: null_coalesce
+  example: SELECT ISNULL(a, 0) FROM t
+  risk_level: low
+  notes: ''
+  null_semantics_warning: "ISNULL takes the DATATYPE of the first argument; COALESCE\
+    \ takes the highest-precedence type \u2014 watch silent truncation when arg1\
+    \ is shorter"
+  timezone_warning: ''
+  target_implementations:
+    snowflake: COALESCE(a, 0)
+    databricks: COALESCE(a, 0)
+    bigquery: COALESCE(a, 0)
+    redshift: COALESCE(a, 0)
+    synapse_fabric: COALESCE(a, 0)
+    postgres: COALESCE(a, 0)
+  automation: automatic
+- source_dialect: sqlserver
+  source_function: IIF
+  category: CONDITIONAL
+  semantic_function: conditional_choice
+  example: SELECT IIF(a > 1, 'y', 'n') FROM t
+  risk_level: low
+  notes: ''
+  null_semantics_warning: ''
+  timezone_warning: ''
+  target_implementations:
+    snowflake: CASE WHEN a > 1 THEN 'y' ELSE 'n' END
+    databricks: CASE WHEN a > 1 THEN 'y' ELSE 'n' END
+    bigquery: CASE WHEN a > 1 THEN 'y' ELSE 'n' END
+    redshift: CASE WHEN a > 1 THEN 'y' ELSE 'n' END
+    synapse_fabric: CASE WHEN a > 1 THEN 'y' ELSE 'n' END
+    postgres: CASE WHEN a > 1 THEN 'y' ELSE 'n' END
+  automation: automatic
+- source_dialect: sqlserver
+  source_function: CHOOSE
+  category: CONDITIONAL
+  semantic_function: positional_choice
+  example: SELECT CHOOSE(i, 'a', 'b') FROM t
+  risk_level: low
+  notes: ''
+  null_semantics_warning: ''
+  timezone_warning: ''
+  target_implementations:
+    snowflake: CHOOSE(i, 'a', 'b')
+    databricks: CHOOSE(i, 'a', 'b')
+    bigquery: CHOOSE(i, 'a', 'b')
+    redshift: CHOOSE(i, 'a', 'b')
+    synapse_fabric: CHOOSE(i, 'a', 'b')
+    postgres: CHOOSE(i, 'a', 'b')
+  automation: automatic
+- source_dialect: sqlserver
+  source_function: GETDATE
+  category: DATE_TIME
+  semantic_function: current_timestamp
+  example: SELECT GETDATE() FROM t
+  risk_level: low
+  notes: ''
+  null_semantics_warning: ''
+  timezone_warning: GETDATE is server-local; prefer GETUTCDATE semantics checks
+    when loads cross timezones
+  target_implementations:
+    snowflake: CURRENT_TIMESTAMP()
+    databricks: CURRENT_TIMESTAMP()
+    bigquery: CURRENT_TIMESTAMP()
+    redshift: GETDATE()
+    synapse_fabric: GETDATE()
+    postgres: CURRENT_TIMESTAMP
+  automation: automatic
+- source_dialect: sqlserver
+  source_function: DATEADD
+  category: DATE_TIME
+  semantic_function: date_add
+  example: SELECT DATEADD(day, 1, d) FROM t
+  risk_level: low
+  notes: ''
+  null_semantics_warning: ''
+  timezone_warning: ''
+  target_implementations:
+    snowflake: DATEADD(DAY, 1, d)
+    databricks: DATEADD(DAY, 1, d)
+    bigquery: DATE_ADD(d, INTERVAL 1 DAY)
+    redshift: DATEADD(DAY, 1, d)
+    synapse_fabric: DATEADD(DAY, 1, d)
+    postgres: d + INTERVAL '1 DAY'
+  automation: automatic
+- source_dialect: sqlserver
+  source_function: DATEDIFF
+  category: DATE_TIME
+  semantic_function: date_diff
+  example: SELECT DATEDIFF(day, d1, d2) FROM t
+  risk_level: medium
+  notes: "SQL Server counts BOUNDARY crossings, not elapsed time \u2014 DATEDIFF(year,'2024-12-31','2025-01-01')\
+    \ = 1; verify targets"
+  null_semantics_warning: ''
+  timezone_warning: ''
+  target_implementations:
+    snowflake: DATEDIFF(DAY, CAST(d1 AS TIMESTAMP), CAST(d2 AS TIMESTAMP))
+    databricks: DATEDIFF(DAY, CAST(d1 AS TIMESTAMP), CAST(d2 AS TIMESTAMP))
+    bigquery: DATE_DIFF(CAST(d2 AS DATETIME), CAST(d1 AS DATETIME), DAY)
+    redshift: DATEDIFF(DAY, CAST(d1 AS TIMESTAMP), CAST(d2 AS TIMESTAMP))
+    synapse_fabric: DATEDIFF(DAY, CAST(d1 AS DATETIME2), CAST(d2 AS DATETIME2))
+    postgres: CAST(EXTRACT(epoch FROM CAST(CAST(d2 AS TIMESTAMP) AS TIMESTAMP) -
+      CAST(CAST(d1 AS TIMESTAMP) AS TIMESTAMP)) / 86400 AS BIGINT)
+  automation: automatic
+- source_dialect: sqlserver
+  source_function: EOMONTH
+  category: DATE_TIME
+  semantic_function: last_day_of_month
+  example: SELECT EOMONTH(d) FROM t
+  risk_level: low
+  notes: ''
+  null_semantics_warning: ''
+  timezone_warning: ''
+  target_implementations:
+    snowflake: LAST_DAY(CAST(d AS DATE))
+    databricks: LAST_DAY(CAST(d AS DATE))
+    bigquery: LAST_DAY(CAST(d AS DATE))
+    redshift: LAST_DAY(CAST(d AS DATE))
+    synapse_fabric: EOMONTH(CAST(d AS DATE))
+    postgres: CAST(DATE_TRUNC('MONTH', CAST(d AS DATE)) + INTERVAL '1 MONTH' - INTERVAL
+      '1 DAY' AS DATE)
+  automation: automatic
+- source_dialect: sqlserver
+  source_function: FORMAT
+  category: CONVERSION
+  semantic_function: format_value
+  example: SELECT FORMAT(d, 'yyyy-MM-dd') FROM t
+  risk_level: high
+  notes: ".NET format strings have no portable equivalent \u2014 convert the format\
+    \ model per target or use TO_CHAR-style rendering"
+  null_semantics_warning: ''
+  timezone_warning: ''
+  target_implementations:
+    snowflake: TO_CHAR(d, 'yyyy-mm-DD')
+    databricks: DATE_FORMAT(d, 'yyyy-MM-dd')
+    bigquery: FORMAT_DATE('%F', d)
+    redshift: TO_CHAR(d, 'YYYY-MM-DD')
+    synapse_fabric: FORMAT(d, 'yyyy-MM-dd')
+    postgres: TO_CHAR(d, 'YYYY-MM-DD')
+  automation: automatic_with_review
+- source_dialect: sqlserver
+  source_function: CONVERT
+  category: CONVERSION
+  semantic_function: cast_with_style
+  example: SELECT CONVERT(VARCHAR(10), d, 120) FROM t
+  risk_level: medium
+  notes: style codes (e.g. 112) must map to explicit format strings
+  null_semantics_warning: ''
+  timezone_warning: ''
+  target_implementations:
+    snowflake: TRY_CAST(TO_CHAR(d, 'yyyy-mm-DD hh24:mi:ss') AS VARCHAR(10))
+    databricks: TRY_CAST(DATE_FORMAT(d, 'yyyy-MM-dd HH:mm:ss') AS VARCHAR(10))
+    bigquery: SAFE_CAST(FORMAT_DATE('%F %T', d) AS STRING(10))
+    redshift: TRY_CAST(TO_CHAR(d, 'YYYY-MM-DD HH24:MI:SS') AS VARCHAR(10))
+    synapse_fabric: TRY_CAST(FORMAT(d, 'yyyy-MM-dd HH:mm:ss') AS VARCHAR(10))
+    postgres: CAST(TO_CHAR(d, 'YYYY-MM-DD HH24:MI:SS') AS VARCHAR(10))
+  automation: automatic
+- source_dialect: sqlserver
+  source_function: TRY_CONVERT
+  category: CONVERSION
+  semantic_function: safe_cast
+  example: SELECT TRY_CONVERT(INT, s) FROM t
+  risk_level: low
+  notes: -> TRY_CAST (Snowflake/Databricks/tsql), SAFE_CAST (BigQuery)
+  null_semantics_warning: ''
+  timezone_warning: ''
+  target_implementations:
+    snowflake: CAST(s AS INT)
+    databricks: TRY_CAST(s AS INT)
+    bigquery: SAFE_CAST(s AS INT64)
+    redshift: TRY_CAST(s AS INTEGER)
+    synapse_fabric: TRY_CAST(s AS INTEGER)
+    postgres: CAST(s AS INT)
+  automation: automatic
+- source_dialect: sqlserver
+  source_function: TRY_CAST
+  category: CONVERSION
+  semantic_function: safe_cast
+  example: SELECT TRY_CAST(s AS INT) FROM t
+  risk_level: low
+  notes: ''
+  null_semantics_warning: ''
+  timezone_warning: ''
+  target_implementations:
+    snowflake: CAST(s AS INT)
+    databricks: TRY_CAST(s AS INT)
+    bigquery: SAFE_CAST(s AS INT64)
+    redshift: TRY_CAST(s AS INTEGER)
+    synapse_fabric: TRY_CAST(s AS INTEGER)
+    postgres: CAST(s AS INT)
+  automation: automatic
+- source_dialect: sqlserver
+  source_function: STRING_AGG
+  category: AGGREGATE
+  semantic_function: string_aggregation
+  example: SELECT STRING_AGG(name, ',') FROM t
+  risk_level: low
+  notes: ''
+  null_semantics_warning: ''
+  timezone_warning: ''
+  target_implementations:
+    snowflake: LISTAGG(name, ',')
+    databricks: LISTAGG(name, ',')
+    bigquery: STRING_AGG(name, ',')
+    redshift: LISTAGG(name, ',')
+    synapse_fabric: STRING_AGG(name, ',')
+    postgres: STRING_AGG(name, ',')
+  automation: automatic
+- source_dialect: sqlserver
+  source_function: CHARINDEX
+  category: STRING
+  semantic_function: position
+  example: SELECT CHARINDEX('a', s) FROM t
+  risk_level: low
+  notes: ''
+  null_semantics_warning: ''
+  timezone_warning: ''
+  target_implementations:
+    snowflake: CHARINDEX('a', s)
+    databricks: LOCATE('a', s)
+    bigquery: INSTR(s, 'a')
+    redshift: POSITION('a' IN s)
+    synapse_fabric: CHARINDEX('a', s)
+    postgres: POSITION('a' IN s)
+  automation: automatic
+- source_dialect: sqlserver
+  source_function: PATINDEX
+  category: REGEX
+  semantic_function: pattern_position
+  example: SELECT PATINDEX('%[0-9]%', s) FROM t
+  risk_level: high
+  notes: "T-SQL pattern syntax is not regex \u2014 convert the pattern to a real\
+    \ regex per target; MANUAL when wildcards are complex"
+  null_semantics_warning: ''
+  timezone_warning: ''
+  target_implementations:
+    snowflake: PATINDEX('%[0-9]%', s)
+    databricks: PATINDEX('%[0-9]%', s)
+    bigquery: PATINDEX('%[0-9]%', s)
+    redshift: PATINDEX('%[0-9]%', s)
+    synapse_fabric: PATINDEX('%[0-9]%', s)
+    postgres: PATINDEX('%[0-9]%', s)
+  automation: automatic_with_review
+- source_dialect: sqlserver
+  source_function: HASHBYTES
+  category: HASH
+  semantic_function: hash
+  example: SELECT HASHBYTES('MD5', s) FROM t
+  risk_level: medium
+  notes: "returns VARBINARY \u2014 targets return hex strings; compare hex"
+  null_semantics_warning: ''
+  timezone_warning: ''
+  target_implementations:
+    snowflake: MD5(s)
+    databricks: MD5(s)
+    bigquery: TO_HEX(MD5(s))
+    redshift: MD5(s)
+    synapse_fabric: HASHBYTES('MD5', s)
+    postgres: MD5(s)
+  automation: automatic
+- source_dialect: sqlserver
+  source_function: JSON_VALUE
+  category: JSON
+  semantic_function: json_extract_scalar
+  example: SELECT JSON_VALUE(j, '$.a') FROM t
+  risk_level: medium
+  notes: -> GET_PATH/VARIANT (Snowflake), get_json_object (Databricks), JSON_VALUE
+    (BigQuery), jsonb ->> (Postgres)
+  null_semantics_warning: ''
+  timezone_warning: ''
+  target_implementations:
+    snowflake: JSON_EXTRACT_PATH_TEXT(j, 'a')
+    databricks: GET_JSON_OBJECT(j, '$.a')
+    bigquery: JSON_EXTRACT_SCALAR(j, '$.a')
+    redshift: JSON_EXTRACT_PATH_TEXT(j, 'a')
+    synapse_fabric: ISNULL(JSON_QUERY(j, '$.a'), JSON_VALUE(j, '$.a'))
+    postgres: JSON_EXTRACT_PATH_TEXT(j, 'a')
+  automation: automatic
+- source_dialect: sqlserver
+  source_function: ROW_NUMBER
+  category: WINDOW
+  semantic_function: row_number
+  example: SELECT ROW_NUMBER() OVER (PARTITION BY a ORDER BY b) FROM t
+  risk_level: low
+  notes: ''
+  null_semantics_warning: ''
+  timezone_warning: ''
+  target_implementations:
+    snowflake: ROW_NUMBER() OVER (PARTITION BY a ORDER BY b NULLS FIRST)
+    databricks: ROW_NUMBER() OVER (PARTITION BY a ORDER BY b)
+    bigquery: ROW_NUMBER() OVER (PARTITION BY a ORDER BY b)
+    redshift: ROW_NUMBER() OVER (PARTITION BY a ORDER BY b NULLS FIRST)
+    synapse_fabric: ROW_NUMBER() OVER (PARTITION BY a ORDER BY b)
+    postgres: ROW_NUMBER() OVER (PARTITION BY a ORDER BY b NULLS FIRST)
+  automation: automatic

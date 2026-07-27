@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Create your workspace — MetaBridge AI</title>
+<style>
+  :root { --line:rgba(140,170,220,.16); --blue:#4da3ff; --teal:#3ddad0; --mist:#8ea4c8; }
+  * { box-sizing:border-box; margin:0; padding:0; }
+  body { font-family:-apple-system,'Segoe UI',Roboto,sans-serif; min-height:100vh; display:flex; background:#070d19; color:#e8eefb; }
+  .side { flex:1.1; position:relative; overflow:hidden; display:flex; flex-direction:column; justify-content:space-between; padding:46px 54px; background:linear-gradient(160deg,#0d1c36 0%,#122a24 60%,#0c1a2e 100%); }
+  @media (max-width:840px){ .side { display:none; } }
+  .orb { position:absolute; border-radius:50%; filter:blur(100px); }
+  .o1 { width:420px; height:420px; background:#0d9488; opacity:.32; top:-110px; right:-90px; }
+  .o2 { width:400px; height:400px; background:#6d28d9; opacity:.22; bottom:-120px; left:-90px; }
+  .brand { font-size:22px; font-weight:800; position:relative; z-index:1; }
+  .brand b { color:var(--blue); }
+  .pitch { position:relative; z-index:1; max-width:460px; }
+  .pitch h2 { font-size:30px; line-height:1.2; font-weight:800; letter-spacing:-.5px; }
+  .pitch h2 span { background:linear-gradient(90deg,#3ddad0,#8b7cf7); -webkit-background-clip:text; background-clip:text; color:transparent; }
+  .steps { margin-top:30px; }
+  .step { display:flex; gap:16px; padding:12px 0; align-items:flex-start; }
+  .step .n { width:30px; height:30px; flex-shrink:0; border-radius:50%; display:flex; align-items:center; justify-content:center; font-size:13.5px; font-weight:800; background:rgba(61,218,208,.16); color:var(--teal); border:1px solid rgba(61,218,208,.35); }
+  .step b { display:block; font-size:15px; } .step span { color:#9db2d4; font-size:13.5px; }
+  .foot { position:relative; z-index:1; color:#7d92b5; font-size:13px; }
+
+  .pane { flex:1; display:flex; align-items:center; justify-content:center; padding:40px 24px; }
+  .card { width:100%; max-width:420px; }
+  .card h1 { font-size:26px; font-weight:800; letter-spacing:-.4px; }
+  .card .sub { color:var(--mist); font-size:14px; margin:8px 0 24px; }
+  label { display:block; font-size:12px; font-weight:700; letter-spacing:.6px; text-transform:uppercase; color:#9db2d4; margin:15px 0 7px; }
+  input { width:100%; padding:12px 14px; border-radius:10px; border:1px solid rgba(140,170,220,.28); background:rgba(16,28,50,.7); color:#fff; font-size:15px; outline:none; transition:.15s; }
+  input:focus { border-color:var(--teal); box-shadow:0 0 0 3px rgba(61,218,208,.15); }
+  .row { display:flex; gap:14px; } .row > div { flex:1; }
+  .meter { height:5px; border-radius:4px; background:rgba(60,80,120,.4); margin-top:8px; overflow:hidden; }
+  .meter i { display:block; height:100%; width:0; border-radius:4px; background:#f87171; transition:.25s; }
+  .hint { font-size:12px; color:#7d92b5; margin-top:5px; }
+  .btn { width:100%; margin-top:26px; padding:14px; border:none; border-radius:11px; font-size:15.5px; font-weight:700; color:#04121f; cursor:pointer; background:linear-gradient(135deg,#3ddad0,#4da3ff); box-shadow:0 10px 26px rgba(50,180,190,.3); transition:.18s; }
+  .btn:hover { transform:translateY(-1px); }
+  .btn:disabled { opacity:.6; cursor:wait; transform:none; }
+  .err { display:none; margin-top:16px; background:rgba(192,57,43,.16); border:1px solid rgba(192,57,43,.4); color:#f5a8a0; border-radius:9px; padding:11px 14px; font-size:13.5px; }
+  .alt { margin-top:24px; text-align:center; font-size:14px; color:var(--mist); }
+  .alt a { color:var(--blue); font-weight:650; text-decoration:none; }
+  .back { display:inline-block; margin-bottom:28px; color:#7d92b5; font-size:13.5px; text-decoration:none; }
+  .back:hover { color:#fff; }
+</style>
+</head>
+<body>
+<div class="side">
+  <div class="orb o1"></div><div class="orb o2"></div>
+  <div class="brand">Meta<b>Bridge</b></div>
+  <div class="pitch">
+    <h2>Your data estate,<br><span>modernized in three steps.</span></h2>
+    <div class="steps">
+      <div class="step"><div class="n">1</div><div><b>Upload or point</b>
+        <span>A dbt project, PowerCenter export, IDMC bundle — or an SAP table manifest.</span></div></div>
+      <div class="step"><div class="n">2</div><div><b>Convert &amp; govern</b>
+        <span>Rule-based translation, GDPR/CCPA classification, residency &amp; masking policy.</span></div></div>
+      <div class="step"><div class="n">3</div><div><b>Certify &amp; deploy</b>
+        <span>Audit report, XML import validation, one-click push to IDMC.</span></div></div>
+    </div>
+  </div>
+  <div class="foot">Self-hosted · your servers · air-gap ready · secrets never stored</div>
+</div>
+<div class="pane"><div class="card">
+  <a class="back" href="/">← metabridge.io</a>
+  <h1 id="title">Create your workspace</h1>
+  <div class="sub" id="subtitle">The first account becomes the workspace owner.</div>
+  <form id="f">
+    <div class="row">
+      <div><label>Full name</label><input name="name" placeholder="Ada Lovelace" required></div>
+      <div><label>Company</label><input name="company" placeholder="Acme Analytics"></div>
+    </div>
+    <label>Work email</label>
+    <input type="email" name="email" placeholder="you@company.com" required>
+    <label>Password</label>
+    <input type="password" name="password" id="pw" placeholder="8+ characters" required minlength="8">
+    <div class="meter"><i id="meterBar"></i></div>
+    <div class="hint" id="hint">Use 12+ characters with a mix of cases, numbers and symbols.</div>
+    <button class="btn" type="submit">Create workspace →</button>
+    <div class="err" id="err"></div>
+  </form>
+  <div class="alt">Already have an account? <a href="/login">Sign in</a></div>
+</div></div>
+<script>
+const pw = document.getElementById('pw'), bar = document.getElementById('meterBar');
+pw.oninput = () => {
+  const v = pw.value;
+  let s = 0;
+  if (v.length >= 8) s++; if (v.length >= 12) s++;
+  if (/[A-Z]/.test(v) && /[a-z]/.test(v)) s++;
+  if (/\d/.test(v)) s++; if (/[^A-Za-z0-9]/.test(v)) s++;
+  bar.style.width = (s * 20) + '%';
+  bar.style.background = s <= 2 ? '#f87171' : s <= 3 ? '#ffb454' : '#4ade80';
+};
+fetch('/api/v1/me').then(r => r.json()).then(d => {
+  if (!d.first_run && !d.user) {
+    document.getElementById('title').textContent = 'Join this workspace';
+    document.getElementById('subtitle').textContent =
+      'This instance already has an owner — ask them to sign you up from a signed-in browser, or sign in.';
+  }
+}).catch(() => {});
+document.getElementById('f').onsubmit = async ev => {
+  ev.preventDefault();
+  const err = document.getElementById('err'); err.style.display = 'none';
+  const btn = ev.target.querySelector('.btn'); btn.disabled = true; btn.textContent = 'Creating…';
+  const fd = new FormData(ev.target);
+  try {
+    const r = await fetch('/auth/signup', { method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ name: fd.get('name'), company: fd.get('company'),
+                             email: fd.get('email'), password: fd.get('password') }) });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.detail || 'Sign-up failed');
+    window.location.href = d.redirect || '/console';
+  } catch (e) { err.textContent = e.message; err.style.display = 'block';
+    btn.disabled = false; btn.textContent = 'Create workspace →'; }
+};
+</script>
+</body>
+</html>

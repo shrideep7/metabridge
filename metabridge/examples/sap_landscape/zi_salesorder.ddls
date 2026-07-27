@@ -1,0 +1,16 @@
+@AbapCatalog.sqlViewName: 'ZISALESORD'
+@AccessControl.authorizationCheck: #CHECK
+@EndUserText.label: 'Sales order analytical view'
+define view ZI_SalesOrder
+  with parameters p_from_date : dats
+  as select from vbak as so
+  association [0..1] to kna1 as _customer on so.kunnr = _customer.kunnr
+{
+  key so.vbeln as SalesOrder,
+  so.kunnr as Customer,
+  @Semantics.amount.currencyCode: 'WAERK'
+  so.netwr as NetAmount,
+  so.waerk as WAERK,
+  so.erdat as OrderDate,
+  case when so.netwr > 100000 then 'LARGE' else 'STANDARD' end as OrderClass
+}

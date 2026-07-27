@@ -1,0 +1,1291 @@
+# ============================================================================
+# MetaBridge AI Informatica Function Conversion Matrix (Phase 2, module 29)
+# ----------------------------------------------------------------------------
+# Machine-readable catalog of Informatica expression functions. Fields:
+#   group             NULL | CONDITIONAL | STRING | DATE | NUMERIC |
+#                     CONVERSION | REGEX | ENCODING | HASH | AGGREGATION
+#                     (+ STATEFUL for repository-persisted state functions)
+#   semantic_function what the function MEANS, engine-agnostically
+#   automation_level  full | partial | manual
+#   semantic_risk     none | low | medium | high
+#   expected_sql      canonical conversion, PINNED to the live engine
+#   dbt_default       SQL emitted into dbt models (canonical dialect)
+#   databricks_sql    the same conversion transpiled to Databricks SQL
+# Conversion is AST-based (sqlx.expressions) — never string replacement.
+# Every supported entry is verified by tests against the live engine, so
+# this file cannot drift. manual entries raise ExpressionError and route
+# the owning port to the manual queue — never silently dropped.
+# ============================================================================
+
+ABORT:
+  automation_level: manual
+  category: conditional
+  example: ABORT('stop')
+  group: CONDITIONAL
+  notes: session abort -> orchestrator failure policy, not SQL
+  semantic: abort_session
+  semantic_function: abort_session
+  semantic_risk: high
+  supported: false
+ABS:
+  automation_level: full
+  category: numeric
+  databricks_sql: ABS(n)
+  dbt_default: ABS(n)
+  example: ABS(n)
+  expected_sql: ABS(n)
+  group: NUMERIC
+  semantic: absolute
+  semantic_function: absolute
+  semantic_risk: none
+  supported: true
+ACOS:
+  automation_level: full
+  category: numeric
+  databricks_sql: ACOS(x)
+  dbt_default: ACOS(x)
+  example: ACOS(x)
+  expected_sql: ACOS(x)
+  group: NUMERIC
+  semantic: arccosine
+  semantic_function: arccosine
+  semantic_risk: none
+  supported: true
+ADD_TO_DATE:
+  automation_level: full
+  category: datetime
+  databricks_sql: DATEADD(DAY, 3, d)
+  dbt_default: DATE_ADD(d, 3, 'DAY')
+  example: ADD_TO_DATE(d, 'DD', 3)
+  expected_sql: DATE_ADD(d, 3, 'DAY')
+  group: DATE
+  notes: Informatica part codes (DD/MM/YYYY/HH24...) mapped to SQL parts
+  semantic: date_arithmetic
+  semantic_function: date_arithmetic
+  semantic_risk: none
+  supported: true
+AES_DECRYPT:
+  automation_level: manual
+  category: string
+  example: AES_DECRYPT(x, k)
+  group: ENCODING
+  notes: same key-management caveat as AES_ENCRYPT
+  semantic: decryption
+  semantic_function: decryption
+  semantic_risk: high
+  supported: false
+AES_ENCRYPT:
+  automation_level: manual
+  category: string
+  example: AES_ENCRYPT(x, k)
+  group: ENCODING
+  notes: key management is platform-specific (Databricks aes_encrypt, Snowflake
+    ENCRYPT) — never translate blindly
+  semantic: encryption
+  semantic_function: encryption
+  semantic_risk: high
+  supported: false
+ASCII:
+  automation_level: full
+  category: string
+  databricks_sql: ASCII(s)
+  dbt_default: ASCII(s)
+  example: ASCII(s)
+  expected_sql: ASCII(s)
+  group: ENCODING
+  semantic: char_to_code
+  semantic_function: char_to_code
+  semantic_risk: none
+  supported: true
+ASIN:
+  automation_level: full
+  category: numeric
+  databricks_sql: ASIN(x)
+  dbt_default: ASIN(x)
+  example: ASIN(x)
+  expected_sql: ASIN(x)
+  group: NUMERIC
+  semantic: arcsine
+  semantic_function: arcsine
+  semantic_risk: none
+  supported: true
+ATAN:
+  automation_level: full
+  category: numeric
+  databricks_sql: ATAN(x)
+  dbt_default: ATAN(x)
+  example: ATAN(x)
+  expected_sql: ATAN(x)
+  group: NUMERIC
+  semantic: arctangent
+  semantic_function: arctangent
+  semantic_risk: none
+  supported: true
+AVG:
+  automation_level: full
+  category: numeric
+  databricks_sql: AVG(x)
+  dbt_default: AVG(x)
+  example: AVG(x)
+  expected_sql: AVG(x)
+  group: AGGREGATION
+  notes: PC ignores NULLs (SQL does too) but PC integer AVG keeps decimals — watch
+    integer division on SQL Server
+  semantic: average
+  semantic_function: average
+  semantic_risk: low
+  supported: true
+CEIL:
+  automation_level: full
+  category: numeric
+  databricks_sql: CEIL(n)
+  dbt_default: CEIL(n)
+  example: CEIL(n)
+  expected_sql: CEIL(n)
+  group: NUMERIC
+  semantic: ceiling
+  semantic_function: ceiling
+  semantic_risk: none
+  supported: true
+CHOOSE:
+  automation_level: full
+  category: conditional
+  databricks_sql: CASE WHEN i = 1 THEN 'a' WHEN i = 2 THEN 'b' END
+  dbt_default: CASE WHEN i = 1 THEN 'a' WHEN i = 2 THEN 'b' END
+  example: CHOOSE(i, 'a', 'b')
+  expected_sql: CASE WHEN i = 1 THEN 'a' WHEN i = 2 THEN 'b' END
+  group: CONDITIONAL
+  notes: index-based choice -> CASE on the index
+  semantic: positional_choice
+  semantic_function: positional_choice
+  semantic_risk: none
+  supported: true
+CHR:
+  automation_level: full
+  category: string
+  databricks_sql: CHR(65)
+  dbt_default: CHR(65)
+  example: CHR(65)
+  expected_sql: CHR(65)
+  group: ENCODING
+  semantic: code_to_char
+  semantic_function: code_to_char
+  semantic_risk: none
+  supported: true
+CHRCODE:
+  automation_level: full
+  category: string
+  databricks_sql: ASCII(c)
+  dbt_default: ASCII(c)
+  example: CHRCODE(c)
+  expected_sql: ASCII(c)
+  group: ENCODING
+  notes: -> ASCII(c)
+  semantic: char_to_code
+  semantic_function: char_to_code
+  semantic_risk: none
+  supported: true
+COMPRESS:
+  automation_level: manual
+  category: string
+  example: COMPRESS(x)
+  group: ENCODING
+  notes: zlib COMPRESS has no portable SQL equivalent
+  semantic: compression
+  semantic_function: compression
+  semantic_risk: high
+  supported: false
+CONCAT:
+  automation_level: full
+  category: string
+  databricks_sql: CONCAT(a, b)
+  dbt_default: CONCAT(a, b)
+  example: CONCAT(a, b)
+  expected_sql: CONCAT(a, b)
+  group: STRING
+  notes: '|| operator also supported and preserved'
+  semantic: concatenate
+  semantic_function: concatenate
+  semantic_risk: none
+  supported: true
+CONVERT_BASE:
+  automation_level: manual
+  category: numeric
+  example: CONVERT_BASE('1010', 2, 10)
+  group: NUMERIC
+  notes: CONV() on Databricks/MySQL; no portable equivalent elsewhere
+  semantic: base_conversion
+  semantic_function: base_conversion
+  semantic_risk: medium
+  supported: false
+COS:
+  automation_level: full
+  category: numeric
+  databricks_sql: COS(x)
+  dbt_default: COS(x)
+  example: COS(x)
+  expected_sql: COS(x)
+  group: NUMERIC
+  semantic: cosine
+  semantic_function: cosine
+  semantic_risk: none
+  supported: true
+COSH:
+  automation_level: full
+  category: numeric
+  databricks_sql: COSH(x)
+  dbt_default: COSH(x)
+  example: COSH(x)
+  expected_sql: COSH(x)
+  group: NUMERIC
+  notes: 'not native everywhere: (EXP(x)+EXP(-x))/2 fallback'
+  semantic: hyperbolic_cosine
+  semantic_function: hyperbolic_cosine
+  semantic_risk: low
+  supported: true
+COUNT:
+  automation_level: full
+  category: numeric
+  databricks_sql: COUNT(x)
+  dbt_default: COUNT(x)
+  example: COUNT(x)
+  expected_sql: COUNT(x)
+  group: AGGREGATION
+  notes: COUNT(col) skips NULLs in both PC and SQL; COUNT(*) counts all rows
+  semantic: count
+  semantic_function: count
+  semantic_risk: none
+  supported: true
+CRC32:
+  automation_level: full
+  category: hashing
+  databricks_sql: CRC32(s)
+  dbt_default: CRC32(s)
+  example: CRC32(s)
+  expected_sql: CRC32(s)
+  group: HASH
+  notes: native on Databricks/Spark/MySQL; other targets via the semantic function
+    registry or a UDF
+  semantic: crc32_checksum
+  semantic_function: crc32_checksum
+  semantic_risk: medium
+  supported: true
+CUME:
+  automation_level: manual
+  category: numeric
+  example: CUME(x)
+  group: NUMERIC
+  notes: running total depends on PC row order — needs SUM() OVER (ORDER BY ...)
+    with an explicit, verified ordering
+  semantic: running_total
+  semantic_function: running_total
+  semantic_risk: high
+  supported: false
+DATE_COMPARE:
+  automation_level: full
+  category: datetime
+  databricks_sql: CASE WHEN d1 < d2 THEN -1 WHEN d1 > d2 THEN 1 ELSE 0 END
+  dbt_default: CASE WHEN d1 < d2 THEN -1 WHEN d1 > d2 THEN 1 ELSE 0 END
+  example: DATE_COMPARE(d1, d2)
+  expected_sql: CASE WHEN d1 < d2 THEN -1 WHEN d1 > d2 THEN 1 ELSE 0 END
+  group: DATE
+  notes: -> CASE returning -1/0/1
+  semantic: date_compare
+  semantic_function: date_compare
+  semantic_risk: none
+  supported: true
+DATE_DIFF:
+  automation_level: full
+  category: datetime
+  databricks_sql: DATEDIFF(DAY, b, a)
+  dbt_default: DATEDIFF(a, b, day)
+  example: DATE_DIFF(a, b, 'DD')
+  expected_sql: DATEDIFF(a, b, day)
+  group: DATE
+  notes: sign convention matches Informatica (a - b)
+  semantic: date_difference
+  semantic_function: date_difference
+  semantic_risk: none
+  supported: true
+DECODE:
+  automation_level: full
+  category: conditional
+  databricks_sql: CASE WHEN s = 'A' THEN 1 WHEN s = 'B' THEN 2 ELSE 0 END
+  dbt_default: CASE WHEN s = 'A' THEN 1 WHEN s = 'B' THEN 2 ELSE 0 END
+  example: DECODE(s, 'A', 1, 'B', 2, 0)
+  expected_sql: CASE WHEN s = 'A' THEN 1 WHEN s = 'B' THEN 2 ELSE 0 END
+  group: CONDITIONAL
+  notes: value-match and searched (DECODE(TRUE, ...)) forms both handled
+  semantic: multi_branch_choice
+  semantic_function: multi_branch_choice
+  semantic_risk: none
+  supported: true
+DECOMPRESS:
+  automation_level: manual
+  category: string
+  example: DECOMPRESS(x, n)
+  group: ENCODING
+  notes: no portable SQL equivalent
+  semantic: decompression
+  semantic_function: decompression
+  semantic_risk: high
+  supported: false
+DEC_BASE64:
+  automation_level: full
+  category: string
+  databricks_sql: UNBASE64(x)
+  dbt_default: FROM_BASE64(x)
+  example: DEC_BASE64(x)
+  expected_sql: FROM_BASE64(x)
+  group: ENCODING
+  notes: returns binary — cast to string where the pipeline expects text
+  semantic: base64_decode
+  semantic_function: base64_decode
+  semantic_risk: low
+  supported: true
+ENC_BASE64:
+  automation_level: full
+  category: string
+  databricks_sql: BASE64(x)
+  dbt_default: TO_BASE64(x)
+  example: ENC_BASE64(x)
+  expected_sql: TO_BASE64(x)
+  group: ENCODING
+  notes: -> TO_BASE64/BASE64 per dialect
+  semantic: base64_encode
+  semantic_function: base64_encode
+  semantic_risk: low
+  supported: true
+ERROR:
+  automation_level: manual
+  category: conditional
+  example: ERROR('bad row')
+  group: CONDITIONAL
+  notes: row-level errors do not exist in set-based SQL — use the __rejects quarantine
+    pattern (Update Strategy handler)
+  semantic: row_error
+  semantic_function: row_error
+  semantic_risk: high
+  supported: false
+EXP:
+  automation_level: full
+  category: numeric
+  databricks_sql: EXP(x)
+  dbt_default: EXP(x)
+  example: EXP(x)
+  expected_sql: EXP(x)
+  group: NUMERIC
+  semantic: exponential
+  semantic_function: exponential
+  semantic_risk: none
+  supported: true
+FIRST:
+  automation_level: partial
+  category: numeric
+  example: FIRST(x)
+  group: AGGREGATION
+  notes: converted at the Aggregator-node level to MIN with a cache-order warning
+    — PC 'first' depended on arrival order
+  semantic: first_value_in_group
+  semantic_function: first_value_in_group
+  semantic_risk: high
+  supported: false
+FLOOR:
+  automation_level: full
+  category: numeric
+  databricks_sql: FLOOR(n)
+  dbt_default: FLOOR(n)
+  example: FLOOR(n)
+  expected_sql: FLOOR(n)
+  group: NUMERIC
+  semantic: floor
+  semantic_function: floor
+  semantic_risk: none
+  supported: true
+GET_DATE_PART:
+  automation_level: full
+  category: datetime
+  databricks_sql: EXTRACT(MONTH FROM d)
+  dbt_default: EXTRACT(month FROM d)
+  example: GET_DATE_PART(d, 'MM')
+  expected_sql: EXTRACT(month FROM d)
+  group: DATE
+  notes: -> EXTRACT(part FROM d)
+  semantic: datepart_extract
+  semantic_function: datepart_extract
+  semantic_risk: none
+  supported: true
+GREATEST:
+  automation_level: full
+  category: conditional
+  databricks_sql: GREATEST(a, b)
+  dbt_default: GREATEST(a, b)
+  example: GREATEST(a, b)
+  expected_sql: GREATEST(a, b)
+  group: CONDITIONAL
+  notes: 'NULL handling differs by target: PC returns NULL if any arg is NULL; most
+    warehouses ignore NULLs only in Oracle-compat modes — verify'
+  semantic: row_max
+  semantic_function: row_max
+  semantic_risk: low
+  supported: true
+IIF:
+  automation_level: full
+  category: conditional
+  databricks_sql: CASE WHEN STATUS IS NULL THEN 'UNKNOWN' ELSE STATUS END
+  dbt_default: CASE WHEN STATUS IS NULL THEN 'UNKNOWN' ELSE STATUS END
+  example: IIF(ISNULL(STATUS), 'UNKNOWN', STATUS)
+  expected_sql: CASE WHEN STATUS IS NULL THEN 'UNKNOWN' ELSE STATUS END
+  group: CONDITIONAL
+  notes: IIF(cond, then[, else]) -> CASE WHEN; nested IIFs become nested CASEs
+  semantic: conditional_choice
+  semantic_function: conditional_choice
+  semantic_risk: none
+  supported: true
+IN:
+  automation_level: full
+  category: conditional
+  databricks_sql: x IN ('a', 'b')
+  dbt_default: x IN ('a', 'b')
+  example: IN(x, 'a', 'b')
+  expected_sql: x IN ('a', 'b')
+  group: CONDITIONAL
+  notes: IN(value, v1, v2, ...) -> value IN (v1, v2, ...)
+  semantic: set_membership
+  semantic_function: set_membership
+  semantic_risk: none
+  supported: true
+INDEXOF:
+  automation_level: full
+  category: conditional
+  databricks_sql: CASE WHEN v = 'x' THEN 1 WHEN v = 'y' THEN 2 ELSE 0 END
+  dbt_default: CASE WHEN v = 'x' THEN 1 WHEN v = 'y' THEN 2 ELSE 0 END
+  example: INDEXOF(v, 'x', 'y')
+  expected_sql: CASE WHEN v = 'x' THEN 1 WHEN v = 'y' THEN 2 ELSE 0 END
+  group: CONDITIONAL
+  notes: position of first match, 0 if none (PC returns 0 too)
+  semantic: match_position
+  semantic_function: match_position
+  semantic_risk: low
+  supported: true
+INITCAP:
+  automation_level: full
+  category: string
+  databricks_sql: INITCAP(s)
+  dbt_default: INITCAP(s)
+  example: INITCAP(s)
+  expected_sql: INITCAP(s)
+  group: STRING
+  semantic: title_case
+  semantic_function: title_case
+  semantic_risk: none
+  supported: true
+INSTR:
+  automation_level: full
+  category: string
+  databricks_sql: LOCATE('x', s)
+  dbt_default: STR_POSITION(s, 'x')
+  example: INSTR(s, 'x')
+  expected_sql: STR_POSITION(s, 'x')
+  group: STRING
+  notes: 3/4-arg (start, occurrence) forms need per-target review
+  semantic: find_position
+  semantic_function: find_position
+  semantic_risk: none
+  supported: true
+ISNULL:
+  automation_level: full
+  category: null_handling
+  databricks_sql: a IS NULL
+  dbt_default: a IS NULL
+  example: ISNULL(a)
+  expected_sql: a IS NULL
+  group: 'NULL'
+  notes: boolean IS NULL test (unlike SQL Server's 2-arg ISNULL)
+  semantic: null_test
+  semantic_function: null_test
+  semantic_risk: none
+  supported: true
+IS_DATE:
+  automation_level: manual
+  category: datetime
+  example: IS_DATE(s)
+  group: DATE
+  notes: 'per target: TRY_TO_DATE IS NOT NULL (Snowflake), TRY_CAST (Databricks/SQL
+    Server), SAFE.PARSE_DATE (BigQuery)'
+  semantic: date_validity_test
+  semantic_function: date_validity_test
+  semantic_risk: medium
+  supported: false
+IS_NUMBER:
+  automation_level: manual
+  category: conversion
+  example: IS_NUMBER(s)
+  group: CONVERSION
+  notes: TRY_TO_NUMBER IS NOT NULL (Snowflake), TRY_CAST (Databricks/SQL Server),
+    SAFE_CAST (BigQuery)
+  semantic: numeric_validity_test
+  semantic_function: numeric_validity_test
+  semantic_risk: medium
+  supported: false
+IS_SPACES:
+  automation_level: full
+  category: null_handling
+  databricks_sql: (LENGTH(name) > 0 AND TRIM(name) = '')
+  dbt_default: (LENGTH(name) > 0 AND TRIM(name) = '')
+  example: IS_SPACES(name)
+  expected_sql: (LENGTH(name) > 0 AND TRIM(name) = '')
+  group: 'NULL'
+  notes: non-empty all-space test -> LENGTH > 0 AND TRIM = ''
+  semantic: all_spaces_test
+  semantic_function: all_spaces_test
+  semantic_risk: low
+  supported: true
+LAST:
+  automation_level: partial
+  category: numeric
+  example: LAST(x)
+  group: AGGREGATION
+  notes: converted at the Aggregator-node level to MAX with a cache-order warning
+  semantic: last_value_in_group
+  semantic_function: last_value_in_group
+  semantic_risk: high
+  supported: false
+LAST_DAY:
+  automation_level: full
+  category: datetime
+  databricks_sql: LAST_DAY(d)
+  dbt_default: LAST_DAY(d)
+  example: LAST_DAY(d)
+  expected_sql: LAST_DAY(d)
+  group: DATE
+  semantic: month_end
+  semantic_function: month_end
+  semantic_risk: none
+  supported: true
+LEAST:
+  automation_level: full
+  category: conditional
+  databricks_sql: LEAST(a, b)
+  dbt_default: LEAST(a, b)
+  example: LEAST(a, b)
+  expected_sql: LEAST(a, b)
+  group: CONDITIONAL
+  notes: same NULL caveat as GREATEST
+  semantic: row_min
+  semantic_function: row_min
+  semantic_risk: low
+  supported: true
+LENGTH:
+  automation_level: full
+  category: string
+  databricks_sql: LENGTH(s)
+  dbt_default: LENGTH(s)
+  example: LENGTH(s)
+  expected_sql: LENGTH(s)
+  group: STRING
+  semantic: string_length
+  semantic_function: string_length
+  semantic_risk: none
+  supported: true
+LN:
+  automation_level: full
+  category: numeric
+  databricks_sql: LN(x)
+  dbt_default: LN(x)
+  example: LN(x)
+  expected_sql: LN(x)
+  group: NUMERIC
+  semantic: natural_log
+  semantic_function: natural_log
+  semantic_risk: none
+  supported: true
+LOG:
+  automation_level: full
+  category: numeric
+  databricks_sql: LOG(b, x)
+  dbt_default: LOG(b, x)
+  example: LOG(b, x)
+  expected_sql: LOG(b, x)
+  group: NUMERIC
+  notes: PC is LOG(base, x); verify argument order on the target (BigQuery LOG(x,
+    base))
+  semantic: log_base
+  semantic_function: log_base
+  semantic_risk: low
+  supported: true
+LOOKUP:
+  automation_level: manual
+  category: conditional
+  example: LOOKUP(:LKP.T, x)
+  group: STATEFUL
+  notes: unconnected lookup call inside an expression — convert the referenced Lookup
+    transformation (module 10) and join
+  semantic: unconnected_lookup
+  semantic_function: unconnected_lookup
+  semantic_risk: high
+  supported: false
+LOWER:
+  automation_level: full
+  category: string
+  databricks_sql: LOWER(s)
+  dbt_default: LOWER(s)
+  example: LOWER(s)
+  expected_sql: LOWER(s)
+  group: STRING
+  semantic: lowercase
+  semantic_function: lowercase
+  semantic_risk: none
+  supported: true
+LPAD:
+  automation_level: full
+  category: string
+  databricks_sql: LPAD(s, 5, '0')
+  dbt_default: LPAD(s, 5, '0')
+  example: LPAD(s, 5, '0')
+  expected_sql: LPAD(s, 5, '0')
+  group: STRING
+  semantic: pad_left
+  semantic_function: pad_left
+  semantic_risk: none
+  supported: true
+LTRIM:
+  automation_level: full
+  category: string
+  databricks_sql: LTRIM(s)
+  dbt_default: LTRIM(s)
+  example: LTRIM(s)
+  expected_sql: LTRIM(s)
+  group: STRING
+  notes: 2-arg character-set LTRIM differs per target; flagged when seen
+  semantic: trim_left
+  semantic_function: trim_left
+  semantic_risk: low
+  supported: true
+MAKE_DATE_TIME:
+  automation_level: manual
+  category: datetime
+  example: MAKE_DATE_TIME(y, m, d)
+  group: DATE
+  notes: 'construct per target: DATE_FROM_PARTS (Snowflake), MAKE_DATE (Databricks/Postgres),
+    DATEFROMPARTS (SQL Server)'
+  semantic: date_construct
+  semantic_function: date_construct
+  semantic_risk: medium
+  supported: false
+MAX:
+  automation_level: full
+  category: numeric
+  databricks_sql: MAX(x)
+  dbt_default: MAX(x)
+  example: MAX(x)
+  expected_sql: MAX(x)
+  group: AGGREGATION
+  semantic: maximum
+  semantic_function: maximum
+  semantic_risk: none
+  supported: true
+MD5:
+  automation_level: full
+  category: hashing
+  databricks_sql: MD5(s)
+  dbt_default: MD5(s)
+  example: MD5(s)
+  expected_sql: MD5(s)
+  group: HASH
+  semantic: md5_hash
+  semantic_function: md5_hash
+  semantic_risk: none
+  supported: true
+MEDIAN:
+  automation_level: full
+  category: numeric
+  databricks_sql: MEDIAN(x)
+  dbt_default: MEDIAN(x)
+  example: MEDIAN(x)
+  expected_sql: MEDIAN(x)
+  group: AGGREGATION
+  notes: native on Snowflake/Databricks/Oracle; PERCENTILE_CONT(0.5) elsewhere
+  semantic: median
+  semantic_function: median
+  semantic_risk: low
+  supported: true
+METAPHONE:
+  automation_level: full
+  category: phonetic
+  databricks_sql: METAPHONE(s)
+  dbt_default: METAPHONE(s)
+  example: METAPHONE(s)
+  expected_sql: METAPHONE(s)
+  group: ENCODING
+  notes: no native equivalent on most targets — UDF required; passthrough kept visible
+  semantic: metaphone_code
+  semantic_function: metaphone_code
+  semantic_risk: high
+  supported: true
+MIN:
+  automation_level: full
+  category: numeric
+  databricks_sql: MIN(x)
+  dbt_default: MIN(x)
+  example: MIN(x)
+  expected_sql: MIN(x)
+  group: AGGREGATION
+  semantic: minimum
+  semantic_function: minimum
+  semantic_risk: none
+  supported: true
+MOD:
+  automation_level: full
+  category: numeric
+  databricks_sql: a % b
+  dbt_default: a % b
+  example: MOD(a, b)
+  expected_sql: a % b
+  group: NUMERIC
+  semantic: modulo
+  semantic_function: modulo
+  semantic_risk: none
+  supported: true
+MOVINGAVG:
+  automation_level: manual
+  category: numeric
+  example: MOVINGAVG(x, 5)
+  group: NUMERIC
+  notes: AVG() OVER (ORDER BY ... ROWS 4 PRECEDING) once an explicit ordering is
+    chosen — PC used arrival order
+  semantic: moving_average
+  semantic_function: moving_average
+  semantic_risk: high
+  supported: false
+MOVINGSUM:
+  automation_level: manual
+  category: numeric
+  example: MOVINGSUM(x, 5)
+  group: NUMERIC
+  notes: SUM() OVER (ORDER BY ... ROWS 4 PRECEDING) — same ordering caveat as MOVINGAVG
+  semantic: moving_sum
+  semantic_function: moving_sum
+  semantic_risk: high
+  supported: false
+NVL:
+  automation_level: full
+  category: null_handling
+  databricks_sql: COALESCE(a, 0)
+  dbt_default: COALESCE(a, 0)
+  example: NVL(a, 0)
+  expected_sql: COALESCE(a, 0)
+  group: 'NULL'
+  semantic: null_coalesce
+  semantic_function: null_coalesce
+  semantic_risk: none
+  supported: true
+PERCENTILE:
+  automation_level: full
+  category: numeric
+  databricks_sql: PERCENTILE_APPROX(x, 0.9)
+  dbt_default: PERCENTILE_CONT(0.9) WITHIN GROUP (ORDER BY x)
+  example: PERCENTILE(x, 90)
+  expected_sql: PERCENTILE_CONT(0.9) WITHIN GROUP (ORDER BY x)
+  group: AGGREGATION
+  notes: PC percentile arg is 0-100 -> PERCENTILE_CONT fraction
+  semantic: percentile
+  semantic_function: percentile
+  semantic_risk: low
+  supported: true
+POWER:
+  automation_level: full
+  category: numeric
+  databricks_sql: POWER(a, 2)
+  dbt_default: POWER(a, 2)
+  example: POWER(a, 2)
+  expected_sql: POWER(a, 2)
+  group: NUMERIC
+  semantic: power
+  semantic_function: power
+  semantic_risk: none
+  supported: true
+RAND:
+  automation_level: full
+  category: numeric
+  databricks_sql: RAND()
+  dbt_default: RAND()
+  example: RAND()
+  expected_sql: RAND()
+  group: NUMERIC
+  notes: 'non-deterministic: PC seeded per session; results are not reproducible
+    across engines'
+  semantic: random
+  semantic_function: random
+  semantic_risk: medium
+  supported: true
+REG_EXTRACT:
+  automation_level: full
+  category: string
+  databricks_sql: REGEXP_SUBSTR(s, '(x+)', 1)
+  dbt_default: REGEXP_SUBSTR(s, '(x+)', 1)
+  example: REG_EXTRACT(s, '(x+)', 1)
+  expected_sql: REGEXP_SUBSTR(s, '(x+)', 1)
+  group: REGEX
+  notes: regex FLAVOR differs (PC uses Perl-style; targets vary on lookaround and
+    class shorthand) — test patterns on the target
+  semantic: regex_extract
+  semantic_function: regex_extract
+  semantic_risk: medium
+  supported: true
+REG_MATCH:
+  automation_level: full
+  category: string
+  databricks_sql: REGEXP_LIKE(s, 'p')
+  dbt_default: REGEXP_LIKE(s, 'p')
+  example: REG_MATCH(s, 'p')
+  expected_sql: REGEXP_LIKE(s, 'p')
+  group: REGEX
+  semantic: regex_match
+  semantic_function: regex_match
+  semantic_risk: medium
+  supported: true
+REG_REPLACE:
+  automation_level: full
+  category: string
+  databricks_sql: REGEXP_REPLACE(s, 'p', 'r')
+  dbt_default: REGEXP_REPLACE(s, 'p', 'r')
+  example: REG_REPLACE(s, 'p', 'r')
+  expected_sql: REGEXP_REPLACE(s, 'p', 'r')
+  group: REGEX
+  notes: regex dialects are POSIX-ish everywhere; verify escapes
+  semantic: regex_replace
+  semantic_function: regex_replace
+  semantic_risk: medium
+  supported: true
+REPLACECHR:
+  automation_level: full
+  category: string
+  databricks_sql: REPLACECHR(0, s, 'ab', 'x')
+  dbt_default: REPLACECHR(0, s, 'ab', 'x')
+  example: REPLACECHR(0, s, 'ab', 'x')
+  expected_sql: REPLACECHR(0, s, 'ab', 'x')
+  group: STRING
+  notes: 'case-flag + character-SET semantics: each char replaced individually (becomes
+    nested/translate per target)'
+  semantic: replace_characters
+  semantic_function: replace_characters
+  semantic_risk: none
+  supported: true
+REPLACESTR:
+  automation_level: full
+  category: string
+  databricks_sql: REPLACE(s, 'ab', 'cd')
+  dbt_default: REPLACE(s, 'ab', 'cd')
+  example: REPLACESTR(0, s, 'ab', 'cd')
+  expected_sql: REPLACE(s, 'ab', 'cd')
+  group: STRING
+  notes: case-insensitive flag=1 needs target-side REGEXP_REPLACE(?i)
+  semantic: replace_substring
+  semantic_function: replace_substring
+  semantic_risk: none
+  supported: true
+REVERSE:
+  automation_level: full
+  category: string
+  databricks_sql: REVERSE(s)
+  dbt_default: REVERSE(s)
+  example: REVERSE(s)
+  expected_sql: REVERSE(s)
+  group: STRING
+  semantic: string_reverse
+  semantic_function: string_reverse
+  semantic_risk: none
+  supported: true
+ROUND:
+  automation_level: full
+  category: numeric
+  databricks_sql: ROUND(n, 2)
+  dbt_default: ROUND(n, 2)
+  example: ROUND(n, 2)
+  expected_sql: ROUND(n, 2)
+  group: NUMERIC
+  semantic: round
+  semantic_function: round
+  semantic_risk: low
+  supported: true
+RPAD:
+  automation_level: full
+  category: string
+  databricks_sql: RPAD(s, 5, '0')
+  dbt_default: RPAD(s, 5, '0')
+  example: RPAD(s, 5, '0')
+  expected_sql: RPAD(s, 5, '0')
+  group: STRING
+  semantic: pad_right
+  semantic_function: pad_right
+  semantic_risk: none
+  supported: true
+RTRIM:
+  automation_level: full
+  category: string
+  databricks_sql: RTRIM(s)
+  dbt_default: RTRIM(s)
+  example: RTRIM(s)
+  expected_sql: RTRIM(s)
+  group: STRING
+  semantic: trim_right
+  semantic_function: trim_right
+  semantic_risk: low
+  supported: true
+SESSSTARTTIME:
+  automation_level: full
+  category: datetime
+  databricks_sql: CURRENT_TIMESTAMP()
+  dbt_default: CURRENT_TIMESTAMP()
+  example: SESSSTARTTIME
+  expected_sql: CURRENT_TIMESTAMP()
+  group: DATE
+  notes: 'dbt: run_started_at; warehouses: CURRENT_TIMESTAMP at job start'
+  semantic: run_start_timestamp
+  semantic_function: run_start_timestamp
+  semantic_risk: low
+  supported: true
+SETCOUNTVARIABLE:
+  automation_level: manual
+  category: conditional
+  example: SETCOUNTVARIABLE($$V)
+  group: STATEFUL
+  notes: state-table counter
+  semantic: set_persistent_count
+  semantic_function: set_persistent_count
+  semantic_risk: high
+  supported: false
+SETMAXVARIABLE:
+  automation_level: manual
+  category: conditional
+  example: SETMAXVARIABLE($$V, x)
+  group: STATEFUL
+  notes: 'watermark: SELECT COALESCE(MAX(col), default) FROM state'
+  semantic: set_persistent_max
+  semantic_function: set_persistent_max
+  semantic_risk: high
+  supported: false
+SETMINVARIABLE:
+  automation_level: manual
+  category: conditional
+  example: SETMINVARIABLE($$V, x)
+  group: STATEFUL
+  notes: watermark MIN variant
+  semantic: set_persistent_min
+  semantic_function: set_persistent_min
+  semantic_risk: high
+  supported: false
+SETVARIABLE:
+  automation_level: manual
+  category: conditional
+  example: SETVARIABLE($$V, x)
+  group: STATEFUL
+  notes: repository-persisted state — watermark/state table pattern (parameter engine
+    flags every stateful variable MANUAL)
+  semantic: set_persistent_variable
+  semantic_function: set_persistent_variable
+  semantic_risk: high
+  supported: false
+SET_DATE_PART:
+  automation_level: manual
+  category: datetime
+  example: SET_DATE_PART(d, 'MM', 3)
+  group: DATE
+  notes: no portable SQL equivalent — rebuild the date explicitly (MAKE_DATE/DATE_FROM_PARTS
+    per target)
+  semantic: datepart_set
+  semantic_function: datepart_set
+  semantic_risk: high
+  supported: false
+SHA256:
+  automation_level: full
+  category: hashing
+  databricks_sql: SHA2(x, 256)
+  dbt_default: SHA2(x, 256)
+  example: SHA256(x)
+  expected_sql: SHA2(x, 256)
+  group: HASH
+  notes: -> SHA2(x, 256); byte-vs-hex output differs by target — compare hex
+  semantic: sha256_hash
+  semantic_function: sha256_hash
+  semantic_risk: low
+  supported: true
+SIGN:
+  automation_level: full
+  category: numeric
+  databricks_sql: SIGN(x)
+  dbt_default: SIGN(x)
+  example: SIGN(x)
+  expected_sql: SIGN(x)
+  group: NUMERIC
+  semantic: sign
+  semantic_function: sign
+  semantic_risk: none
+  supported: true
+SIN:
+  automation_level: full
+  category: numeric
+  databricks_sql: SIN(x)
+  dbt_default: SIN(x)
+  example: SIN(x)
+  expected_sql: SIN(x)
+  group: NUMERIC
+  semantic: sine
+  semantic_function: sine
+  semantic_risk: none
+  supported: true
+SINH:
+  automation_level: full
+  category: numeric
+  databricks_sql: SINH(x)
+  dbt_default: SINH(x)
+  example: SINH(x)
+  expected_sql: SINH(x)
+  group: NUMERIC
+  notes: 'not native everywhere: (EXP(x)-EXP(-x))/2 fallback'
+  semantic: hyperbolic_sine
+  semantic_function: hyperbolic_sine
+  semantic_risk: low
+  supported: true
+SOUNDEX:
+  automation_level: full
+  category: phonetic
+  databricks_sql: SOUNDEX(s)
+  dbt_default: SOUNDEX(s)
+  example: SOUNDEX(s)
+  expected_sql: SOUNDEX(s)
+  group: ENCODING
+  notes: not native on Databricks SQL (use soundex() in Spark) — verify per target
+  semantic: soundex_code
+  semantic_function: soundex_code
+  semantic_risk: medium
+  supported: true
+SQRT:
+  automation_level: full
+  category: numeric
+  databricks_sql: SQRT(n)
+  dbt_default: SQRT(n)
+  example: SQRT(n)
+  expected_sql: SQRT(n)
+  group: NUMERIC
+  semantic: square_root
+  semantic_function: square_root
+  semantic_risk: none
+  supported: true
+STDDEV:
+  automation_level: full
+  category: numeric
+  databricks_sql: STDDEV(x)
+  dbt_default: STDDEV(x)
+  example: STDDEV(x)
+  expected_sql: STDDEV(x)
+  group: AGGREGATION
+  notes: PC STDDEV is sample stddev — most targets agree (STDDEV_SAMP)
+  semantic: standard_deviation
+  semantic_function: standard_deviation
+  semantic_risk: low
+  supported: true
+SUBSTR:
+  automation_level: full
+  category: string
+  databricks_sql: SUBSTRING(s, 1, 3)
+  dbt_default: SUBSTRING(s, 1, 3)
+  example: SUBSTR(s, 1, 3)
+  expected_sql: SUBSTRING(s, 1, 3)
+  group: STRING
+  notes: negative start positions differ per target — verify when used
+  semantic: substring
+  semantic_function: substring
+  semantic_risk: none
+  supported: true
+SUM:
+  automation_level: full
+  category: numeric
+  databricks_sql: SUM(x)
+  dbt_default: SUM(x)
+  example: SUM(x)
+  expected_sql: SUM(x)
+  group: AGGREGATION
+  semantic: sum
+  semantic_function: sum
+  semantic_risk: none
+  supported: true
+SYSDATE:
+  automation_level: full
+  category: datetime
+  databricks_sql: CURRENT_TIMESTAMP()
+  dbt_default: CURRENT_TIMESTAMP()
+  example: SYSDATE
+  expected_sql: CURRENT_TIMESTAMP()
+  group: DATE
+  notes: PC evaluates per ROW; CURRENT_TIMESTAMP is per STATEMENT — verify row-level
+    timing is not load-bearing
+  semantic: current_timestamp
+  semantic_function: current_timestamp
+  semantic_risk: low
+  supported: true
+SYSTIMESTAMP:
+  automation_level: full
+  category: datetime
+  databricks_sql: SYSTIMESTAMP()
+  dbt_default: SYSTIMESTAMP()
+  example: SYSTIMESTAMP()
+  expected_sql: SYSTIMESTAMP()
+  group: DATE
+  notes: same per-row vs per-statement caveat as SYSDATE
+  semantic: current_timestamp
+  semantic_function: current_timestamp
+  semantic_risk: low
+  supported: true
+TAN:
+  automation_level: full
+  category: numeric
+  databricks_sql: TAN(x)
+  dbt_default: TAN(x)
+  example: TAN(x)
+  expected_sql: TAN(x)
+  group: NUMERIC
+  semantic: tangent
+  semantic_function: tangent
+  semantic_risk: none
+  supported: true
+TANH:
+  automation_level: full
+  category: numeric
+  databricks_sql: TANH(x)
+  dbt_default: TANH(x)
+  example: TANH(x)
+  expected_sql: TANH(x)
+  group: NUMERIC
+  notes: 'not native everywhere: SINH/COSH fallback'
+  semantic: hyperbolic_tangent
+  semantic_function: hyperbolic_tangent
+  semantic_risk: low
+  supported: true
+TO_BIGINT:
+  automation_level: full
+  category: conversion
+  databricks_sql: CAST(x AS BIGINT)
+  dbt_default: CAST(x AS BIGINT)
+  example: TO_BIGINT(x)
+  expected_sql: CAST(x AS BIGINT)
+  group: CONVERSION
+  semantic: cast_bigint
+  semantic_function: cast_bigint
+  semantic_risk: none
+  supported: true
+TO_CHAR:
+  automation_level: full
+  category: conversion
+  databricks_sql: TO_CHAR(d, 'YYYY')
+  dbt_default: TO_CHAR(d, 'YYYY')
+  example: TO_CHAR(d, 'YYYY')
+  expected_sql: TO_CHAR(d, 'YYYY')
+  group: CONVERSION
+  notes: format PRESERVED (sqlglot's generic ToChar would drop it); 1-arg form is
+    CAST
+  semantic: value_to_string
+  semantic_function: value_to_string
+  semantic_risk: low
+  supported: true
+TO_DATE:
+  automation_level: full
+  category: conversion
+  databricks_sql: TO_DATE(s, 'YYYY-MM-DD')
+  dbt_default: TO_DATE(s, 'YYYY-MM-DD')
+  example: TO_DATE(s, 'YYYY-MM-DD')
+  expected_sql: TO_DATE(s, 'YYYY-MM-DD')
+  group: CONVERSION
+  notes: format preserved; format-token differences resolved per target
+  semantic: string_to_date
+  semantic_function: string_to_date
+  semantic_risk: low
+  supported: true
+TO_DECIMAL:
+  automation_level: full
+  category: conversion
+  databricks_sql: CAST(s AS DECIMAL(38, 2))
+  dbt_default: CAST(s AS DECIMAL(38, 2))
+  example: TO_DECIMAL(s, 2)
+  expected_sql: CAST(s AS DECIMAL(38, 2))
+  group: CONVERSION
+  notes: scale honored, precision defaults to 38
+  semantic: cast_decimal
+  semantic_function: cast_decimal
+  semantic_risk: none
+  supported: true
+TO_FLOAT:
+  automation_level: full
+  category: conversion
+  databricks_sql: CAST(s AS DOUBLE)
+  dbt_default: CAST(s AS DOUBLE)
+  example: TO_FLOAT(s)
+  expected_sql: CAST(s AS DOUBLE)
+  group: CONVERSION
+  semantic: cast_double
+  semantic_function: cast_double
+  semantic_risk: none
+  supported: true
+TO_INTEGER:
+  automation_level: full
+  category: conversion
+  databricks_sql: CAST(s AS INT)
+  dbt_default: CAST(s AS INT)
+  example: TO_INTEGER(s)
+  expected_sql: CAST(s AS INT)
+  group: CONVERSION
+  semantic: cast_integer
+  semantic_function: cast_integer
+  semantic_risk: none
+  supported: true
+TRIM:
+  automation_level: full
+  category: string
+  databricks_sql: TRIM(s)
+  dbt_default: TRIM(s)
+  example: TRIM(s)
+  expected_sql: TRIM(s)
+  group: STRING
+  semantic: trim_both
+  semantic_function: trim_both
+  semantic_risk: none
+  supported: true
+TRUNC:
+  automation_level: full
+  category: datetime
+  databricks_sql: CAST(d AS BIGINT)
+  dbt_default: TRUNC(d, 'MM')
+  example: TRUNC(d, 'MM')
+  expected_sql: TRUNC(d, 'MM')
+  group: DATE
+  notes: with a date part -> DATE_TRUNC; numeric TRUNC(n) passes through
+  semantic: truncate
+  semantic_function: truncate
+  semantic_risk: low
+  supported: true
+UPPER:
+  automation_level: full
+  category: string
+  databricks_sql: UPPER(s)
+  dbt_default: UPPER(s)
+  example: UPPER(s)
+  expected_sql: UPPER(s)
+  group: STRING
+  semantic: uppercase
+  semantic_function: uppercase
+  semantic_risk: none
+  supported: true
+VARIANCE:
+  automation_level: full
+  category: numeric
+  databricks_sql: VARIANCE(x)
+  dbt_default: VARIANCE(x)
+  example: VARIANCE(x)
+  expected_sql: VARIANCE(x)
+  group: AGGREGATION
+  notes: sample variance (VAR_SAMP) on most targets
+  semantic: variance
+  semantic_function: variance
+  semantic_risk: low
+  supported: true

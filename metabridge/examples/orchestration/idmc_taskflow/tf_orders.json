@@ -1,0 +1,13 @@
+{
+  "name": "tf_daily_orders",
+  "description": "IDMC taskflow for daily order sync",
+  "schedule": {"cron": "0 4 * * *"},
+  "taskflow": {
+    "steps": [
+      {"name": "m_load_orders", "taskType": "MTT", "mappingTask": "mt_load_orders", "maxRetries": 2, "onFailure": "notify_fail"},
+      {"name": "check_volume", "taskType": "DECISION", "next": "m_load_customers"},
+      {"name": "m_load_customers", "taskType": "MTT", "mappingTask": "mt_load_customers"},
+      {"name": "notify_fail", "taskType": "NOTIFICATION"}
+    ]
+  }
+}

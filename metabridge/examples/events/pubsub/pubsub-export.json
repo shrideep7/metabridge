@@ -1,0 +1,8 @@
+{"topics": [{"name": "projects/mfd/topics/clickstream"}],
+ "subscriptions": [
+   {"name": "projects/mfd/subscriptions/clicks-to-bq",
+    "topic": "projects/mfd/topics/clickstream",
+    "ackDeadlineSeconds": 30, "enableMessageOrdering": true,
+    "retryPolicy": {"minimumBackoff": "10s"},
+    "deadLetterPolicy": {"deadLetterTopic": "projects/mfd/topics/clickstream-dead",
+                         "maxDeliveryAttempts": 5}}]}

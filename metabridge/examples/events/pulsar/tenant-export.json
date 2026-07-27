@@ -1,0 +1,5 @@
+{"tenant": "retail",
+ "namespaces": [{"name": "retail/prod",
+   "policies": {"retentionTimeInMinutes": 10080, "deduplicationEnabled": true},
+   "topics": [{"name": "persistent://retail/prod/returns", "partitions": 4}],
+   "subscriptions": [{"name": "returns-processor", "type": "Key_Shared", "topic": "persistent://retail/prod/returns"}]}]}

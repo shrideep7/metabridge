@@ -1,0 +1,95 @@
+# ---------------------------------------------------------------------------
+# MetaBridge Digital Twin — test estate descriptor
+#
+# A self-contained estate you can feed to the Digital Twin with no parsed
+# project required: every table named under reads/writes/includes is created
+# as a node, and the applications wire a real multi-hop lineage chain
+#   raw_* -> StagingETL -> stg_* -> WarehouseBuilder -> fct_*/dim_* -> BI/API
+# so blast-radius, impact, lineage, app-dependency and capability-map
+# analytics all have something to traverse.
+# ---------------------------------------------------------------------------
+
+domains:
+  - name: Sales
+    owner: sales-data@metafordata.com
+    match: ["raw_orders", "stg_orders", "fct_sales", "order*", "*sales*"]
+  - name: Customer
+    owner: cdo@metafordata.com
+    match: ["raw_customers", "stg_customers", "dim_customer", "customer*"]
+  - name: Finance
+    owner: finance-data@metafordata.com
+    match: ["raw_payments", "stg_payments", "fct_payments", "*payment*"]
+  - name: Marketing
+    owner: growth@metafordata.com
+    match: ["campaign*", "mkt_*"]
+
+applications:
+  # 1) ingestion: lands the raw layer
+  - name: IngestionService
+    technology: python
+    owner: data-platform@metafordata.com
+    writes: ["raw_orders", "raw_customers", "raw_payments", "campaign_events"]
+
+  # 2) staging: raw -> stg
+  - name: StagingETL
+    technology: dbt
+    owner: analytics-eng@metafordata.com
+    reads: ["raw_orders", "raw_customers", "raw_payments"]
+    writes: ["stg_orders", "stg_customers", "stg_payments"]
+
+  # 3) warehouse: stg -> curated facts/dims
+  - name: WarehouseBuilder
+    technology: snowflake
+    owner: analytics-eng@metafordata.com
+    reads: ["stg_orders", "stg_customers", "stg_payments"]
+    writes: ["fct_sales", "dim_customer", "fct_payments"]
+
+  # 4) reverse-ETL operational app reading curated data
+  - name: OrderPortal
+    technology: java
+    owner: portal-team@metafordata.com
+    reads: ["fct_sales", "dim_customer"]
+
+  # 5) a marketing app that depends on customer + campaign data
+  - name: CampaignEngine
+    technology: python
+    owner: growth@metafordata.com
+    reads: ["dim_customer", "campaign_events"]
+    writes: ["mkt_audiences"]
+
+apis:
+  - name: orders-api
+    technology: rest
+    owner: platform@metafordata.com
+    reads: ["fct_sales"]
+    serves: ["OrderPortal"]
+  - name: customer-360-api
+    technology: graphql
+    owner: platform@metafordata.com
+    reads: ["dim_customer", "fct_sales"]
+
+dashboards:
+  - name: ExecutiveSalesKPIs
+    tool: PowerBI
+    owner: bi@metafordata.com
+    reads: ["fct_sales", "fct_payments"]
+  - name: CustomerHealth
+    tool: Tableau
+    owner: bi@metafordata.com
+    reads: ["dim_customer", "fct_sales"]
+  - name: MarketingROI
+    tool: Looker
+    owner: growth@metafordata.com
+    reads: ["mkt_audiences", "fct_sales"]
+
+data_products:
+  - name: Sales360
+    owner: sales-data@metafordata.com
+    includes: ["fct_sales", "dim_customer", "fct_payments"]
+  - name: CustomerMasterData
+    owner: cdo@metafordata.com
+    includes: ["dim_customer"]
+
+owners:
+  - name: data-platform@metafordata.com
+    objects: ["raw_orders", "raw_customers", "raw_payments"]

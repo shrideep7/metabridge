@@ -1,0 +1,9 @@
+{
+  "id": 4242,
+  "name": "Nightly build",
+  "description": "Full nightly dbt build",
+  "execute_steps": ["dbt seed", "dbt run --select state:modified+", "dbt test"],
+  "triggers": {"schedule": true, "github_webhook": false},
+  "schedule": {"cron": "0 1 * * *"},
+  "settings": {"threads": 8}
+}

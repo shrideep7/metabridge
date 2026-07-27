@@ -1,0 +1,7 @@
+<?xml version="1.0"?>
+<DTS:ConnectionManager xmlns:DTS="www.microsoft.com/SqlServer/Dts"
+    DTS:ObjectName="OLTP" DTS:CreationName="OLEDB">
+  <DTS:ObjectData>
+    <DTS:ConnectionManager DTS:ConnectionString="Data Source=sqlprod01;Initial Catalog=SalesOLTP;Provider=SQLNCLI11;"/>
+  </DTS:ObjectData>
+</DTS:ConnectionManager>

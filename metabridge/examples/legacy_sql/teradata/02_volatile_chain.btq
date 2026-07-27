@@ -1,0 +1,12 @@
+.LOGON tdprod/etl_user,;
+CREATE VOLATILE TABLE vt_raw AS (
+  SEL store_id, amount FROM retail.sales WHERE sale_dt = CURRENT_DATE
+) WITH DATA ON COMMIT PRESERVE ROWS;
+
+CREATE VOLATILE TABLE vt_agg AS (
+  SEL store_id, SUM(amount) AS total FROM vt_raw GROUP BY 1
+) WITH DATA ON COMMIT PRESERVE ROWS;
+
+INSERT INTO dw.fct_store_sales
+SEL store_id, total FROM vt_agg;
+.LOGOFF;

@@ -1,0 +1,31 @@
+<?xml version="1.0"?>
+<DTS:Executable xmlns:DTS="www.microsoft.com/SqlServer/Dts"
+                DTS:ObjectName="MasterLoad"
+                DTS:ExecutableType="Microsoft.Package">
+  <DTS:Executables>
+    <DTS:Executable DTS:refId="Package\RunLoadSales"
+                    DTS:ObjectName="RunLoadSales"
+                    DTS:ExecutableType="Microsoft.ExecutePackageTask">
+      <DTS:ObjectData>
+        <ExecutePackageTask>
+          <PackageName>LoadSales.dtsx</PackageName>
+        </ExecutePackageTask>
+      </DTS:ObjectData>
+    </DTS:Executable>
+    <DTS:Executable DTS:refId="Package\ForEachFile"
+                    DTS:ObjectName="ForEachFile"
+                    DTS:ExecutableType="STOCK:FOREACHLOOP">
+      <DTS:Executables>
+        <DTS:Executable DTS:refId="Package\ForEachFile\ArchiveFile"
+                        DTS:ObjectName="ArchiveFile"
+                        DTS:ExecutableType="Microsoft.ScriptTask">
+          <DTS:ObjectData/>
+        </DTS:Executable>
+      </DTS:Executables>
+    </DTS:Executable>
+  </DTS:Executables>
+  <DTS:PrecedenceConstraints>
+    <DTS:PrecedenceConstraint DTS:From="Package\RunLoadSales"
+                              DTS:To="Package\ForEachFile"/>
+  </DTS:PrecedenceConstraints>
+</DTS:Executable>

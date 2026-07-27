@@ -1,0 +1,133 @@
+# ============================================================================
+# MetaBridge AI Transformation Mappings
+# ----------------------------------------------------------------------------
+# The declared source-object -> CIR -> target-strategy knowledge. Every row is
+# implemented by the engine (status: native) or explicitly not (status:
+# manual, with the workbook providing skeletons). Tests pin each row to the
+# actual behavior — this file cannot drift into marketing.
+# ============================================================================
+
+powercenter:
+  Expression:
+    cir: EXPRESSION
+    status: native
+    targets:
+      dbt: "Derived columns in the model SELECT (CTE per node)"
+      warehouse_sql: "SELECT expressions in the generated statement"
+      idmc: "Expression transformation with translated port expressions"
+  Filter:
+    cir: FILTER
+    status: native
+    targets:
+      dbt: "WHERE clause CTE"
+      warehouse_sql: "WHERE clause"
+      idmc: "Filter transformation"
+  Joiner:
+    cir: JOIN
+    status: native
+    targets:
+      dbt: "JOIN in the FROM clause (join type + condition preserved)"
+      warehouse_sql: "SQL JOIN"
+      idmc: "Joiner transformation"
+  "Lookup Procedure":
+    cir: LOOKUP
+    status: native
+    notes: "Multi-match semantics flagged: lookup returns one row, join may return several"
+    targets:
+      dbt: "LEFT JOIN to the lookup table"
+      warehouse_sql: "LEFT JOIN / correlated subquery where required"
+      idmc: "Lookup transformation"
+  Aggregator:
+    cir: AGGREGATOR
+    status: native
+    targets:
+      dbt: "GROUP BY CTE with aggregate expressions"
+      warehouse_sql: "GROUP BY"
+      idmc: "Aggregator transformation"
+  Router:
+    cir: ROUTER
+    status: native
+    notes: "Route groups become a CASE-based _mb_route_group column; per-group models advised"
+    targets:
+      dbt: "CASE-based routing column + one model per group (advised)"
+      warehouse_sql: "CASE-based routing column"
+      idmc: "Router transformation"
+  Rank:
+    cir: WINDOW
+    status: native
+    targets:
+      dbt: "ROW_NUMBER() OVER (PARTITION BY ... ORDER BY ...) window + top-N filter"
+      warehouse_sql: "ROW_NUMBER()/RANK()/DENSE_RANK() window + filter"
+      idmc: "Rank transformation"
+  "Sequence Generator":
+    cir: SEQUENCE
+    status: native
+    notes: "Portable default row_number(); persistent strategies per platform below"
+    surrogate_key_strategies:
+      snowflake: "CREATE SEQUENCE + seq.NEXTVAL, or IDENTITY column"
+      databricks: "GENERATED ALWAYS AS IDENTITY, or monotonically_increasing_id()"
+      bigquery: "GENERATE_UUID(), or ROW_NUMBER() over a keyed window"
+      redshift: "IDENTITY(seed, step) column"
+      synapse: "IDENTITY(1,1) column"
+      sqlserver: "IDENTITY(1,1) column or SEQUENCE object"
+      postgres: "BIGSERIAL / GENERATED ALWAYS AS IDENTITY / SEQUENCE"
+      oracle: "SEQUENCE + NEXTVAL / IDENTITY (12c+)"
+      teradata: "GENERATED ALWAYS AS IDENTITY"
+      dbt: "row_number() or dbt_utils.generate_surrogate_key(business keys)"
+    targets:
+      dbt: "row_number() surrogate (portable) — see per-platform strategies"
+      warehouse_sql: "platform surrogate-key strategy"
+      idmc: "Sequence transformation"
+  "Update Strategy":
+    cir: MERGE
+    status: native
+    targets:
+      dbt: "incremental materialization (merge / delete+insert)"
+      warehouse_sql: "MERGE statement"
+      idmc: "upsert target operation"
+  SCD:
+    cir: SCD_TYPE_2
+    status: heuristic
+    notes: "Wizard-generated SCD mappings detected heuristically; dbt snapshots convert natively"
+    targets:
+      dbt: "dbt snapshot ({% snapshot %} block)"
+      warehouse_sql: "two-statement SCD2 load (close changed + insert new)"
+      idmc: "upsert + effective-date design (manual review)"
+
+dbt:
+  ref:
+    cir: DEPENDENCY
+    status: native
+    targets:
+      powercenter: "workflow link (session ordering by DAG wave)"
+      idmc: "taskflow step ordering"
+      warehouse_sql: "deploy_all.sql statement ordering"
+  source:
+    cir: SOURCE
+    status: native
+    targets:
+      powercenter: "Source Definition + Source Qualifier"
+      idmc: "Source transformation with connection"
+      warehouse_sql: "typed source DDL (00_sources_ddl.sql)"
+  incremental:
+    cir: INCREMENTAL
+    status: native
+    notes: "is_incremental() predicates become $$LAST_RUN_TS watermark filters"
+    targets:
+      powercenter: "Update-else-Insert session + mapping variable watermark"
+      idmc: "upsert operation + parameterized filter"
+      warehouse_sql: "MERGE with :LAST_RUN_TS bind parameter"
+  snapshot:
+    cir: SCD_TYPE_2
+    status: native
+    targets:
+      powercenter: "SCD wizard mapping required (manual, workbook skeleton)"
+      idmc: "upsert + effective-date design (manual review)"
+      warehouse_sql: "two-statement SCD2 load with mb_valid_from/to/is_current"
+  test:
+    cir: DATA_QUALITY_RULE
+    status: native
+    targets:
+      powercenter: "DQ inventory in the audit report (recreate as DQ rules)"
+      idmc: "DQ inventory in the audit report"
+      warehouse_sql: "DQ inventory in the audit report"

@@ -1,0 +1,10 @@
+{
+  "name": "pl_publish_marts",
+  "properties": {
+    "activities": [
+      {"name": "Run dbt", "type": "DatabricksNotebook",
+       "policy": {"retry": 2, "retryIntervalInSeconds": 120, "timeout": "0.01:00:00"},
+       "typeProperties": {"notebookPath": "/jobs/publish_marts"}}
+    ]
+  }
+}

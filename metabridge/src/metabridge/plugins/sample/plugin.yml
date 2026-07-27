@@ -1,0 +1,17 @@
+# MetaBridge sample plugin — a third-party source connector.
+# Load it with:  get_registry().load_from_file(".../sample/plugin.yml")
+id: connector.acme_warehouse
+name: ACME Warehouse Connector
+version: 0.1.0
+type: source_connector
+description: >
+  A minimal, fully-working example third-party plugin. It demonstrates
+  the manifest schema, capability declaration, version compatibility,
+  dependencies and the entrypoint contract.
+author: acme-data
+supported_versions: ">=1.0,<2.0"
+capabilities:
+  - describe
+  - introspect
+dependencies: []
+entrypoint: "impl:build"

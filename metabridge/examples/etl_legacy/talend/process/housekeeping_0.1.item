@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<talendfile:ProcessType xmlns:talendfile="platform:/resource/org.talend.model/model/TalendFile.xsd"
+                        xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+  <context confirmationNeeded="false" name="Default">
+    <contextParameter comment="" name="archive_dir" prompt="" type="id_String" value="/data/archive"/>
+  </context>
+  <parameters/>
+  <node componentName="tOracleInput" componentVersion="0.102">
+    <elementParameter field="TEXT" name="UNIQUE_NAME" value="tOracleInput_1"/>
+    <elementParameter field="TEXT" name="TABLE" value="&quot;dw_order_summary&quot;"/>
+    <metadata connector="FLOW" name="tOracleInput_1">
+      <column key="true" name="segment" type="id_String"/>
+      <column key="false" name="total_amount" type="id_BigDecimal"/>
+    </metadata>
+  </node>
+  <node componentName="tFileOutputDelimited" componentVersion="0.102">
+    <elementParameter field="TEXT" name="UNIQUE_NAME" value="tFileOutputDelimited_1"/>
+    <elementParameter field="TEXT" name="FILENAME" value="&quot;/data/archive/summary.csv&quot;"/>
+    <metadata connector="FLOW" name="tFileOutputDelimited_1">
+      <column key="false" name="segment" type="id_String"/>
+      <column key="false" name="total_amount" type="id_BigDecimal"/>
+    </metadata>
+  </node>
+  <connection connectorName="FLOW" label="row1" lineStyle="0" metaname="tOracleInput_1" source="tOracleInput_1" target="tFileOutputDelimited_1"/>
+</talendfile:ProcessType>

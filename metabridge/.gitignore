@@ -1,0 +1,17 @@
+.venv/
+__pycache__/
+*.pyc
+*.egg-info/
+.pytest_cache/
+metabridge_out/
+out*/
+.DS_Store
+# runtime state dirs created when METABRIDGE_DATA_DIR falls back to "."
+/agents/
+/marketplace/
+/jobs/
+temp/
+# generated decks & reports (regenerated artifacts — keep source, not binaries)
+/reports/*.pptx
+/reports/*.xlsx
+/reports/*.pdf

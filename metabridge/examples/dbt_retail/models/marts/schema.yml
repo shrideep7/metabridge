@@ -1,0 +1,39 @@
+version: 2
+
+models:
+  - name: customer_orders
+    columns:
+      - name: customer_id
+        data_type: integer
+        tests: [unique, not_null]
+      - name: customer_name
+        data_type: varchar(200)
+      - name: email
+        data_type: varchar(255)
+      - name: status_desc
+        data_type: varchar(20)
+      - name: order_count
+        data_type: integer
+      - name: lifetime_value
+        data_type: decimal(18,2)
+      - name: last_order_date
+        data_type: date
+  - name: daily_revenue
+    columns:
+      - name: order_date
+        data_type: date
+        tests: [not_null]
+      - name: order_count
+        data_type: integer
+      - name: total_revenue
+        data_type: decimal(18,2)
+      - name: avg_order_value
+        data_type: decimal(18,2)
+  - name: customer_ranking
+    columns:
+      - name: customer_id
+        data_type: integer
+      - name: lifetime_value
+        data_type: decimal(18,2)
+      - name: customer_rank
+        data_type: integer

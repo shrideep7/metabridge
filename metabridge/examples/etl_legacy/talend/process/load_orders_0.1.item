@@ -1,0 +1,101 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<talendfile:ProcessType xmlns:talendfile="platform:/resource/org.talend.model/model/TalendFile.xsd"
+                        xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+  <context confirmationNeeded="false" name="Default">
+    <contextParameter comment="" name="db_host" prompt="db_host?" type="id_String" value="oraprod01"/>
+    <contextParameter comment="" name="load_date" prompt="load_date?" type="id_Date" value=""/>
+  </context>
+  <parameters/>
+  <node componentName="tOracleInput" componentVersion="0.102" posX="64" posY="64">
+    <elementParameter field="TEXT" name="UNIQUE_NAME" value="tOracleInput_1"/>
+    <elementParameter field="MEMO_SQL" name="QUERY" value="&quot;SELECT order_id, customer_id, amount, status FROM ods.orders&quot;"/>
+    <elementParameter field="TEXT" name="TABLE" value="&quot;orders&quot;"/>
+    <elementParameter field="TECHNICAL" name="PROPERTY:REPOSITORY_PROPERTY_TYPE" value="ORA_ODS"/>
+    <metadata connector="FLOW" name="tOracleInput_1">
+      <column key="true" length="10" name="order_id" nullable="false" type="id_Integer"/>
+      <column key="false" length="10" name="customer_id" nullable="true" type="id_Integer"/>
+      <column key="false" length="12" name="amount" nullable="true" type="id_BigDecimal"/>
+      <column key="false" length="20" name="status" nullable="true" type="id_String"/>
+    </metadata>
+  </node>
+  <node componentName="tOracleInput" componentVersion="0.102" posX="64" posY="192">
+    <elementParameter field="TEXT" name="UNIQUE_NAME" value="tOracleInput_2"/>
+    <elementParameter field="TEXT" name="TABLE" value="&quot;customers&quot;"/>
+    <metadata connector="FLOW" name="tOracleInput_2">
+      <column key="true" length="10" name="customer_id" nullable="false" type="id_Integer"/>
+      <column key="false" length="80" name="customer_name" nullable="true" type="id_String"/>
+      <column key="false" length="20" name="segment" nullable="true" type="id_String"/>
+    </metadata>
+  </node>
+  <node componentName="tMap" componentVersion="2.0" posX="256" posY="128">
+    <elementParameter field="TEXT" name="UNIQUE_NAME" value="tMap_1"/>
+    <nodeData xsi:type="mapper:MapperData" xmlns:mapper="http://www.talend.org/mapper">
+      <uiProperties shellMaximized="true"/>
+      <inputTables lookupMode="LOAD_ONCE" matchingMode="UNIQUE_MATCH" name="row2">
+        <mapperTableEntries expression="row1.customer_id" name="customer_id" type="id_Integer"/>
+      </inputTables>
+      <outputTables activateCondensedTool="true" name="out1">
+        <mapperTableEntries expression="row1.order_id" name="order_id" type="id_Integer"/>
+        <mapperTableEntries expression="row1.customer_id" name="customer_id" type="id_Integer"/>
+        <mapperTableEntries expression="row2.customer_name" name="customer_name" type="id_String"/>
+        <mapperTableEntries expression="row2.segment" name="segment" type="id_String"/>
+        <mapperTableEntries expression="row1.amount" name="amount" type="id_BigDecimal"/>
+        <mapperTableEntries expression="StringHandling.UPCASE(row1.status)" name="status_uc" type="id_String"/>
+        <mapperTableEntries expression="row1.amount &gt; 1000 ? &quot;HIGH&quot; : &quot;LOW&quot;" name="value_band" type="id_String"/>
+      </outputTables>
+    </nodeData>
+  </node>
+  <node componentName="tFilterRow" componentVersion="0.102" posX="384" posY="128">
+    <elementParameter field="TEXT" name="UNIQUE_NAME" value="tFilterRow_1"/>
+    <elementParameter field="TABLE" name="CONDITIONS">
+      <elementValue elementRef="INPUT_COLUMN" value="status_uc"/>
+      <elementValue elementRef="FUNCTION" value="EMPTY"/>
+      <elementValue elementRef="OPERATOR" value="=="/>
+      <elementValue elementRef="RVALUE" value="&quot;SHIPPED&quot;"/>
+    </elementParameter>
+  </node>
+  <node componentName="tAggregateRow" componentVersion="0.102" posX="512" posY="128">
+    <elementParameter field="TEXT" name="UNIQUE_NAME" value="tAggregateRow_1"/>
+    <elementParameter field="TABLE" name="GROUPBYS">
+      <elementValue elementRef="OUTPUT_COLUMN" value="segment"/>
+      <elementValue elementRef="INPUT_COLUMN" value="segment"/>
+      <elementValue elementRef="OUTPUT_COLUMN" value="value_band"/>
+      <elementValue elementRef="INPUT_COLUMN" value="value_band"/>
+    </elementParameter>
+    <elementParameter field="TABLE" name="OPERATIONS">
+      <elementValue elementRef="OUTPUT_COLUMN" value="total_amount"/>
+      <elementValue elementRef="FUNCTION" value="sum"/>
+      <elementValue elementRef="INPUT_COLUMN" value="amount"/>
+      <elementValue elementRef="OUTPUT_COLUMN" value="order_count"/>
+      <elementValue elementRef="FUNCTION" value="count"/>
+      <elementValue elementRef="INPUT_COLUMN" value="order_id"/>
+    </elementParameter>
+  </node>
+  <node componentName="tOracleOutput" componentVersion="0.102" posX="640" posY="128">
+    <elementParameter field="TEXT" name="UNIQUE_NAME" value="tOracleOutput_1"/>
+    <elementParameter field="TEXT" name="TABLE" value="&quot;dw_order_summary&quot;"/>
+    <elementParameter field="CLOSED_LIST" name="DATA_ACTION" value="INSERT_OR_UPDATE"/>
+    <metadata connector="FLOW" name="tOracleOutput_1">
+      <column key="true" name="segment" type="id_String"/>
+      <column key="true" name="value_band" type="id_String"/>
+      <column key="false" name="total_amount" type="id_BigDecimal"/>
+      <column key="false" name="order_count" type="id_Integer"/>
+    </metadata>
+  </node>
+  <node componentName="tJava" componentVersion="0.102" posX="64" posY="320">
+    <elementParameter field="TEXT" name="UNIQUE_NAME" value="tJava_1"/>
+    <elementParameter field="MEMO_JAVA" name="CODE" value="System.out.println(&quot;starting load&quot;);"/>
+  </node>
+  <node componentName="tRunJob" componentVersion="0.102" posX="768" posY="128">
+    <elementParameter field="TEXT" name="UNIQUE_NAME" value="tRunJob_1"/>
+    <elementParameter field="TEXT" name="PROCESS" value="&quot;housekeeping&quot;"/>
+  </node>
+  <connection connectorName="FLOW" label="row1" lineStyle="0" metaname="tOracleInput_1" source="tOracleInput_1" target="tMap_1"/>
+  <connection connectorName="LOOKUP" label="row2" lineStyle="2" metaname="tOracleInput_2" source="tOracleInput_2" target="tMap_1"/>
+  <connection connectorName="FLOW" label="out1" lineStyle="0" metaname="tMap_1" source="tMap_1" target="tFilterRow_1"/>
+  <connection connectorName="FILTER" label="filter" lineStyle="0" metaname="tFilterRow_1" source="tFilterRow_1" target="tAggregateRow_1"/>
+  <connection connectorName="FLOW" label="agg" lineStyle="0" metaname="tAggregateRow_1" source="tAggregateRow_1" target="tOracleOutput_1"/>
+  <connection connectorName="OnSubjobOk" label="OnSubjobOk" lineStyle="3" source="tJava_1" target="tOracleInput_1"/>
+  <connection connectorName="OnSubjobOk" label="OnSubjobOk" lineStyle="3" source="tOracleInput_1" target="tRunJob_1"/>
+  <connection connectorName="OnSubjobError" label="OnSubjobError" lineStyle="4" source="tOracleInput_1" target="tJava_1"/>
+</talendfile:ProcessType>

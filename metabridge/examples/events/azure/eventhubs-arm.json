@@ -1,0 +1,9 @@
+{"resources": [
+  {"type": "Microsoft.EventHub/namespaces/eventhubs", "name": "ns/telemetry",
+   "properties": {"partitionCount": 8, "messageRetentionInDays": 3}},
+  {"type": "Microsoft.EventHub/namespaces/eventhubs/consumergroups",
+   "name": "ns/telemetry/analytics", "properties": {}},
+  {"type": "Microsoft.ServiceBus/namespaces/queues", "name": "sb/billing-commands",
+   "properties": {"requiresSession": true, "maxDeliveryCount": 5,
+                  "deadLetteringOnMessageExpiration": true}}
+]}

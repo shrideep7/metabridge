@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sign in — MetaBridge AI</title>
+<style>
+  :root { --line:rgba(140,170,220,.16); --blue:#4da3ff; --teal:#3ddad0; --mist:#8ea4c8; }
+  * { box-sizing:border-box; margin:0; padding:0; }
+  body { font-family:-apple-system,'Segoe UI',Roboto,sans-serif; min-height:100vh; display:flex; background:#070d19; color:#e8eefb; }
+
+  /* left brand panel */
+  .side { flex:1.1; position:relative; overflow:hidden; display:flex; flex-direction:column; justify-content:space-between; padding:46px 54px; background:linear-gradient(160deg,#0d1c36 0%,#0a2338 55%,#0c1a2e 100%); }
+  @media (max-width:840px){ .side { display:none; } }
+  .orb { position:absolute; border-radius:50%; filter:blur(100px); }
+  .o1 { width:420px; height:420px; background:#1d4ed8; opacity:.4; top:-120px; right:-80px; }
+  .o2 { width:380px; height:380px; background:#0d9488; opacity:.25; bottom:-100px; left:-80px; }
+  .brand { font-size:22px; font-weight:800; position:relative; z-index:1; }
+  .brand b { color:var(--blue); }
+  .pitch { position:relative; z-index:1; max-width:440px; }
+  .pitch h2 { font-size:30px; line-height:1.2; font-weight:800; letter-spacing:-.5px; }
+  .pitch h2 span { background:linear-gradient(90deg,#4da3ff,#3ddad0); -webkit-background-clip:text; background-clip:text; color:transparent; }
+  .pitch ul { list-style:none; margin-top:26px; }
+  .pitch li { padding:9px 0 9px 32px; position:relative; color:#b9c9e4; font-size:15px; }
+  .pitch li::before { content:"✓"; position:absolute; left:2px; color:var(--teal); font-weight:800; }
+  .quote { position:relative; z-index:1; border-left:3px solid var(--blue); padding-left:18px; color:#9db2d4; font-size:14px; max-width:420px; }
+  .quote b { color:#dbe6f7; display:block; margin-top:8px; font-size:13px; }
+
+  /* right form */
+  .pane { flex:1; display:flex; align-items:center; justify-content:center; padding:40px 24px; }
+  .card { width:100%; max-width:400px; }
+  .card h1 { font-size:26px; font-weight:800; letter-spacing:-.4px; }
+  .card .sub { color:var(--mist); font-size:14px; margin:8px 0 30px; }
+  label { display:block; font-size:12px; font-weight:700; letter-spacing:.6px; text-transform:uppercase; color:#9db2d4; margin:18px 0 7px; }
+  .field { position:relative; }
+  input { width:100%; padding:13px 14px; border-radius:10px; border:1px solid rgba(140,170,220,.28); background:rgba(16,28,50,.7); color:#fff; font-size:15px; outline:none; transition:.15s; }
+  input:focus { border-color:var(--blue); box-shadow:0 0 0 3px rgba(77,163,255,.18); }
+  .toggle { position:absolute; right:12px; top:50%; transform:translateY(-50%); background:none; border:none; color:#7d92b5; cursor:pointer; font-size:12.5px; font-weight:700; }
+  .btn { width:100%; margin-top:28px; padding:14px; border:none; border-radius:11px; font-size:15.5px; font-weight:700; color:#fff; cursor:pointer; background:linear-gradient(135deg,#2f7bbd,#4da3ff); box-shadow:0 10px 26px rgba(45,120,200,.35); transition:.18s; }
+  .btn:hover { transform:translateY(-1px); }
+  .btn:disabled { opacity:.6; cursor:wait; transform:none; }
+  .err { display:none; margin-top:16px; background:rgba(192,57,43,.16); border:1px solid rgba(192,57,43,.4); color:#f5a8a0; border-radius:9px; padding:11px 14px; font-size:13.5px; }
+  .alt { margin-top:26px; text-align:center; font-size:14px; color:var(--mist); }
+  .alt a { color:var(--blue); font-weight:650; text-decoration:none; }
+  .back { display:inline-block; margin-bottom:34px; color:#7d92b5; font-size:13.5px; text-decoration:none; }
+  .back:hover { color:#fff; }
+</style>
+</head>
+<body>
+<div class="side">
+  <div class="orb o1"></div><div class="orb o2"></div>
+  <div class="brand">Meta<b>Bridge</b></div>
+  <div class="pitch">
+    <h2>Welcome back to your<br><span>modernization factory.</span></h2>
+    <ul>
+      <li>Convert dbt ⇄ Informatica with a certified audit trail</li>
+      <li>Ship SAP into Snowflake, BigQuery or Databricks</li>
+      <li>GDPR &amp; CCPA governance on every single pipeline</li>
+    </ul>
+  </div>
+  <div class="quote">Every conversion produces a coverage score and an exception queue with
+    stable rule codes — the numbers a migration proposal is built on.
+    <b>Rules first · LLM-assist flagged · nothing silently guessed</b></div>
+</div>
+<div class="pane"><div class="card">
+  <a class="back" href="/">← metabridge.io</a>
+  <h1>Sign in</h1>
+  <div class="sub">Access your workspace and job history.</div>
+  <form id="f">
+    <label>Email</label>
+    <input type="email" name="email" placeholder="you@company.com" required autofocus>
+    <label>Password</label>
+    <div class="field">
+      <input type="password" name="password" id="pw" placeholder="••••••••" required>
+      <button type="button" class="toggle" id="tg">SHOW</button>
+    </div>
+    <button class="btn" type="submit">Sign in →</button>
+    <div class="err" id="err"></div>
+  </form>
+  <div class="alt">New to MetaBridge AI? <a href="/signup">Create the workspace</a></div>
+</div></div>
+<script>
+const tg = document.getElementById('tg'), pw = document.getElementById('pw');
+tg.onclick = () => { pw.type = pw.type === 'password' ? 'text' : 'password'; tg.textContent = pw.type === 'password' ? 'SHOW' : 'HIDE'; };
+document.getElementById('f').onsubmit = async ev => {
+  ev.preventDefault();
+  const err = document.getElementById('err'); err.style.display = 'none';
+  const btn = ev.target.querySelector('.btn'); btn.disabled = true; btn.textContent = 'Signing in…';
+  const fd = new FormData(ev.target);
+  try {
+    const r = await fetch('/auth/login', { method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ email: fd.get('email'), password: fd.get('password') }) });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.detail || 'Sign-in failed');
+    window.location.href = d.redirect || '/console';
+  } catch (e) { err.textContent = e.message; err.style.display = 'block';
+    btn.disabled = false; btn.textContent = 'Sign in →'; }
+};
+</script>
+</body>
+</html>

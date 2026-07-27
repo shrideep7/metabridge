@@ -1,0 +1,17 @@
+services:
+  metabridge:
+    build: .
+    image: metabridge:0.1.0
+    ports:
+      - "8000:8000"
+    environment:
+      # require an API key on every /api request (recommended)
+      METABRIDGE_API_KEY: ${METABRIDGE_API_KEY:?set METABRIDGE_API_KEY in .env}
+      # optional: enable LLM assist for unconvertible expressions
+      # ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+    volumes:
+      - metabridge_data:/data
+    restart: unless-stopped
+
+volumes:
+  metabridge_data:

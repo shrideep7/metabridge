@@ -1,0 +1,10 @@
+/* customer cleanup rules */
+out :: reformat(in) =
+begin
+  out.customer_id :: in.customer_id;
+  out.full_name :: string_concat(string_trim(in.first_name), " ", string_trim(in.last_name));
+  out.email :: string_downcase(in.email);
+  out.region :: first_defined(in.region, "UNKNOWN");
+  out.balance :: in.balance;
+  out.band :: if (in.balance > 10000) "GOLD" else "STD";
+end;

@@ -1,0 +1,3859 @@
+"""MetaBridge AI platform console — self-hostable web application.
+
+Deployment model: single container / single process on the customer's server
+(see Dockerfile + DEPLOYMENT.md). State lives under METABRIDGE_DATA_DIR so the
+container is disposable. If METABRIDGE_API_KEY is set, every /api request must
+carry it (X-API-Key header) — the console prompts for it once and stores it in
+the browser. Put TLS/SSO in front via the customer's reverse proxy.
+"""
+from __future__ import annotations
+
+import datetime
+import io
+import json
+import os
+import shutil
+import uuid
+import zipfile
+from pathlib import Path
+from typing import Optional
+
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi.responses import (
+    HTMLResponse, JSONResponse, PlainTextResponse, StreamingResponse,
+)
+
+from fastapi.staticfiles import StaticFiles
+
+from metabridge import __version__
+from metabridge.engine import FORMATS, convert as run_convert, detect_format
+
+app = FastAPI(
+    title="MetaBridge AI Platform",
+    version=__version__,
+    description="dbt ⇄ Informatica conversion, SAP-to-cloud scaffolding, "
+                "connector marketplace, and US/EU data governance.",
+)
+
+_STATIC = Path(__file__).parent / "static"
+app.mount("/static", StaticFiles(directory=str(_STATIC)), name="static")
+
+# Commercial control-plane admin (separate plane; own key auth; fails closed
+# when CONTROLPLANE_ADMIN_KEY is unset). Mounted here so a single deployable
+# serves both, but it shares no auth/state with the product data plane.
+try:
+    from .commercial_app import commercial_app as _commercial_app
+    app.mount("/commercial", _commercial_app)
+except Exception:  # pragma: no cover - control plane extras not installed
+    pass
+
+from .auth import (  # noqa: E402
+    API_KEY_PERMISSIONS, COOKIE_NAME, ROLE_DESCRIPTIONS, ROLES,
+    SESSION_TTL_SECONDS, AuthStore, has_permission, permissions_for,
+)
+
+DATA_DIR = Path(os.environ.get("METABRIDGE_DATA_DIR",
+                               str(Path.home() / ".metabridge"))).expanduser()
+JOBS_DIR = DATA_DIR / "jobs"
+JOBS_DIR.mkdir(parents=True, exist_ok=True)
+try:
+    # Pin the working directory somewhere that always exists and is readable —
+    # some libraries call os.getcwd() at import time and crash if the service
+    # was launched from a restricted/deleted directory.
+    os.chdir(DATA_DIR)
+except OSError:
+    pass
+
+API_KEY = os.environ.get("METABRIDGE_API_KEY", "")
+
+_TPL = Path(__file__).parent / "templates"
+AUTH = AuthStore(DATA_DIR)
+
+# Paths reachable without a session (marketing site, auth, docs, static).
+_PUBLIC_PREFIXES = ("/login", "/signup", "/auth/", "/static/", "/docs",
+                    "/documentation", "/openapi.json", "/redoc", "/api/v1/info")
+
+
+def _request_user(request: Request):
+    return AUTH.session_user(request.cookies.get(COOKIE_NAME, ""))
+
+
+def _required_permission(path: str, method: str) -> str:
+    """Map an API route to the RBAC permission it needs."""
+    if path.startswith("/api/v1/me"):
+        return "jobs:read"   # self-service profile: any authenticated role
+    if path.startswith("/api/users"):
+        return "users:manage"
+    if path.startswith("/api/settings"):
+        return "jobs:read" if method == "GET" else "settings:manage"
+    # approving/rejecting a governed agent action needs a DISTINCT
+    # permission (segregation of duties) — a run-capable engineer must not
+    # be able to approve their own consequential proposals
+    if path.startswith("/api/agents/approvals/"):
+        return "agents:approve"
+    # changing platform feature flags is a configuration action
+    if path.startswith("/api/system/flags") and method == "POST":
+        return "settings:manage"
+    # acknowledging one's own notifications is a read-side action
+    if path.startswith("/api/system/notifications/seen"):
+        return "jobs:read"
+    if method in ("POST", "PUT", "PATCH"):
+        return "jobs:run"
+    if method == "DELETE":
+        return "jobs:delete"
+    return "jobs:read"
+
+
+@app.middleware("http")
+async def access_guard(request: Request, call_next):
+    path = request.url.path
+    protected = path.startswith("/api") or path.startswith("/console")
+    public = path == "/" or any(path.startswith(p) for p in _PUBLIC_PREFIXES)
+    if protected and not public:
+        user = _request_user(request)
+        perms = None
+        if user is not None:
+            perms = permissions_for(user.get("role", ""))
+        elif API_KEY:
+            supplied = request.headers.get("x-api-key", "") or \
+                request.query_params.get("api_key", "")
+            if supplied == API_KEY:
+                perms = set(API_KEY_PERMISSIONS)
+        if perms is None and not AUTH.has_users() and not API_KEY:
+            perms = {"*"}  # fresh instance, nothing configured yet — open mode
+        if perms is None:
+            if path.startswith("/console"):
+                from fastapi.responses import RedirectResponse
+                return RedirectResponse(
+                    "/signup" if not AUTH.has_users() else "/login", 302)
+            return JSONResponse({"detail": "Authentication required"},
+                                status_code=401)
+        if path.startswith("/api"):
+            needed = _required_permission(path, request.method)
+            if "*" not in perms and needed not in perms:
+                who = (user or {}).get("role", "api key")
+                return JSONResponse(
+                    {"detail": "Your role (%s) does not allow this action "
+                               "(needs %s). Ask a workspace admin." % (who, needed)},
+                    status_code=403)
+        request.state.user = user
+    return await call_next(request)
+
+
+@app.get("/", response_class=HTMLResponse)
+def landing() -> str:
+    return (_TPL / "landing.html").read_text(encoding="utf-8")
+
+
+@app.get("/login", response_class=HTMLResponse)
+def login_page() -> str:
+    return (_TPL / "login.html").read_text(encoding="utf-8")
+
+
+@app.get("/signup", response_class=HTMLResponse)
+def signup_page() -> str:
+    return (_TPL / "signup.html").read_text(encoding="utf-8")
+
+
+@app.get("/console", response_class=HTMLResponse)
+def console() -> str:
+    return (_TPL / "console.html").read_text(encoding="utf-8")
+
+
+# ---------------------------------------------------------------------------
+# Documentation site (public) — renders docs/*.md at /documentation
+# ---------------------------------------------------------------------------
+@app.get("/documentation", response_class=HTMLResponse)
+def documentation_home():
+    from fastapi.responses import RedirectResponse
+    return RedirectResponse("/documentation/index", 307)
+
+
+@app.get("/documentation/{slug:path}", response_class=HTMLResponse)
+def documentation_page(slug: str):
+    # nested slugs (e.g. commercialization/01-gap-analysis) are allowed;
+    # anything not in the docsite nav falls back to the index page, so
+    # arbitrary paths can never reach the filesystem.
+    from . import docsite
+    body, status = docsite.render_page(slug)
+    return HTMLResponse(content=body, status_code=status)
+
+
+# ---------------------------------------------------------------------------
+# Auth API
+# ---------------------------------------------------------------------------
+
+def _session_response(user: dict) -> JSONResponse:
+    token = AUTH.create_session(user["email"])
+    resp = JSONResponse({"user": user, "redirect": "/console"})
+    resp.set_cookie(COOKIE_NAME, token, max_age=SESSION_TTL_SECONDS,
+                    httponly=True, samesite="lax", path="/")
+    return resp
+
+
+@app.post("/auth/signup")
+async def auth_signup(request: Request):
+    body = await request.json()
+    if AUTH.has_users() and not has_permission(_request_user(request),
+                                               "users:manage"):
+        raise HTTPException(403, "This instance already has an owner — ask "
+                            "an admin to add you from Settings, or sign in.")
+    try:
+        user = AUTH.create_user(str(body.get("email", "")),
+                                str(body.get("password", "")),
+                                str(body.get("name", "")),
+                                str(body.get("company", "")))
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+    return _session_response(user)
+
+
+@app.post("/auth/login")
+async def auth_login(request: Request):
+    body = await request.json()
+    user = AUTH.verify_user(str(body.get("email", "")),
+                            str(body.get("password", "")))
+    if user is None:
+        raise HTTPException(401, "Incorrect email or password")
+    return _session_response(user)
+
+
+@app.post("/auth/logout")
+async def auth_logout(request: Request):
+    AUTH.destroy_session(request.cookies.get(COOKIE_NAME, ""))
+    resp = JSONResponse({"ok": True})
+    resp.delete_cookie(COOKIE_NAME, path="/")
+    return resp
+
+
+@app.get("/api/v1/me")
+def me(request: Request):
+    user = _request_user(request)
+    perms = sorted(permissions_for(user["role"])) if user else []
+    return {"user": user, "permissions": perms,
+            "first_run": not AUTH.has_users()}
+
+
+# ---------------------------------------------------------------------------
+# Profile photo / avatar — media lives in the instance's persistent local
+# storage (DATA_DIR/avatars), the only storage backend this platform ships.
+# Filenames are server-generated from the account email; the original upload
+# name is never used as a storage path.
+# ---------------------------------------------------------------------------
+
+AVATAR_DIR = DATA_DIR / "avatars"
+_AVATAR_MAX_BYTES = 5 * 1024 * 1024
+_AVATAR_FORMATS = ("JPEG", "PNG", "WEBP")           # decoded formats; no SVG
+_AVATAR_MIME = ("image/jpeg", "image/png", "image/webp")
+_AVATAR_PRESETS = tuple("mb-%d" % i for i in range(1, 7))
+
+
+def _require_account(request: Request) -> dict:
+    user = _request_user(request)
+    if user is None:
+        raise HTTPException(409, "Profile photos belong to an account — "
+                            "sign in first.")
+    return user
+
+
+def _drop_avatar_file(filename: str) -> None:
+    """Remove one detached avatar file — never anything else."""
+    if filename and "/" not in filename and "\\" not in filename:
+        (AVATAR_DIR / filename).unlink(missing_ok=True)
+
+
+@app.post("/api/v1/me/avatar")
+async def v1_avatar_upload(request: Request, file: UploadFile = File(...)):
+    """Upload a profile photo. Validates MIME, size and the DECODED image
+    format (extension and declared type are not trusted), then normalizes:
+    square center-crop, max 512x512, re-encoded WEBP with metadata dropped."""
+    user = _require_account(request)
+    if (file.content_type or "") not in _AVATAR_MIME:
+        raise HTTPException(415, "Use a JPEG, PNG or WEBP image")
+    data = await file.read()
+    if len(data) > _AVATAR_MAX_BYTES:
+        raise HTTPException(413, "Image is larger than 5 MB")
+    if not data:
+        raise HTTPException(422, "The uploaded file is empty")
+    from PIL import Image, UnidentifiedImageError
+    try:
+        Image.open(io.BytesIO(data)).verify()
+        img = Image.open(io.BytesIO(data))
+        fmt = (img.format or "").upper()
+        img.load()
+    except (UnidentifiedImageError, OSError, ValueError):
+        raise HTTPException(415, "The file is not a readable image")
+    if fmt not in _AVATAR_FORMATS:
+        raise HTTPException(415, "Use a JPEG, PNG or WEBP image")
+
+    w, h = img.size
+    side = min(w, h)
+    img = img.crop(((w - side) // 2, (h - side) // 2,
+                    (w + side) // 2, (h + side) // 2))
+    if side > 512:
+        img = img.resize((512, 512), Image.LANCZOS)
+    img = img.convert("RGBA" if img.mode in ("RGBA", "LA", "P") else "RGB")
+
+    import hashlib as _hl
+    fname = _hl.sha256(user["email"].encode()).hexdigest()[:20] + ".webp"
+    AVATAR_DIR.mkdir(parents=True, exist_ok=True)
+    out = io.BytesIO()
+    img.save(out, "WEBP", quality=85)   # fresh encode: no EXIF/GPS carried over
+    (AVATAR_DIR / fname).write_bytes(out.getvalue())
+    public, detached = AUTH.set_avatar(user["email"], "PHOTO", filename=fname)
+    _drop_avatar_file(detached)
+    return {"user": public}
+
+
+@app.put("/api/v1/me/avatar")
+async def v1_avatar_select(request: Request):
+    """Switch to initials or a product-native preset avatar."""
+    user = _require_account(request)
+    body = await request.json()
+    kind = str(body.get("type", "")).upper()
+    if kind == "INITIALS":
+        public, detached = AUTH.set_avatar(user["email"], "INITIALS")
+    elif kind == "PRESET":
+        preset = str(body.get("preset", ""))
+        if preset not in _AVATAR_PRESETS:
+            raise HTTPException(422, "Unknown avatar choice")
+        public, detached = AUTH.set_avatar(user["email"], "PRESET",
+                                           preset=preset)
+    else:
+        raise HTTPException(422, "type must be INITIALS or PRESET")
+    _drop_avatar_file(detached)
+    return {"user": public}
+
+
+@app.delete("/api/v1/me/avatar")
+def v1_avatar_remove(request: Request):
+    user = _require_account(request)
+    public, detached = AUTH.set_avatar(user["email"], "INITIALS")
+    _drop_avatar_file(detached)
+    return {"user": public}
+
+
+@app.get("/api/v1/users/{email}/avatar")
+def v1_avatar_serve(email: str):
+    """Serve a workspace member's profile photo (session-guarded by the
+    access middleware). The URL carries ?v=<updated> so browsers re-fetch
+    after a change without disabling caching."""
+    fname = AUTH.avatar_file(email)
+    path = AVATAR_DIR / fname if fname else None
+    if not fname or not path.exists():
+        raise HTTPException(404, "No profile photo")
+    from fastapi.responses import Response
+    return Response(path.read_bytes(), media_type="image/webp",
+                    headers={"Cache-Control": "private, max-age=86400"})
+
+
+@app.get("/api/v1/avatars/presets")
+def v1_avatar_presets():
+    return {"presets": [{"id": p, "url": "/static/avatars/%s.svg" % p}
+                        for p in _AVATAR_PRESETS]}
+
+
+@app.patch("/api/v1/me")
+async def v1_me_update(request: Request):
+    """Self-service profile update — display name only (email is the
+    account identity and is not editable)."""
+    user = _require_account(request)
+    body = await request.json()
+    try:
+        public = AUTH.set_name(user["email"], str(body.get("name", "")))
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+    return {"user": public}
+
+
+# ---------------------------------------------------------------------------
+# Workspace settings — stored in the instance's settings.json next to the
+# AI configuration. The workspace_id is generated once from the first saved
+# name and is immutable afterwards.
+# ---------------------------------------------------------------------------
+
+def _load_settings_doc() -> dict:
+    from metabridge.llm.assist import _settings_file
+    f = _settings_file()
+    if f.exists():
+        try:
+            return json.loads(f.read_text()) or {}
+        except Exception:  # noqa: BLE001
+            return {}
+    return {}
+
+
+def _workspace_owner() -> Optional[dict]:
+    for u in AUTH.list_users():
+        if u["role"] == "owner":
+            return {"name": u["name"], "email": u["email"]}
+    return None
+
+
+@app.get("/api/settings/workspace")
+def get_workspace_settings():
+    ws = _load_settings_doc().get("workspace", {})
+    owner = _workspace_owner()
+    return {"name": ws.get("name", ""),
+            "workspace_id": ws.get("workspace_id", ""),
+            "timezone": ws.get("timezone", ""),
+            "owner": owner,
+            "deployment": "self-hosted"}
+
+
+@app.put("/api/settings/workspace")
+async def put_workspace_settings(request: Request):
+    _require_owner(request)
+    body = await request.json()
+    name = " ".join(str(body.get("name", "")).split())
+    if not name:
+        raise HTTPException(422, "Workspace name cannot be empty")
+    from metabridge.llm.assist import _settings_file
+    doc = _load_settings_doc()
+    ws = doc.get("workspace", {})
+    ws["name"] = name
+    if not ws.get("workspace_id"):
+        slug = "-".join("".join(c if c.isalnum() else " " for c in name)
+                        .lower().split())[:40]
+        ws["workspace_id"] = slug or "workspace"
+    tz = str(body.get("timezone", "")).strip()
+    if tz and ("/" not in tz and tz != "UTC"):
+        raise HTTPException(422, "Unknown timezone")
+    ws["timezone"] = tz
+    doc["workspace"] = ws
+    f = _settings_file()
+    f.parent.mkdir(parents=True, exist_ok=True)
+    f.write_text(json.dumps(doc, indent=2))
+    try:
+        os.chmod(f, 0o600)
+    except OSError:
+        pass
+    return get_workspace_settings()
+
+
+@app.get("/api/v1/info")
+def info():
+    from metabridge.llm.assist import llm_available
+    return {"product": "MetaBridge AI", "version": __version__,
+            "auth_required": bool(API_KEY), "formats": list(FORMATS),
+            "llm_available": llm_available(), "data_dir": str(DATA_DIR)}
+
+
+# ---------------------------------------------------------------------------
+# Settings — AI provider (Anthropic API or AWS Bedrock)
+# ---------------------------------------------------------------------------
+
+def _require_owner(request: Request):
+    """Settings mutations: owner or admin (RBAC settings:manage)."""
+    user = _request_user(request)
+    if user is None and not AUTH.has_users():
+        return  # open mode (fresh instance)
+    if not has_permission(user, "settings:manage"):
+        raise HTTPException(403, "Your role does not allow changing settings")
+
+
+# ---------------------------------------------------------------------------
+# Team management (RBAC)
+# ---------------------------------------------------------------------------
+
+@app.get("/api/users")
+def list_users():
+    return {"users": AUTH.list_users(), "roles": [
+        {"role": r, "description": ROLE_DESCRIPTIONS[r]} for r in ROLES]}
+
+
+@app.post("/api/users")
+async def create_user(request: Request):
+    body = await request.json()
+    try:
+        user = AUTH.create_user(str(body.get("email", "")),
+                                str(body.get("password", "")),
+                                str(body.get("name", "")),
+                                str(body.get("company", "")),
+                                role=str(body.get("role", "engineer")))
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+    return user
+
+
+@app.patch("/api/users/{email}")
+async def change_role(email: str, request: Request):
+    body = await request.json()
+    me_user = _request_user(request)
+    if me_user and me_user["email"] == email.lower() and \
+            str(body.get("role")) != me_user["role"]:
+        raise HTTPException(422, "You cannot change your own role")
+    try:
+        return AUTH.set_role(email, str(body.get("role", "")))
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+
+
+@app.delete("/api/users/{email}")
+async def delete_user(email: str, request: Request):
+    me_user = _request_user(request)
+    if me_user and me_user["email"] == email.lower():
+        raise HTTPException(422, "You cannot remove yourself")
+    try:
+        AUTH.remove_user(email)
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+    return {"removed": email}
+
+
+@app.get("/api/settings/ai")
+def get_ai_settings():
+    from metabridge.llm.assist import llm_available, load_ai_settings
+    cfg = load_ai_settings()
+    return {"provider": cfg.get("provider", ""),
+            "region": cfg.get("region", ""),
+            "model": cfg.get("model", ""),
+            "api_key_set": bool(cfg.get("api_key")),
+            "bedrock_token_set": bool(cfg.get("bedrock_token")),
+            "available": llm_available()}
+
+
+@app.put("/api/settings/ai")
+async def put_ai_settings(request: Request):
+    _require_owner(request)
+    from metabridge.llm.assist import llm_available, save_ai_settings
+    body = await request.json()
+    provider = str(body.get("provider", "") or "")
+    if provider not in ("", "anthropic", "bedrock"):
+        raise HTTPException(422, "provider must be 'anthropic', 'bedrock' or empty")
+    save_ai_settings(provider,
+                     api_key=str(body.get("api_key", "") or ""),
+                     region=str(body.get("region", "") or ""),
+                     model=str(body.get("model", "") or ""),
+                     bedrock_token=str(body.get("bedrock_token", "") or ""),
+                     clear_bedrock_token=bool(body.get("clear_bedrock_token")))
+    return get_ai_settings()
+
+
+@app.post("/api/settings/ai/test")
+async def test_ai_settings(request: Request):
+    """One tiny live call to prove the provider works end-to-end."""
+    _require_owner(request)
+    from metabridge.llm.assist import llm_available, make_client
+    if not llm_available():
+        return {"ok": False, "detail": "No provider configured"}
+    try:
+        client, cfg = make_client()
+        msg = client.messages.create(
+            model=cfg.get("model"), max_tokens=16,
+            messages=[{"role": "user", "content": "Reply with exactly: OK"}])
+        text = "".join(b.text for b in msg.content
+                       if getattr(b, "type", "") == "text").strip()
+        return {"ok": True, "model": cfg.get("model"),
+                "provider": cfg.get("provider"), "response": text[:40]}
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "detail": "%s: %s" % (type(e).__name__, str(e)[:300])}
+
+
+# ---------------------------------------------------------------------------
+# Job store
+# ---------------------------------------------------------------------------
+
+def _new_job(kind: str) -> Path:
+    job_id = uuid.uuid4().hex[:12]
+    job_dir = JOBS_DIR / job_id
+    (job_dir / "input").mkdir(parents=True)
+    (job_dir / "output").mkdir(parents=True)
+    meta = {"id": job_id, "kind": kind, "status": "running",
+            "created": datetime.datetime.now().isoformat(timespec="seconds")}
+    (job_dir / "meta.json").write_text(json.dumps(meta))
+    return job_dir
+
+
+def _finish_job(job_dir: Path, **extra) -> dict:
+    meta = json.loads((job_dir / "meta.json").read_text())
+    meta.update(extra)
+    meta["status"] = extra.get("status", "done")
+    # record a finish timestamp so observability can MEASURE job wall-clock
+    meta.setdefault("finished",
+                    datetime.datetime.now().isoformat(timespec="seconds"))
+    (job_dir / "meta.json").write_text(json.dumps(meta, indent=2))
+    return meta
+
+
+def _job_dir(job_id: str) -> Path:
+    if not job_id.isalnum():
+        raise HTTPException(400, "Bad job id")
+    d = JOBS_DIR / job_id
+    if not d.exists():
+        raise HTTPException(404, "Job not found")
+    return d
+
+
+@app.get("/api/jobs")
+def list_jobs():
+    jobs = []
+    for meta_file in JOBS_DIR.glob("*/meta.json"):
+        try:
+            jobs.append(json.loads(meta_file.read_text()))
+        except Exception:  # noqa: BLE001
+            continue
+    jobs.sort(key=lambda j: j.get("created", ""), reverse=True)
+    return {"jobs": jobs[:100]}
+
+
+@app.get("/api/jobs/{job_id}")
+def get_job(job_id: str):
+    """Current job state — used by the console's refresh button."""
+    meta = json.loads((_job_dir(job_id) / "meta.json").read_text())
+    if meta.get("status") == "done":
+        meta["report_url"] = "/api/jobs/%s/report" % job_id
+        meta["download_url"] = "/api/jobs/%s/download" % job_id
+    return meta
+
+
+@app.delete("/api/jobs/{job_id}")
+def delete_job(job_id: str):
+    shutil.rmtree(_job_dir(job_id), ignore_errors=True)
+    return {"deleted": job_id}
+
+
+# single-artifact uploads the parsers can read directly (no zip needed)
+_SINGLE_FILE_SUFFIXES = (
+    ".xml", ".sql", ".btq", ".bteq", ".pls", ".pks", ".pkb", ".prc",
+    ".tsql", ".ddl",
+    ".dtsx", ".dtproj", ".conmgr", ".params",          # SSIS
+    ".dsx",                                            # DataStage
+    ".item", ".properties",                            # Talend
+    ".mp", ".dml", ".xfr", ".pset", ".plan",           # Ab Initio
+    ".ddls", ".cds", ".abap", ".hdbcalculationview",    # SAP
+    ".json",
+)
+
+
+async def _extract_zip(file: UploadFile, dest: Path) -> Path:
+    name = (file.filename or "").lower()
+    if not name.endswith(".zip"):
+        if name.endswith(_SINGLE_FILE_SUFFIXES):
+            dest.mkdir(parents=True, exist_ok=True)
+            (dest / Path(file.filename).name).write_bytes(await file.read())
+            return dest
+        raise HTTPException(400, "Upload a .zip archive or a supported "
+                                 "artifact (%s)" % ", ".join(
+                                     _SINGLE_FILE_SUFFIXES))
+    data = await file.read()
+    try:
+        with zipfile.ZipFile(io.BytesIO(data)) as zf:
+            for member in zf.namelist():
+                target_path = (dest / member).resolve()
+                if not str(target_path).startswith(str(dest.resolve())):
+                    raise HTTPException(400, "Archive contains unsafe paths")
+            zf.extractall(dest)
+    except zipfile.BadZipFile:
+        raise HTTPException(400, "Not a valid zip archive")
+    entries = [p for p in dest.iterdir() if not p.name.startswith("__MACOSX")
+               and not p.name.startswith(".")]
+    return entries[0] if len(entries) == 1 and entries[0].is_dir() else dest
+
+
+def _zip_dir(directory: Path) -> io.BytesIO:
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for f in directory.rglob("*"):
+            if f.is_file():
+                zf.write(f, f.relative_to(directory))
+    buf.seek(0)
+    return buf
+
+
+# ---------------------------------------------------------------------------
+# Conversion
+# ---------------------------------------------------------------------------
+
+def _job_input_root(job_dir: Path) -> Path:
+    in_dir = job_dir / "input"
+    entries = [p for p in in_dir.iterdir() if not p.name.startswith("__MACOSX")
+               and not p.name.startswith(".")]
+    return entries[0] if len(entries) == 1 and entries[0].is_dir() else in_dir
+
+
+@app.post("/api/analyze")
+async def api_analyze(
+    file: UploadFile = File(...),
+    source: str = Form(""),
+    dialect: str = Form(""),
+):
+    """Inventory the models in an upload (kept server-side so a follow-up
+    convert can reference it via from_job — no re-upload)."""
+    from metabridge.engine import parse_input
+    from metabridge.engine import detect_format_detailed
+    job_dir = _new_job("analyze")
+    detection = None
+    try:
+        root = await _extract_zip(file, job_dir / "input")
+        if source:
+            src = source
+        else:
+            detection = detect_format_detailed(str(root)).to_dict()
+            src = detection["detected_format"]
+        pipeline = parse_input(str(root), src, dialect)
+    except (ValueError, FileNotFoundError) as e:
+        _finish_job(job_dir, status="failed", error=str(e))
+        raise HTTPException(422, str(e))
+    except Exception as e:  # noqa: BLE001
+        _finish_job(job_dir, status="failed", error=str(e))
+        raise HTTPException(500, "Analysis failed: %s — %s"
+                            % (type(e).__name__, str(e)[:300]))
+    models = [{
+        "name": m.name,
+        "strategy": m.load_strategy.value,
+        "unique_key": m.unique_key,
+        "transformations": len([t for t in m.transformations
+                                if t.name != "__OUTPUT__"]),
+        "depends_on": m.depends_on,
+        "issues": len(m.issues),
+    } for m in pipeline.mappings]
+    meta = _finish_job(job_dir, project=pipeline.name, source_format=src,
+                       summary={"objects_total": len(models)})
+    return {**meta, "models": sorted(models, key=lambda x: x["name"]),
+            "detection": detection,
+            "dialect": pipeline.metadata.get("dialect", "")}
+
+
+async def _convert_impl(file, from_job: str, target: str, source: str,
+                        dialect: str, llm_assist: bool, model_list,
+                        override_map, options: dict) -> dict:
+    job_dir = _new_job("convert")
+    try:
+        if from_job:
+            root = _job_input_root(_job_dir(from_job))
+        elif file is not None and getattr(file, "filename", ""):
+            root = await _extract_zip(file, job_dir / "input")
+        else:
+            raise HTTPException(400, "Provide a file upload, from_job, or "
+                                     "project_id")
+        src = source or detect_format(str(root))
+        report = run_convert(str(root), str(job_dir / "output"), src, target,
+                             dialect, llm_assist=llm_assist,
+                             models=model_list, overrides=override_map,
+                             options=options, migration_id=job_dir.name)
+    except HTTPException:
+        _finish_job(job_dir, status="failed", error="bad request")
+        raise
+    except (ValueError, FileNotFoundError) as e:
+        _finish_job(job_dir, status="failed", error=str(e))
+        raise HTTPException(422, str(e))
+    except Exception as e:  # noqa: BLE001 — surface the reason, mark the job failed
+        _finish_job(job_dir, status="failed", error=str(e))
+        raise HTTPException(500, "Conversion failed: %s — %s. The job was "
+                            "marked failed; other projects are unaffected."
+                            % (type(e).__name__, str(e)[:300]))
+    meta = _finish_job(
+        job_dir, project=report["project"], source_format=report["source_format"],
+        target_format=report["target_format"], summary=report["summary"],
+        validation=report.get("validation"),
+        migration_validation=report.get("migration_validation"),
+        options={"dialect": dialect, "llm_assist": llm_assist,
+                 "models": model_list, "overrides": override_map,
+                 "from_job": from_job, **({"generation": options}
+                                          if options else {})})
+    mid = meta["id"]
+    # the canonical conversion-output contract rides on every response
+    co = dict(report.get("conversion_output") or {})
+    co.get("output_package", {})["download_url"] = \
+        "/api/jobs/%s/download" % mid
+    co.get("lineage", {})["document"] = \
+        "/api/migrations/%s/lineage" % mid
+    return {**meta, **co, "migration_id": mid,
+            "migration_url": "/api/migrations/%s" % mid,
+            "report_url": "/api/jobs/%s/report" % mid,
+            "download_url": "/api/jobs/%s/download" % mid}
+
+
+@app.post("/api/convert")
+async def api_convert(request: Request):
+    """Run a conversion. Accepts multipart form (console) OR the JSON
+    conversion-request contract:
+
+        {"source_format": "auto", "target_format": "databricks",
+         "project_id": "<id of a prior analyze/convert job>",
+         "options": {"generate_tests": true, "generate_docs": true,
+                     "generate_lineage": true, "ai_review": true}}
+    """
+    ctype = (request.headers.get("content-type") or "").lower()
+    if "application/json" in ctype:
+        body = await request.json()
+        source = str(body.get("source_format", "") or "")
+        options = body.get("options") or {}
+        if not isinstance(options, dict):
+            raise HTTPException(422, "options must be an object")
+        return await _convert_impl(
+            file=None,
+            from_job=str(body.get("project_id", "") or
+                         body.get("from_job", "")),
+            target=str(body.get("target_format", "") or ""),
+            source="" if source.lower() == "auto" else source,
+            dialect=str(body.get("dialect", "") or ""),
+            llm_assist=bool(body.get("llm_assist", False)),
+            model_list=body.get("models"),
+            override_map=body.get("overrides"),
+            options=options)
+    form = await request.form()
+    try:
+        models = str(form.get("models", "") or "")
+        overrides = str(form.get("overrides", "") or "")
+        opts_raw = str(form.get("options", "") or "")
+        model_list = json.loads(models) if models else None
+        override_map = json.loads(overrides) if overrides else None
+        options = json.loads(opts_raw) if opts_raw else {}
+    except json.JSONDecodeError as e:
+        raise HTTPException(422, "models/overrides/options must be valid "
+                                 "JSON: %s" % e)
+    return await _convert_impl(
+        file=form.get("file"),
+        from_job=str(form.get("from_job", "") or ""),
+        target=str(form.get("target", "") or ""),
+        source=str(form.get("source", "") or ""),
+        dialect=str(form.get("dialect", "") or ""),
+        llm_assist=str(form.get("llm_assist", "")).lower()
+        in ("true", "1", "on"),
+        model_list=model_list, override_map=override_map, options=options)
+
+
+@app.post("/api/detect")
+async def api_detect(request: Request):
+    """Detect the source format. Multipart zip upload, or JSON
+    {"project_id": "<prior job id>"} to detect a stored upload."""
+    from metabridge.engine import detect_format_detailed
+    ctype = (request.headers.get("content-type") or "").lower()
+    if "application/json" in ctype:
+        body = await request.json()
+        pid = str(body.get("project_id", "") or "")
+        if not pid:
+            raise HTTPException(422, "project_id is required")
+        root = _job_input_root(_job_dir(pid))
+        return detect_format_detailed(str(root)).to_dict()
+    form = await request.form()
+    file = form.get("file")
+    if file is None or not getattr(file, "filename", ""):
+        raise HTTPException(400, "Provide a file upload or a JSON body "
+                                 "with project_id")
+    tmp = JOBS_DIR / ("det_%s" % uuid.uuid4().hex[:10])
+    tmp.mkdir(parents=True)
+    try:
+        root = await _extract_zip(file, tmp)
+        return detect_format_detailed(str(root)).to_dict()
+    except (ValueError, FileNotFoundError) as e:
+        raise HTTPException(422, str(e))
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+# ---------------------------------------------------------------------------
+# Legacy SQL modernization API (phase 3, section 23)
+# ---------------------------------------------------------------------------
+
+def _write_inline_files(files, dest: Path) -> Path:
+    """[{name, content}] -> files under dest; returns the root."""
+    if not isinstance(files, list) or not files:
+        raise HTTPException(422, "files must be a non-empty list of "
+                                 "{name, content}")
+    dest.mkdir(parents=True, exist_ok=True)
+    for f in files:
+        name = Path(str(f.get("name", "script.sql"))).name  # no traversal
+        if not name:
+            name = "script.sql"
+        (dest / name).write_text(str(f.get("content", "")))
+    return dest
+
+
+@app.post("/api/legacy-sql/detect")
+async def legacy_sql_detect(request: Request):
+    """Dialect detection over inline files — returns the section-3
+    contract (detected_dialect, confidence_score, detection_reasons,
+    detected_features, alternative_dialects)."""
+    from metabridge.detection.sql_dialect import detect_sql_dialect
+    body = await request.json()
+    files = body.get("files") or []
+    corpus = "\n".join(str(f.get("content", "")) for f in files
+                        if isinstance(f, dict))
+    if not corpus.strip():
+        raise HTTPException(422, "files with content are required")
+    return detect_sql_dialect(corpus)
+
+
+@app.post("/api/legacy-sql/analyze")
+async def legacy_sql_analyze(request: Request):
+    """Parse-only inventory: dialect, objects, procedures, temp objects,
+    runtime commands — no generation."""
+    from metabridge.engine import parse_input
+    body = await request.json()
+    job_dir = _new_job("analyze")
+    root = _write_inline_files(body.get("files"), job_dir / "input")
+    source = str(body.get("source_format", "") or "auto")
+    if source == "auto":
+        from metabridge.detection.sql_dialect import \
+            detect_sql_dialect_files
+        dd = detect_sql_dialect_files(sorted(root.rglob("*")))
+        source = dd["detected_dialect"]
+        if source == "generic":
+            source = "sql"
+    pipeline = parse_input(str(root), source)
+    procs = pipeline.metadata.get("procedural_units", [])
+    meta = _finish_job(job_dir, source_format=source)
+    return {
+        "project_id": meta["id"],
+        "detected_dialect": pipeline.metadata.get(
+            "dialect_detection", {}).get("detected_dialect", source),
+        "dialect_detection": pipeline.metadata.get("dialect_detection"),
+        "objects_found": len(pipeline.mappings) + len(pipeline.sources),
+        "mappings": [m.name for m in pipeline.mappings],
+        "procedures_found": len(procs),
+        "procedures": [{"name": u["object_name"],
+                        "type": u["object_type"],
+                        "file": u["file"], "line": u["line"]}
+                       for u in procs],
+        "temp_objects_found": len(
+            pipeline.metadata.get("temp_objects", [])),
+        "temp_table_chains": pipeline.metadata.get(
+            "temp_table_chains", []),
+        "runtime_commands": pipeline.metadata.get("runtime_commands", []),
+        "manual_review_items": sum(
+            1 for i in pipeline.all_issues()
+            if i.severity.value == "MANUAL"),
+    }
+
+
+@app.post("/api/legacy-sql/convert")
+async def legacy_sql_convert(request: Request):
+    """The section-23 conversion contract:
+        {"source_format": "auto", "target_format": "databricks",
+         "files": [{"name": ..., "content": ...}],
+         "options": {"generate_dbt_project": false,
+                     "generate_lineage": true,
+                     "generate_validation": true, "ai_review": true}}
+    """
+    body = await request.json()
+    target = str(body.get("target_format", "") or "")
+    if not target:
+        raise HTTPException(422, "target_format is required")
+    upload = _new_job("upload")
+    _write_inline_files(body.get("files"), upload / "input")
+    _finish_job(upload)
+    opts = dict(body.get("options") or {})
+    options = {
+        "generate_lineage": bool(opts.get("generate_lineage", True)),
+        "generate_tests": bool(opts.get("generate_validation", True)),
+        "ai_review": bool(opts.get("ai_review", False)),
+    }
+    source = str(body.get("source_format", "") or "auto")
+    return await _convert_impl(
+        file=None, from_job=json.loads(
+            (upload / "meta.json").read_text())["id"],
+        target=target,
+        source="" if source == "auto" else source,
+        dialect="", llm_assist=False, model_list=None, override_map=None,
+        options=options)
+
+
+@app.post("/api/legacy-sql/validate")
+async def legacy_sql_validate(request: Request):
+    return await api_validate(request)
+
+
+@app.post("/api/legacy-sql/review")
+async def legacy_sql_review(request: Request):
+    return await api_review(request)
+
+
+@app.get("/api/legacy-sql/{migration_id}/lineage")
+def legacy_sql_lineage(migration_id: str):
+    return get_migration_lineage(migration_id)
+
+
+@app.get("/api/legacy-sql/{migration_id}/report")
+def legacy_sql_report(migration_id: str, format: str = "json"):
+    return get_migration_report(migration_id, format)
+
+
+# ---------------------------------------------------------------------------
+# Legacy ETL modernization (Command 5: SSIS / DataStage / Talend / Ab Initio)
+# — thin wrappers over the same engine path every conversion takes:
+#   SOURCE PARSER -> CIR -> SEMANTIC NORMALIZATION -> GENERATOR -> VALIDATION
+# ---------------------------------------------------------------------------
+
+from metabridge.parsers.base import ETL_FORMATS  # noqa: E402
+
+
+@app.post("/api/etl/analyze")
+async def etl_analyze(request: Request):
+    """Parse-only ETL inventory: platform, jobs, pipelines, transformations,
+    workflows, parameters, automation + confidence scores, manual queue."""
+    from metabridge.engine import detect_format, parse_input
+    from metabridge.report.confidence import score_pipeline_confidence
+    body = await request.json()
+    job_dir = _new_job("analyze")
+    root = _write_inline_files(body.get("files"), job_dir / "input")
+    source = str(body.get("source_format", "") or "auto")
+    if source == "auto":
+        source = detect_format(str(root))
+    if source not in ETL_FORMATS:
+        raise HTTPException(422, "Not a supported ETL platform: %s "
+                            "(expected one of %s)" % (source,
+                                                      ", ".join(ETL_FORMATS)))
+    try:
+        pipeline = parse_input(str(root), source)
+    except (ValueError, FileNotFoundError) as e:
+        raise HTTPException(422, str(e))
+    conf = score_pipeline_confidence(pipeline)
+    from metabridge.report.complexity import score_pipeline
+    cx = score_pipeline(pipeline)
+    cx.pop("assets", None)
+    meta = _finish_job(job_dir, source_format=source)
+    issues = pipeline.all_issues()
+    return {
+        "project_id": meta["id"],
+        "detected_platform": source,
+        "jobs": pipeline.metadata.get("inventory", {}),
+        "pipelines": [m.name for m in pipeline.mappings],
+        "transformations": sum(len(m.transformations)
+                               for m in pipeline.mappings),
+        "workflows": [d["workflow"] for d in
+                      pipeline.metadata.get("workflow_dags", [])],
+        "parameters": pipeline.metadata.get("parameters", []),
+        "connections": pipeline.metadata.get("connections", []),
+        "automation_score": cx.get("automation_percentage"),
+        "complexity": cx,
+        "semantic_confidence": conf.get("average_confidence"),
+        "manual_review_items": sum(1 for i in issues
+                                   if i.severity.value == "MANUAL"),
+        "unsupported_items": [i.to_dict() for i in issues
+                              if i.severity.value in ("MANUAL", "ERROR")],
+    }
+
+
+@app.post("/api/etl/convert")
+async def etl_convert(request: Request):
+    """Modernize an ETL project:
+        {"source_format": "auto"|"ssis"|"datastage"|"talend"|"abinitio",
+         "target_format": "dbt"|"snowflake"|...,
+         "files": [{name, content}], "options": {...}}"""
+    from metabridge.engine import detect_format
+    body = await request.json()
+    target = str(body.get("target_format", "") or "")
+    if not target:
+        raise HTTPException(422, "target_format is required")
+    upload = _new_job("upload")
+    root = _write_inline_files(body.get("files"), upload / "input")
+    _finish_job(upload)
+    source = str(body.get("source_format", "") or "auto")
+    if source == "auto":
+        source = detect_format(str(root))
+    if source not in ETL_FORMATS:
+        raise HTTPException(422, "Not a supported ETL platform: %s" % source)
+    opts = dict(body.get("options") or {})
+    options = {
+        "generate_lineage": bool(opts.get("generate_lineage", True)),
+        "generate_tests": bool(opts.get("generate_validation", True)),
+        "ai_review": bool(opts.get("ai_review", False)),
+    }
+    return await _convert_impl(
+        file=None, from_job=json.loads(
+            (upload / "meta.json").read_text())["id"],
+        target=target, source=source,
+        dialect="", llm_assist=False, model_list=None, override_map=None,
+        options=options)
+
+
+@app.post("/api/etl/validate")
+async def etl_validate(request: Request):
+    return await api_validate(request)
+
+
+@app.post("/api/etl/review")
+async def etl_review(request: Request):
+    return await api_review(request)
+
+
+@app.get("/api/etl/{migration_id}/lineage")
+def etl_lineage(migration_id: str):
+    return get_migration_lineage(migration_id)
+
+
+@app.get("/api/etl/{migration_id}/report")
+def etl_report(migration_id: str, format: str = "json"):
+    return get_migration_report(migration_id, format)
+
+
+# ---------------------------------------------------------------------------
+# Migration Assessment Engine — parse-only analysis, deterministic,
+# board-grade exports (PDF/PPTX/XLSX/DOCX/JSON). No conversion, no AI.
+# ---------------------------------------------------------------------------
+
+@app.post("/api/assessment")
+async def assessment_run(request: Request):
+    """{"files": [...]} or {"from_job": id} or {"connection_id": id
+    (introspectable live connection)} -> full assessment + exports."""
+    from metabridge.assessment.engine import assess
+    from metabridge.assessment.exports import export_all
+    body = await request.json()
+    job_dir = _new_job("assessment")
+    if body.get("connection_id"):
+        # assess a connected system from its live introspection.
+        # resolve_params returns the flat param dict; the connector key
+        # lives on the stored row (get_connection), not on that dict.
+        from metabridge.connections_store import (get_connection,
+                                                  resolve_params)
+        from metabridge.livecheck import introspect
+        cid = str(body["connection_id"])
+        row = get_connection(cid)
+        if row is None:
+            _finish_job(job_dir, status="failed",
+                        error="Unknown connection")
+            raise HTTPException(404, "Unknown connection")
+        try:
+            params = resolve_params(cid)
+        except PermissionError as e:
+            _finish_job(job_dir, status="failed", error=str(e))
+            raise HTTPException(409, str(e))
+        result = introspect(row["connector"], params)
+        root = job_dir / "input"
+        root.mkdir(parents=True, exist_ok=True)
+        (root / "tables.yml").write_text(result.get("manifest_yaml",
+                                                    ""))
+        source = ""
+    elif body.get("from_job"):
+        root = _job_input_root(_job_dir(str(body["from_job"])))
+        source = str(body.get("source_format", "") or "")
+    else:
+        root = _write_inline_files(body.get("files"), job_dir / "input")
+        source = str(body.get("source_format", "") or "")
+    try:
+        a = assess(str(root), source)
+    except (ValueError, FileNotFoundError) as e:
+        _finish_job(job_dir, status="failed", error=str(e))
+        raise HTTPException(422, str(e))
+    out = job_dir / "output"
+    exports = export_all(a, str(out))
+    meta = _finish_job(job_dir, source_format=a["source_format"])
+    return {"assessment_id": meta["id"], "exports": exports, **a}
+
+
+@app.get("/api/assessment/{assessment_id}")
+def assessment_get(assessment_id: str):
+    f = _job_dir(assessment_id) / "output" / "assessment.json"
+    if not f.exists():
+        raise HTTPException(404, "Not an assessment")
+    return json.loads(f.read_text())
+
+
+@app.get("/api/assessment/{assessment_id}/export")
+def assessment_export(assessment_id: str, format: str = "pdf"):
+    from fastapi.responses import FileResponse
+    from metabridge.assessment.exports import MEDIA
+    fmt = format.lower()
+    if fmt not in MEDIA:
+        raise HTTPException(422, "format must be one of %s"
+                            % ", ".join(sorted(MEDIA)))
+    f = _job_dir(assessment_id) / "output" / ("assessment.%s" % fmt)
+    if not f.exists():
+        raise HTTPException(404, "Export not found")
+    return FileResponse(str(f), media_type=MEDIA[fmt],
+                        filename="metabridge_assessment_%s.%s"
+                        % (assessment_id, fmt))
+
+
+# ---------------------------------------------------------------------------
+# Enterprise AI Readiness Assessment — parse-only, deterministic. Scores
+# 15 dimensions and prescribes a RAG/KG/agent architecture, cost and
+# roadmap. No conversion, no AI in the numbers.
+# ---------------------------------------------------------------------------
+
+@app.post("/api/ai-readiness")
+async def ai_readiness_run(request: Request):
+    """{"files":[...]} | {"from_job": id} | {"connection_id": id} ->
+    full AI readiness assessment + exports. Enriched by the current
+    workspace Digital Twin (if built) for domain/ownership/platform
+    signals."""
+    from metabridge.ai_readiness.engine import assess_ai_readiness
+    from metabridge.ai_readiness.exports import export_all
+    body = await _json_object(request)          # 422 on bad/non-object
+    job_dir = _new_job("ai_readiness")
+    try:
+        if body.get("connection_id"):
+            from metabridge.connections_store import (get_connection,
+                                                      resolve_params)
+            from metabridge.livecheck import introspect
+            cid = str(body["connection_id"])
+            row = get_connection(cid)
+            if row is None:
+                raise HTTPException(404, "Unknown connection")
+            try:
+                params = resolve_params(cid)
+            except PermissionError as e:
+                raise HTTPException(409, str(e))
+            result = introspect(row["connector"], params)
+            root = job_dir / "input"
+            root.mkdir(parents=True, exist_ok=True)
+            (root / "tables.yml").write_text(
+                result.get("manifest_yaml", ""))
+            source = ""
+        elif body.get("from_job"):
+            root = _job_input_root(_job_dir(str(body["from_job"])))
+            source = str(body.get("source_format", "") or "")
+        else:
+            # tree-preserving so a dbt/project folder keeps its layout
+            # (parsers need models/ etc.); flattening loses every model
+            root = _write_tree_files(body.get("files"), job_dir / "input")
+            # a folder pick nests everything under one top dir
+            # (webkitRelativePath = "proj/models/..") — descend into it
+            # so the project root (dbt_project.yml etc.) is at `root`
+            entries = [p for p in root.iterdir()
+                       if not p.name.startswith(".")]
+            if len(entries) == 1 and entries[0].is_dir():
+                root = entries[0]
+            source = str(body.get("source_format", "") or "")
+        twin = None
+        if _TWIN_FILE.exists():
+            try:
+                twin = json.loads(_TWIN_FILE.read_text())
+            except (ValueError, OSError):
+                twin = None
+        a = assess_ai_readiness(str(root), source, twin=twin)
+        out = job_dir / "output"
+        exports = export_all(a, str(out))
+        meta = _finish_job(job_dir, source_format=a["source_format"])
+        return {"assessment_id": meta["id"], "exports": exports, **a}
+    except HTTPException:
+        _finish_job(job_dir, status="failed", error="request rejected")
+        raise
+    except Exception as e:               # never strand the job "running"
+        _finish_job(job_dir, status="failed", error=str(e))
+        raise HTTPException(422, "AI readiness assessment failed: %s" % e)
+
+
+@app.get("/api/ai-readiness/{assessment_id}")
+def ai_readiness_get(assessment_id: str):
+    f = _job_dir(assessment_id) / "output" / "ai_readiness.json"
+    if not f.exists():
+        raise HTTPException(404, "Not an AI readiness assessment")
+    return json.loads(f.read_text())
+
+
+@app.get("/api/ai-readiness/{assessment_id}/export")
+def ai_readiness_export(assessment_id: str, format: str = "pdf"):
+    from fastapi.responses import FileResponse
+    from metabridge.ai_readiness.exports import MEDIA
+    fmt = format.lower()
+    if fmt not in MEDIA:
+        raise HTTPException(422, "format must be one of %s"
+                            % ", ".join(sorted(MEDIA)))
+    f = _job_dir(assessment_id) / "output" / ("ai_readiness.%s" % fmt)
+    if not f.exists():
+        raise HTTPException(404, "Export not found")
+    return FileResponse(str(f), media_type=MEDIA[fmt],
+                        filename="metabridge_ai_readiness_%s.%s"
+                        % (assessment_id, fmt))
+
+
+# ---------------------------------------------------------------------------
+# Technical Debt Intelligence — reachability over the estate Digital
+# Twin + duplicate/column detection over the parsed IR. Finds unused,
+# duplicated and broken assets and turns them into a costed, prioritized
+# cleanup plan. Deterministic; confirm 'unused' against access logs.
+# ---------------------------------------------------------------------------
+
+@app.post("/api/tech-debt")
+async def tech_debt_run(request: Request):
+    """{"files":[...]} | {"from_job": id} -> technical-debt analysis +
+    exports. Reachability runs over the workspace Digital Twin (build
+    one first for dashboards/APIs/topics/process-chain coverage); any
+    uploaded/from-job project is also parsed for column/SQL/mapping
+    detail. Falls back to building a twin from the upload if none
+    exists."""
+    from metabridge.debt.engine import (assess_technical_debt,
+                                         _parse_pipelines)
+    from metabridge.debt.exports import export_all
+    body = await _json_object(request)
+    job_dir = _new_job("tech_debt")
+    try:
+        paths = []
+        if body.get("from_job"):
+            root = _job_input_root(_job_dir(str(body["from_job"])))
+            paths = [str(root)]
+        elif body.get("files"):
+            root = _write_tree_files(body["files"], job_dir / "input")
+            entries = [p for p in root.iterdir()
+                       if not p.name.startswith(".")]
+            paths = ([str(entries[0])]
+                     if len(entries) == 1 and entries[0].is_dir()
+                     else [str(root)])
+        pipelines = _parse_pipelines(paths)
+        # prefer the full workspace twin (has dashboards/APIs/topics/
+        # process chains); else build one from the upload
+        twin = None
+        if _TWIN_FILE.exists():
+            try:
+                twin = json.loads(_TWIN_FILE.read_text())
+            except (ValueError, OSError):
+                twin = None
+        if twin is None and paths:
+            from metabridge.twin.discover import build_twin
+            twin = build_twin(paths=paths, include_connections=False)
+        if twin is None:
+            raise HTTPException(422, "Build a Digital Twin (POST "
+                                     "/api/twin/build) or upload a "
+                                     "project to analyze for debt")
+        d = assess_technical_debt(twin, pipelines)
+        out = job_dir / "output"
+        exports = export_all(d, str(out))
+        meta = _finish_job(job_dir)
+        return {"debt_id": meta["id"], "exports": exports, **d}
+    except HTTPException:
+        _finish_job(job_dir, status="failed", error="request rejected")
+        raise
+    except Exception as e:               # never strand the job "running"
+        _finish_job(job_dir, status="failed", error=str(e))
+        raise HTTPException(422, "tech-debt analysis failed: %s" % e)
+
+
+@app.get("/api/tech-debt/{debt_id}")
+def tech_debt_get(debt_id: str):
+    f = _job_dir(debt_id) / "output" / "tech_debt.json"
+    if not f.exists():
+        raise HTTPException(404, "Not a tech-debt analysis")
+    try:
+        return json.loads(f.read_text())
+    except (ValueError, OSError):
+        raise HTTPException(422, "Analysis output is corrupt or "
+                                 "incomplete — re-run the analysis")
+
+
+@app.get("/api/tech-debt/{debt_id}/export")
+def tech_debt_export(debt_id: str, format: str = "pdf"):
+    from fastapi.responses import FileResponse
+    from metabridge.debt.exports import MEDIA
+    fmt = format.lower()
+    if fmt not in MEDIA:
+        raise HTTPException(422, "format must be one of %s"
+                            % ", ".join(sorted(MEDIA)))
+    f = _job_dir(debt_id) / "output" / ("tech_debt.%s" % fmt)
+    if not f.exists():
+        raise HTTPException(404, "Export not found")
+    return FileResponse(str(f), media_type=MEDIA[fmt],
+                        filename="metabridge_tech_debt_%s.%s"
+                        % (debt_id, fmt))
+
+
+# ---------------------------------------------------------------------------
+# Enterprise FinOps — models estate run-cost and the economics of
+# optimizing/migrating it. Figures are MODELED from metadata unless
+# telemetry is supplied; the response declares measured vs modeled.
+# ---------------------------------------------------------------------------
+
+@app.post("/api/finops")
+async def finops_run(request: Request):
+    """{"files":[...] | "from_job": id, "telemetry": {...}} -> FinOps
+    model + exports. Reachability/inventory come from the workspace
+    Digital Twin (build one first for full coverage); uploaded/from-job
+    projects add IR compute detail. `telemetry` (optional) supplies
+    measured figures (storage_gb, monthly_compute_credits +
+    credit_price_usd, monthly_query_usd, warehouse_utilization_pct)
+    that replace the matching modeled components."""
+    from metabridge.finops.engine import analyze_finops
+    from metabridge.finops.exports import export_all
+    from metabridge.debt.engine import _parse_pipelines
+    body = await _json_object(request)
+    job_dir = _new_job("finops")
+    try:
+        telemetry = body.get("telemetry")
+        if telemetry is not None and not isinstance(telemetry, dict):
+            raise HTTPException(422, "telemetry must be an object")
+        paths = []
+        if body.get("from_job"):
+            root = _job_input_root(_job_dir(str(body["from_job"])))
+            paths = [str(root)]
+        elif body.get("files"):
+            root = _write_tree_files(body["files"], job_dir / "input")
+            entries = [p for p in root.iterdir()
+                       if not p.name.startswith(".")]
+            paths = ([str(entries[0])]
+                     if len(entries) == 1 and entries[0].is_dir()
+                     else [str(root)])
+        pipelines = _parse_pipelines(paths)
+        twin = None
+        if _TWIN_FILE.exists():
+            try:
+                twin = json.loads(_TWIN_FILE.read_text())
+            except (ValueError, OSError):
+                twin = None
+        if twin is None and paths:
+            from metabridge.twin.discover import build_twin
+            twin = build_twin(paths=paths, include_connections=False)
+        if twin is None:
+            raise HTTPException(422, "Build a Digital Twin (POST "
+                                     "/api/twin/build) or upload a "
+                                     "project to model FinOps")
+        d = analyze_finops(twin, pipelines, telemetry)
+        out = job_dir / "output"
+        exports = export_all(d, str(out))
+        meta = _finish_job(job_dir)
+        return {"finops_id": meta["id"], "exports": exports, **d}
+    except HTTPException:
+        _finish_job(job_dir, status="failed", error="request rejected")
+        raise
+    except Exception as e:               # never strand the job "running"
+        _finish_job(job_dir, status="failed", error=str(e))
+        raise HTTPException(422, "FinOps analysis failed: %s" % e)
+
+
+@app.get("/api/finops/{finops_id}")
+def finops_get(finops_id: str):
+    f = _job_dir(finops_id) / "output" / "finops.json"
+    if not f.exists():
+        raise HTTPException(404, "Not a FinOps analysis")
+    try:
+        return json.loads(f.read_text())
+    except (ValueError, OSError):
+        raise HTTPException(422, "Analysis output is corrupt or "
+                                 "incomplete — re-run the analysis")
+
+
+@app.get("/api/finops/{finops_id}/export")
+def finops_export(finops_id: str, format: str = "pdf"):
+    from fastapi.responses import FileResponse
+    from metabridge.finops.exports import MEDIA
+    fmt = format.lower()
+    if fmt not in MEDIA:
+        raise HTTPException(422, "format must be one of %s"
+                            % ", ".join(sorted(MEDIA)))
+    f = _job_dir(finops_id) / "output" / ("finops.%s" % fmt)
+    if not f.exists():
+        raise HTTPException(404, "Export not found")
+    return FileResponse(str(f), media_type=MEDIA[fmt],
+                        filename="metabridge_finops_%s.%s"
+                        % (finops_id, fmt))
+
+
+# ---------------------------------------------------------------------------
+# Security & Compliance Intelligence — control-gap analysis over the
+# governance classifier + Digital Twin + a plaintext-secret scan. Maps
+# to GDPR/HIPAA/PCI/SOX/ISO27001/NIST. Audit-prep evidence, NOT a
+# certified attestation (the response says so).
+# ---------------------------------------------------------------------------
+
+@app.post("/api/security")
+async def security_run(request: Request):
+    """{"files":[...] | "from_job": id} -> security & compliance posture
+    + exports. Classification/inventory come from the workspace Digital
+    Twin + the uploaded IR (which also drives the plaintext-secret
+    scan)."""
+    from metabridge.security.engine import analyze_security
+    from metabridge.security.exports import export_all
+    from metabridge.debt.engine import _parse_pipelines
+    from metabridge.security.engine import _read_raw_texts
+    body = await _json_object(request)
+    job_dir = _new_job("security")
+    try:
+        paths = []
+        if body.get("from_job"):
+            root = _job_input_root(_job_dir(str(body["from_job"])))
+            paths = [str(root)]
+        elif body.get("files"):
+            root = _write_tree_files(body["files"], job_dir / "input")
+            entries = [p for p in root.iterdir()
+                       if not p.name.startswith(".")]
+            paths = ([str(entries[0])]
+                     if len(entries) == 1 and entries[0].is_dir()
+                     else [str(root)])
+        pipelines = _parse_pipelines(paths)
+        # scan the raw uploaded files too (a secret in a comment the
+        # parser drops must still be caught)
+        raw_texts = _read_raw_texts(paths)
+        twin = None
+        if _TWIN_FILE.exists():
+            try:
+                twin = json.loads(_TWIN_FILE.read_text())
+            except (ValueError, OSError):
+                twin = None
+        if twin is None and paths:
+            from metabridge.twin.discover import build_twin
+            twin = build_twin(paths=paths, include_connections=False)
+        if twin is None:
+            raise HTTPException(422, "Build a Digital Twin (POST "
+                                     "/api/twin/build) or upload a "
+                                     "project to assess security")
+        d = analyze_security(twin, pipelines, raw_texts)
+        out = job_dir / "output"
+        exports = export_all(d, str(out))
+        meta = _finish_job(job_dir)
+        return {"security_id": meta["id"], "exports": exports, **d}
+    except HTTPException:
+        _finish_job(job_dir, status="failed", error="request rejected")
+        raise
+    except Exception as e:               # never strand the job "running"
+        _finish_job(job_dir, status="failed", error=str(e))
+        raise HTTPException(422, "security analysis failed: %s" % e)
+
+
+@app.get("/api/security/{security_id}")
+def security_get(security_id: str):
+    f = _job_dir(security_id) / "output" / "security.json"
+    if not f.exists():
+        raise HTTPException(404, "Not a security analysis")
+    try:
+        return json.loads(f.read_text())
+    except (ValueError, OSError):
+        raise HTTPException(422, "Analysis output is corrupt or "
+                                 "incomplete — re-run the analysis")
+
+
+@app.get("/api/security/{security_id}/export")
+def security_export(security_id: str, format: str = "pdf"):
+    from fastapi.responses import FileResponse
+    from metabridge.security.exports import MEDIA
+    fmt = format.lower()
+    if fmt not in MEDIA:
+        raise HTTPException(422, "format must be one of %s"
+                            % ", ".join(sorted(MEDIA)))
+    f = _job_dir(security_id) / "output" / ("security.%s" % fmt)
+    if not f.exists():
+        raise HTTPException(404, "Export not found")
+    return FileResponse(str(f), media_type=MEDIA[fmt],
+                        filename="metabridge_security_%s.%s"
+                        % (security_id, fmt))
+
+
+# ---------------------------------------------------------------------------
+# Documentation generation — ONE canonical Doc model, 14 generators
+# composing IR + Digital Twin + governance + lineage, 4 renderers
+# (PDF / Word / Markdown / HTML). Deterministic.
+# ---------------------------------------------------------------------------
+
+@app.get("/api/docs/catalog")
+def docs_catalog():
+    from metabridge.docs.generate import catalog
+    from metabridge.docs.render import EXTENSIONS
+    return {"documents": catalog(), "formats": list(EXTENSIONS)}
+
+
+@app.post("/api/docs")
+async def docs_run(request: Request):
+    """{"files":[...] | "from_job": id, "documents": [slug...],
+    "formats": ["pdf","docx","md","html"]} -> generates the selected
+    documents (all 14 by default) in the selected formats (all 4 by
+    default) and returns the manifest + per-file download paths."""
+    from metabridge.docs.generate import (build_context, generate_all,
+                                           DOC_TYPES)
+    from metabridge.docs.render import render, EXTENSIONS
+    from metabridge.debt.engine import _parse_pipelines
+    body = await _json_object(request)
+    job_dir = _new_job("docs")
+    try:
+        slugs = body.get("documents") or list(DOC_TYPES)
+        slugs = [s for s in slugs if s in DOC_TYPES]
+        if not slugs:
+            raise HTTPException(422, "no valid document types requested")
+        formats = body.get("formats") or list(EXTENSIONS)
+        formats = [f for f in formats if f in EXTENSIONS]
+        if not formats:
+            raise HTTPException(422, "formats must be a subset of %s"
+                                % ", ".join(EXTENSIONS))
+        paths = []
+        if body.get("from_job"):
+            root = _job_input_root(_job_dir(str(body["from_job"])))
+            paths = [str(root)]
+        elif body.get("files"):
+            root = _write_tree_files(body["files"], job_dir / "input")
+            entries = [p for p in root.iterdir()
+                       if not p.name.startswith(".")]
+            paths = ([str(entries[0])]
+                     if len(entries) == 1 and entries[0].is_dir()
+                     else [str(root)])
+        twin = None
+        if _TWIN_FILE.exists():
+            try:
+                twin = json.loads(_TWIN_FILE.read_text())
+            except (ValueError, OSError):
+                twin = None
+        if twin is None and paths:
+            from metabridge.twin.discover import build_twin
+            twin = build_twin(paths=paths, include_connections=False)
+        pipelines = _parse_pipelines(paths)
+        if twin is None and not pipelines:
+            raise HTTPException(422, "Build a Digital Twin (POST "
+                                     "/api/twin/build) or upload a "
+                                     "project to document")
+        gen_at = datetime.datetime.now().strftime("%Y-%m-%d")
+        ctx = build_context(pipelines, twin,
+                            project=str(body.get("project", "")
+                                        or "estate"),
+                            generated_at=gen_at)
+        docs = generate_all(ctx, slugs)
+        out = job_dir / "output"
+        out.mkdir(parents=True, exist_ok=True)
+        manifest = []
+        for slug, doc in docs.items():
+            files = {}
+            for fmt in formats:
+                render(doc, fmt, str(out / ("%s.%s" % (slug, fmt))))
+                files[fmt] = "%s.%s" % (slug, fmt)
+            manifest.append({"slug": slug, "title": doc.title,
+                             "files": files})
+        meta = _finish_job(job_dir)
+        return {"docs_id": meta["id"], "documents": manifest,
+                "formats": formats, "project": ctx["project"]}
+    except HTTPException:
+        _finish_job(job_dir, status="failed", error="request rejected")
+        raise
+    except Exception as e:               # never strand the job "running"
+        _finish_job(job_dir, status="failed", error=str(e))
+        raise HTTPException(422, "documentation generation failed: %s"
+                            % e)
+
+
+@app.get("/api/docs/{docs_id}")
+def docs_get(docs_id: str):
+    f = _job_dir(docs_id) / "meta.json"
+    if not f.exists():
+        raise HTTPException(404, "Not a documentation job")
+    out = _job_dir(docs_id) / "output"
+    docs = {}
+    for p in sorted(out.glob("*.*")) if out.exists() else []:
+        docs.setdefault(p.stem, []).append(p.suffix.lstrip("."))
+    return {"docs_id": docs_id,
+            "documents": [{"slug": s, "formats": fmts}
+                          for s, fmts in docs.items()]}
+
+
+@app.get("/api/docs/{docs_id}/download")
+def docs_download(docs_id: str, doc: str, format: str = "pdf"):
+    from fastapi.responses import FileResponse
+    from metabridge.docs.render import MEDIA, EXTENSIONS
+    from metabridge.docs.generate import DOC_TYPES
+    fmt = format.lower()
+    if fmt not in EXTENSIONS:
+        raise HTTPException(422, "format must be one of %s"
+                            % ", ".join(EXTENSIONS))
+    if doc not in DOC_TYPES:
+        raise HTTPException(422, "unknown document type")
+    f = _job_dir(docs_id) / "output" / ("%s.%s" % (doc, fmt))
+    if not f.exists():
+        raise HTTPException(404, "Document not found (was it generated in "
+                                 "this format?)")
+    return FileResponse(str(f), media_type=MEDIA[fmt],
+                        filename="metabridge_%s.%s" % (doc, fmt))
+
+
+# ---------------------------------------------------------------------------
+# Enterprise Plugin SDK — every engine is a first-party plugin; third-
+# party plugins register via a plugin.yml manifest + hot loading through
+# the same registry.
+# ---------------------------------------------------------------------------
+
+_PLUGIN_DIR = DATA_DIR / "plugins"
+
+
+@app.get("/api/plugins")
+def plugins_list(type: str = ""):
+    from metabridge.plugins import (get_registry, PLUGIN_TYPES,
+                                    METABRIDGE_API_VERSION)
+    reg = get_registry()
+    if type:
+        if type not in PLUGIN_TYPES:
+            raise HTTPException(422, "unknown plugin type: %s" % type)
+        listing = [p.manifest.to_dict() for p in reg.by_type(type)]
+    else:
+        listing = reg.marketplace()
+    return {"api_version": METABRIDGE_API_VERSION,
+            "types": list(PLUGIN_TYPES),
+            "counts": reg.counts_by_type(),
+            "plugins": listing}
+
+
+@app.get("/api/plugins/health")
+def plugins_health():
+    from metabridge.plugins import get_registry
+    return get_registry().health()
+
+
+@app.get("/api/plugins/capabilities")
+def plugins_capabilities():
+    from metabridge.plugins import get_registry
+    return {"capabilities": get_registry().capabilities()}
+
+
+@app.get("/api/plugins/{plugin_id}")
+def plugins_get(plugin_id: str):
+    from metabridge.plugins import get_registry
+    p = get_registry().get(plugin_id)
+    if p is None:
+        raise HTTPException(404, "Unknown plugin: %s" % plugin_id)
+    return {**p.manifest.to_dict(), "health": p.health()}
+
+
+@app.post("/api/plugins/scaffold")
+async def plugins_scaffold(request: Request):
+    """{"type":..., "name":..., "capabilities":[...]} -> a loadable
+    starter plugin (manifest + module text). Does NOT register it."""
+    from metabridge.plugins.sdk import scaffold_plugin
+    from metabridge.plugins.spec import PluginError
+    body = await _json_object(request)
+    tmp = JOBS_DIR / ("scaffold_%s" % uuid.uuid4().hex[:10])
+    try:
+        res = scaffold_plugin(str(tmp), str(body.get("type", "")),
+                              str(body.get("name", "") or "My Plugin"),
+                              body.get("capabilities") or ["run"])
+    except PluginError as e:
+        raise HTTPException(422, str(e))
+    return {"id": res["id"], "api_version": res["api_version"],
+            "plugin_yml": Path(res["manifest"]).read_text(),
+            "impl_py": Path(res["module"]).read_text()}
+
+
+@app.post("/api/plugins/load")
+async def plugins_load(request: Request):
+    """{"plugin_yml": "...", "impl_py": "..."} -> hot-load a third-party
+    plugin. The manifest is validated and API-version checked BEFORE any
+    code is written or imported. Loading executes plugin code — install
+    only trusted plugins."""
+    from metabridge.plugins import get_registry
+    from metabridge.plugins.spec import PluginManifest, PluginError
+    body = await _json_object(request)
+    yml = str(body.get("plugin_yml", ""))
+    impl = body.get("impl_py")
+    if not yml.strip():
+        raise HTTPException(422, "plugin_yml is required")
+    try:
+        manifest = PluginManifest.from_yaml(yml)        # validate first
+        if not manifest.compatible():
+            raise PluginError("plugin %s is not compatible with the "
+                              "current plugin API" % manifest.id)
+        if not manifest.entrypoint or ":" not in manifest.entrypoint:
+            raise PluginError("entrypoint must be 'module:factory'")
+    except PluginError as e:
+        raise HTTPException(422, str(e))
+    mod_name = manifest.entrypoint.split(":", 1)[0]
+    safe_id = "".join(c if (c.isalnum() or c in "._-") else "_"
+                      for c in manifest.id)
+    dest = _PLUGIN_DIR / safe_id
+    dest.mkdir(parents=True, exist_ok=True)
+    (dest / "plugin.yml").write_text(yml)
+    if impl is not None:
+        (dest / ("%s.py" % mod_name)).write_text(str(impl))
+    try:
+        p = get_registry().load_from_file(str(dest / "plugin.yml"),
+                                          replace=True)
+    except PluginError as e:
+        shutil.rmtree(dest, ignore_errors=True)   # no half-written dir
+        raise HTTPException(422, "load failed: %s" % e)
+    return {**p.manifest.to_dict(), "health": p.health(),
+            "loaded": True}
+
+
+@app.delete("/api/plugins/{plugin_id}")
+def plugins_unload(plugin_id: str):
+    from metabridge.plugins import get_registry
+    reg = get_registry()
+    p = reg.get(plugin_id)
+    if p is None:
+        raise HTTPException(404, "Unknown plugin: %s" % plugin_id)
+    if p.manifest.builtin:
+        raise HTTPException(422, "cannot unload a first-party plugin")
+    reg.unregister(plugin_id)
+    return {"unloaded": plugin_id}
+
+
+# ---------------------------------------------------------------------------
+# Enterprise Marketplace — publish/install signed items (connectors,
+# validators, AI skills, templates, accelerators, rules, libraries) with
+# versioning, Ed25519 signing, compatibility + license gates, health,
+# auto-updates and dependency resolution.
+# ---------------------------------------------------------------------------
+
+def _mkt():
+    from metabridge.marketplace.catalog import get_catalog
+    from metabridge.marketplace.install import InstallManager
+    cat = get_catalog()
+    return cat, InstallManager(catalog=cat, data_dir=str(DATA_DIR))
+
+
+@app.get("/api/marketplace")
+def marketplace_list(type: str = ""):
+    from metabridge.marketplace.package import ITEM_TYPES
+    cat, _ = _mkt()
+    if type and type not in ITEM_TYPES:
+        raise HTTPException(422, "unknown item type: %s" % type)
+    items = cat.all(type)
+    return {"item_types": list(ITEM_TYPES),
+            "items": [it.to_dict(cat.trust) for it in items]}
+
+
+@app.get("/api/marketplace/installed")
+def marketplace_installed():
+    cat, mgr = _mkt()
+    return {"installed": mgr.installed(), "health": mgr.health()}
+
+
+@app.get("/api/marketplace/updates")
+def marketplace_updates():
+    _, mgr = _mkt()
+    return {"updates": mgr.check_updates()}
+
+
+@app.get("/api/marketplace/{item_id}")
+def marketplace_get(item_id: str):
+    cat, mgr = _mkt()
+    it = cat.get(item_id)
+    if it is None:
+        raise HTTPException(404, "Unknown marketplace item: %s" % item_id)
+    from metabridge.marketplace.package import verify_item
+    d = it.to_dict(cat.trust)
+    d["versions"] = cat.versions(item_id)
+    d["verification"] = verify_item(it, cat.trust)
+    d["installed"] = mgr.installed().get(item_id)
+    return d
+
+
+@app.post("/api/marketplace/install")
+async def marketplace_install(request: Request):
+    """{"item_id":..., "version"?:, "accept_license"?:bool,
+    "allow_unverified"?:bool} -> install (with dependency resolution)."""
+    from metabridge.marketplace.package import MarketplaceError
+    body = await _json_object(request)
+    item_id = str(body.get("item_id", ""))
+    if not item_id:
+        raise HTTPException(422, "item_id is required")
+    _, mgr = _mkt()
+    try:
+        report = mgr.install(
+            item_id, str(body.get("version", "") or ""),
+            accept_license=bool(body.get("accept_license", False)),
+            allow_unverified=bool(body.get("allow_unverified", False)),
+            installed_at=datetime.datetime.now().strftime("%Y-%m-%d"))
+    except MarketplaceError as e:
+        raise HTTPException(422, str(e))
+    return {"item_id": item_id, **report}
+
+
+@app.post("/api/marketplace/uninstall")
+async def marketplace_uninstall(request: Request):
+    body = await _json_object(request)
+    item_id = str(body.get("item_id", ""))
+    _, mgr = _mkt()
+    if not mgr.uninstall(item_id):
+        raise HTTPException(404, "%s is not installed" % item_id)
+    return {"uninstalled": item_id}
+
+
+@app.post("/api/marketplace/update")
+async def marketplace_update(request: Request):
+    from metabridge.marketplace.package import MarketplaceError
+    body = await _json_object(request)
+    item_id = str(body.get("item_id", ""))
+    _, mgr = _mkt()
+    try:
+        report = mgr.update(
+            item_id, accept_license=bool(body.get("accept_license", False)))
+    except MarketplaceError as e:
+        raise HTTPException(422, str(e))
+    return {"item_id": item_id, **report}
+
+
+@app.post("/api/marketplace/auto-update")
+async def marketplace_auto_update(request: Request):
+    from metabridge.marketplace.package import MarketplaceError
+    body = await _json_object(request)
+    _, mgr = _mkt()
+    try:
+        return mgr.auto_update(
+            str(body.get("policy", "notify")),
+            accept_license=bool(body.get("accept_license", False)))
+    except MarketplaceError as e:
+        raise HTTPException(422, str(e))
+
+
+@app.post("/api/marketplace/keypair")
+def marketplace_keypair():
+    """Generate a publisher Ed25519 keypair (for signing your own
+    packages). The private key is shown ONCE and never stored."""
+    from metabridge.marketplace.package import generate_keypair
+    return generate_keypair()
+
+
+# ---------------------------------------------------------------------------
+# Agentic AI Architecture — twelve deterministic agents collaborate through
+# a shared CIR + blackboard memory, scheduled by a task orchestrator, gated
+# by confidence scoring + governance, held for approval when consequential,
+# and recorded in a tamper-evident audit trail.
+# ---------------------------------------------------------------------------
+
+def _agents_orch():
+    from metabridge.agents import TaskOrchestrator
+    return TaskOrchestrator(data_dir=str(DATA_DIR))
+
+
+def _agents_queue():
+    from metabridge.agents import ApprovalQueue
+    return ApprovalQueue(data_dir=str(DATA_DIR))
+
+
+def _today() -> str:
+    return datetime.datetime.now().strftime("%Y-%m-%d")
+
+
+@app.get("/api/agents")
+def agents_roster():
+    """The agent roster (roles, risk classes, dependencies), the default
+    execution plan (DAG order) and the governance policy."""
+    from metabridge.agents import AgentGovernance, TASK_TYPES
+    orch = _agents_orch()
+    return {"task_types": list(TASK_TYPES), "agents": orch.roster(),
+            "plan": orch.plan(), "governance": AgentGovernance().policy}
+
+
+@app.post("/api/agents/run")
+async def agents_run(request: Request):
+    """{"files":[...] | "from_job": id, "source_format"?, "target_region"?,
+    "task_types"?: [...]} -> run the agent swarm over the uploaded/selected
+    project. Every action is scored, governed and audited; consequential
+    (GENERATE) proposals are ALWAYS held for approval — the run requester
+    cannot pre-authorize their own consequential actions (segregation of
+    duties). Approval is a separate, permissioned, audited decision."""
+    body = await _json_object(request)
+    user = _require_account(request)
+    job_dir = _new_job("agents")
+    try:
+        if body.get("from_job"):
+            root = _job_input_root(_job_dir(str(body["from_job"])))
+        else:
+            root = _write_tree_files(body.get("files"), job_dir / "input")
+            entries = [p for p in root.iterdir()
+                       if not p.name.startswith(".")]
+            if len(entries) == 1 and entries[0].is_dir():
+                root = entries[0]
+        from metabridge.agents import SharedContext
+        ctx = SharedContext(
+            paths=[str(root)],
+            source_format=str(body.get("source_format", "") or ""),
+            target_region=str(body.get("target_region", "") or ""),
+            project=str(body.get("project", "") or "estate"))
+        task_types = body.get("task_types") or None
+        if task_types is not None and not isinstance(task_types, list):
+            raise HTTPException(422, "task_types must be a list")
+        # NB: no request-body pre-authorization — a requester cannot
+        # self-approve consequential actions; GENERATE proposals are held
+        # for a separate, permissioned approval decision.
+        report = _agents_orch().run(
+            ctx, task_types=task_types,
+            requested_by=user.get("email", "") or "operator",
+            created_at=_today())
+        _finish_job(job_dir, run_id=report["run_id"])
+        return report
+    except HTTPException:
+        _finish_job(job_dir, status="failed", error="request rejected")
+        raise
+    except Exception as e:                       # never strand the job
+        _finish_job(job_dir, status="failed", error=str(e))
+        raise HTTPException(422, "agent run failed: %s" % e)
+
+
+@app.get("/api/agents/runs")
+def agents_runs():
+    return {"runs": _agents_orch().list_runs()}
+
+
+@app.get("/api/agents/runs/{run_id}")
+def agents_run_get(run_id: str):
+    r = _agents_orch().get_run(run_id)
+    if r is None:
+        raise HTTPException(404, "Unknown agent run: %s" % run_id)
+    # overlay the LIVE approval status (the persisted report captured the
+    # approvals as of run time; they may have since been approved/rejected)
+    r["approvals"] = _agents_queue().for_run(run_id)
+    return r
+
+
+@app.get("/api/agents/approvals")
+def agents_approvals(scope: str = "pending"):
+    q = _agents_queue()
+    items = q.all() if scope == "all" else q.pending()
+    return {"scope": scope, "approvals": items}
+
+
+@app.post("/api/agents/approvals/approve")
+async def agents_approve(request: Request):
+    from metabridge.agents import ApprovalError
+    body = await _json_object(request)
+    user = _require_account(request)
+    aid = str(body.get("approval_id", ""))
+    if not aid:
+        raise HTTPException(422, "approval_id is required")
+    approver = user.get("email", "") or "operator"
+    try:
+        rec = _agents_queue().approve(
+            aid, approver=approver,
+            note=str(body.get("note", "") or ""), decided_at=_today())
+    except ApprovalError as e:
+        raise HTTPException(422, str(e))
+    _audit_decision(rec, "approved", approver)
+    return rec
+
+
+@app.post("/api/agents/approvals/reject")
+async def agents_reject(request: Request):
+    from metabridge.agents import ApprovalError
+    body = await _json_object(request)
+    user = _require_account(request)
+    aid = str(body.get("approval_id", ""))
+    if not aid:
+        raise HTTPException(422, "approval_id is required")
+    approver = user.get("email", "") or "operator"
+    try:
+        rec = _agents_queue().reject(
+            aid, approver=approver,
+            note=str(body.get("note", "") or ""), decided_at=_today())
+    except ApprovalError as e:
+        raise HTTPException(422, str(e))
+    _audit_decision(rec, "rejected", approver)
+    return rec
+
+
+def _audit_decision(rec: dict, decision: str, approver: str) -> None:
+    """Append the human approve/reject decision to the run's audit chain."""
+    try:
+        _agents_orch().record_decision(
+            rec.get("run_id", ""), rec.get("agent_id", ""), decision,
+            approver, summary="%s %s by %s" % (decision,
+                                               rec.get("agent_id", ""),
+                                               approver),
+            detail={"approval_id": rec.get("id"), "approver": approver})
+    except Exception:                            # noqa: BLE001
+        pass                                     # audit best-effort, non-fatal
+
+
+# ---------------------------------------------------------------------------
+# Observability Engine — deterministic operational monitoring of
+# MetaBridge's OWN run history (jobs, agent runs, connection tests) plus
+# modeled estate resource/cloud figures. Durations/failures/tests are
+# MEASURED; resource/cloud are MODELED (topology, not live metering).
+# ---------------------------------------------------------------------------
+
+@app.get("/api/observability")
+def observability_report():
+    """The full observability report: operational + SLA dashboards,
+    alerting, composite health score, performance trends and historical
+    analytics, plus the ten monitors."""
+    from metabridge.observability import observe
+    return observe(str(DATA_DIR), as_of=_today())
+
+
+@app.get("/api/observability/export")
+def observability_export():
+    from metabridge.observability import observe
+    rep = observe(str(DATA_DIR), as_of=_today())
+    return JSONResponse(
+        rep, headers={"Content-Disposition":
+                      "attachment; filename=observability.json"})
+
+
+# ---------------------------------------------------------------------------
+# MetaBridge OS — the self-describing platform kernel: sixteen core engines
+# and nine common platform services composed over shared canonical models,
+# with health, versions, feature flags and notifications.
+# ---------------------------------------------------------------------------
+
+def _os():
+    from metabridge.platform import MetaBridgeOS
+    return MetaBridgeOS(str(DATA_DIR))
+
+
+@app.get("/api/system")
+def system_manifest():
+    """The OS manifest: canonical models, engines by category, platform
+    services, versions, feature flags, notifications and health."""
+    return _os().manifest()
+
+
+@app.get("/api/system/health")
+def system_health():
+    return _os().health()
+
+
+@app.get("/api/system/flags")
+def system_flags():
+    return {"flags": _os().flags.all()}
+
+
+@app.post("/api/system/flags")
+async def system_set_flag(request: Request):
+    """Set a feature flag (requires settings:manage). Body: {key,
+    enabled?, rollout_pct?, roles?, description?}."""
+    body = await _json_object(request)
+    key = str(body.get("key", ""))
+    if not key:
+        raise HTTPException(422, "key is required")
+    kw = {}
+    if "enabled" in body:
+        kw["enabled"] = bool(body["enabled"])
+    if "rollout_pct" in body:
+        try:
+            kw["rollout_pct"] = int(body["rollout_pct"])
+        except (TypeError, ValueError):
+            raise HTTPException(422, "rollout_pct must be an integer")
+    if "roles" in body:
+        if not isinstance(body["roles"], list):
+            raise HTTPException(422, "roles must be a list")
+        kw["roles"] = [str(r) for r in body["roles"]]
+    if isinstance(body.get("description"), str):
+        kw["description"] = body["description"]
+    try:
+        return _os().flags.set(key, **kw)
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+
+
+@app.get("/api/system/notifications")
+def system_notifications(limit: int = 50, unseen_only: bool = False):
+    nc = _os().notifications
+    return {"counts": nc.counts(),
+            "notifications": nc.recent(limit=limit, unseen_only=unseen_only)}
+
+
+@app.post("/api/system/notifications/seen")
+async def system_notifications_seen(request: Request):
+    body = await _json_object(request)
+    ids = body.get("ids")
+    if ids is not None and not isinstance(ids, list):
+        raise HTTPException(422, "ids must be a list")
+    marked = _os().notifications.mark_seen([str(i) for i in ids]
+                                           if ids else None)
+    return {"marked_seen": marked}
+
+
+# ---------------------------------------------------------------------------
+# Digital Twin — ONE typed graph of the whole estate, discovered from
+# uploads, saved connections, prior jobs and the estate.yml descriptor.
+# All analytics are deterministic graph traversals (topology, not
+# telemetry — the responses say so where it matters).
+# ---------------------------------------------------------------------------
+
+_TWIN_FILE = DATA_DIR / "twin.json"
+
+
+def _write_tree_files(files, dest: Path) -> Path:
+    """Like _write_inline_files but preserves relative folders so each
+    uploaded system stays a separate detection unit. Every path
+    component is sanitized — no traversal, no absolute paths."""
+    import re as _re
+    if not isinstance(files, list) or not files:
+        raise HTTPException(422, "files must be a non-empty list of "
+                                 "{name, content}")
+    dest.mkdir(parents=True, exist_ok=True)
+    seen: set = set()
+    for f in files:
+        if not isinstance(f, dict):
+            continue
+        raw = str(f.get("name", "script.sql")).replace("\\", "/")
+        parts = [_re.sub(r"[^\w.\-]", "_", p)
+                 for p in raw.split("/")
+                 if p and p not in (".", "..")]
+        parts = [p for p in parts if p]
+        if not parts:
+            parts = ["script.sql"]
+        rel = "/".join(parts)
+        if rel in seen:                       # two inputs sanitized alike
+            stem = parts[-1]
+            i = 1
+            while rel in seen:
+                parts[-1] = "%s_%d" % (stem, i)
+                rel = "/".join(parts)
+                i += 1
+        seen.add(rel)
+        target = dest.joinpath(*parts)
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(str(f.get("content", "")))
+        except OSError:
+            # a name that collides with an existing file/dir path —
+            # skip it rather than 500 the whole upload
+            continue
+    return dest
+
+
+def _twin_load():
+    from metabridge.twin.model import twin_from_dict
+    if not _TWIN_FILE.exists():
+        raise HTTPException(404, "No digital twin built yet — POST "
+                                 "/api/twin/build first")
+    return twin_from_dict(json.loads(_TWIN_FILE.read_text()))
+
+
+async def _json_object(request: Request) -> dict:
+    """Parse a JSON request body, guaranteeing an object — malformed or
+    non-object bodies get a clean 422 instead of a 500."""
+    try:
+        body = await request.json()
+    except (ValueError, UnicodeDecodeError):
+        raise HTTPException(422, "request body must be valid JSON")
+    if not isinstance(body, dict):
+        raise HTTPException(422, "request body must be a JSON object")
+    return body
+
+
+def _write_twin(doc: dict) -> None:
+    """Persist the workspace twin atomically with owner-only perms — it
+    can carry connection metadata, so it follows the same 0600
+    convention as other connection-derived state."""
+    tmp = _TWIN_FILE.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(doc, indent=1))
+    try:
+        os.chmod(tmp, 0o600)
+    except OSError:
+        pass
+    os.replace(tmp, _TWIN_FILE)
+
+
+@app.post("/api/twin/build")
+async def twin_build(request: Request):
+    """{"files": [...], "estate_yaml": "...", "include_connections":
+    bool, "include_jobs": bool} -> builds and persists the estate twin.
+    Files named estate*.yml are treated as the descriptor, each
+    uploaded top-level folder as one system."""
+    import yaml as _yaml
+    from metabridge.twin.discover import build_twin
+    body = await _json_object(request)
+    job_dir = _new_job("twin")
+    try:
+        estate_docs = []
+        if body.get("estate_yaml"):
+            try:
+                doc = _yaml.safe_load(str(body["estate_yaml"]))
+            except _yaml.YAMLError as e:
+                _finish_job(job_dir, status="failed", error=str(e))
+                raise HTTPException(422, "estate_yaml: %s" % e)
+            if isinstance(doc, dict):
+                estate_docs.append(doc)
+        paths = []
+        if body.get("files"):
+            root = _write_tree_files(body["files"], job_dir / "input")
+            for i, f in enumerate(sorted(root.rglob("estate*.y*ml"))):
+                try:
+                    doc = _yaml.safe_load(f.read_text())
+                except _yaml.YAMLError:
+                    doc = None
+                if isinstance(doc, dict):
+                    estate_docs.append(doc)
+                    # move the descriptor out of the parse root under a
+                    # unique name (same basename at two depths must not
+                    # clobber each other)
+                    f.rename(job_dir / ("descriptor_%d_%s"
+                                        % (i, f.name)))
+            top = [p for p in sorted(root.iterdir())]
+            if top and all(p.is_dir() for p in top):
+                paths = [str(p) for p in top]  # one system per folder
+            elif top:
+                paths = [str(root)]
+        twin = build_twin(
+            paths=paths, estate_docs=estate_docs,
+            include_connections=bool(
+                body.get("include_connections", True)),
+            jobs_dir=str(JOBS_DIR) if body.get("include_jobs", True)
+            else None,
+            name=str(body.get("name", "") or "estate"))
+        doc = twin.to_dict()
+        out = job_dir / "output"
+        out.mkdir(parents=True, exist_ok=True)
+        (out / "twin.json").write_text(json.dumps(doc, indent=1))
+        _write_twin(doc)
+        meta = _finish_job(job_dir)
+        return {"twin_id": meta["id"], **doc}
+    except HTTPException:
+        raise
+    except Exception as e:              # never leave the job "running"
+        _finish_job(job_dir, status="failed", error=str(e))
+        raise HTTPException(500, "twin build failed: %s" % e)
+
+
+@app.get("/api/twin")
+def twin_get():
+    if not _TWIN_FILE.exists():
+        raise HTTPException(404, "No digital twin built yet — POST "
+                                 "/api/twin/build first")
+    return json.loads(_TWIN_FILE.read_text())
+
+
+@app.get("/api/twin/graph")
+def twin_graph(view: str = "full"):
+    from metabridge.twin import analyze
+    if view not in ("full", "flow"):
+        raise HTTPException(422, "view must be 'full' or 'flow'")
+    twin = _twin_load()
+    if view == "flow":
+        return analyze.data_flow_graph(twin)
+    return twin.to_dict()
+
+
+@app.get("/api/twin/dependencies")
+def twin_dependencies():
+    from metabridge.twin import analyze
+    return analyze.application_dependency_graph(_twin_load())
+
+
+@app.get("/api/twin/capability-map")
+def twin_capability_map():
+    from metabridge.twin import analyze
+    return analyze.business_capability_map(_twin_load())
+
+
+@app.get("/api/twin/inventory")
+def twin_inventory():
+    from metabridge.twin import analyze
+    return analyze.technology_inventory(_twin_load())
+
+
+@app.get("/api/twin/landscape")
+def twin_landscape():
+    from metabridge.twin import analyze
+    return analyze.application_landscape(_twin_load())
+
+
+def _twin_node_query(fn, node: str):
+    from metabridge.twin import analyze
+    result = getattr(analyze, fn)(_twin_load(), node)
+    if "error" in result:
+        raise HTTPException(404, result["error"])
+    return result
+
+
+@app.get("/api/twin/blast-radius")
+def twin_blast_radius(node: str):
+    return _twin_node_query("blast_radius", node)
+
+
+@app.get("/api/twin/root-cause")
+def twin_root_cause(node: str):
+    return _twin_node_query("root_cause", node)
+
+
+@app.get("/api/twin/impact")
+def twin_impact(node: str):
+    return _twin_node_query("impact_analysis", node)
+
+
+@app.post("/api/twin/simulate")
+async def twin_simulate(request: Request):
+    """{"selection": [names]} or {"technology": "ssis"} -> waves."""
+    from metabridge.twin import analyze
+    body = await _json_object(request)
+    selection = body.get("selection")
+    if selection is not None:
+        if not isinstance(selection, list):
+            raise HTTPException(422, "selection must be a list of names")
+        selection = [str(s) for s in selection]
+    result = analyze.simulate_migration(
+        _twin_load(), selection=selection,
+        technology=str(body.get("technology", "") or ""))
+    if "error" in result:
+        raise HTTPException(422, result["error"])
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Event & streaming modernization (Command 8) — every platform flows
+#   Metadata Parser -> CER -> Semantic Analysis -> Target Generator ->
+#   Validation + AI Review + Governance
+# ---------------------------------------------------------------------------
+
+def _events_load(event_id: str):
+    from metabridge.events.cer import cer_from_dict
+    job_dir = _job_dir(event_id)
+    f = job_dir / "output" / "cer.json"
+    if not f.exists():
+        raise HTTPException(404, "Not an event import")
+    return job_dir, cer_from_dict(json.loads(f.read_text()))
+
+
+@app.post("/api/events/analyze")
+async def events_analyze(request: Request):
+    from metabridge.events.graph import event_lineage
+    from metabridge.events.parsers import parse_events
+    from metabridge.events.validate import event_intelligence, validate_cer
+    body = await request.json()
+    job_dir = _new_job("events")
+    root = _write_inline_files(body.get("files"), job_dir / "input")
+    try:
+        cer = parse_events(str(root),
+                           str(body.get("platform", "") or ""))
+    except (ValueError, FileNotFoundError) as e:
+        _finish_job(job_dir, status="failed", error=str(e))
+        raise HTTPException(422, str(e))
+    validation = validate_cer(cer, str(body.get("target", "") or ""))
+    intelligence = event_intelligence(cer, validation)
+    out = job_dir / "output"
+    out.mkdir(parents=True, exist_ok=True)
+    (out / "cer.json").write_text(json.dumps(cer.to_dict(), indent=1))
+    meta = _finish_job(job_dir, source_format=cer.source_platform)
+    inv = cer.inventory()
+    return {
+        "event_id": meta["id"],
+        "detected_platform": cer.source_platform,
+        "inventory": inv,
+        "topics": [c.name for c in cer.channels if c.kind != "queue"],
+        "queues": [c.name for c in cer.channels if c.kind == "queue"],
+        "consumers": [c.name for c in cer.consumers],
+        "producers": [p.name for p in cer.producers],
+        "streaming_jobs": [t.name for t in cer.transformations],
+        "cdc_sources": [c.name for c in cer.cdc_sources],
+        "iot_sources": [i.name for i in cer.iot_sources],
+        "automation_score": intelligence["automation_score"],
+        "semantic_confidence": max(
+            0, 100 - 5 * len(intelligence["manual_review_items"])
+            - 2 * sum(1 for f in validation["findings"]
+                      if f["severity"] == "WARNING")),
+        "manual_review_items": intelligence["manual_review_items"],
+        "validation_verdict": validation["verdict"],
+        "lineage": event_lineage(cer),
+        "intelligence": intelligence,
+    }
+
+
+@app.post("/api/events/convert")
+async def events_convert(request: Request):
+    from metabridge.events.generators import EVENT_TARGETS, generate_events
+    from metabridge.events.graph import event_lineage, to_mermaid
+    from metabridge.events.parsers import parse_events
+    from metabridge.events.validate import event_intelligence, validate_cer
+    body = await request.json()
+    target = str(body.get("target", "") or "")
+    if target not in EVENT_TARGETS:
+        raise HTTPException(422, "target must be one of %s"
+                            % ", ".join(EVENT_TARGETS))
+    if body.get("event_id"):
+        _src, cer = _events_load(str(body["event_id"]))
+    else:
+        job = _new_job("events")
+        root = _write_inline_files(body.get("files"), job / "input")
+        try:
+            cer = parse_events(str(root),
+                               str(body.get("platform", "") or ""))
+        except (ValueError, FileNotFoundError) as e:
+            _finish_job(job, status="failed", error=str(e))
+            raise HTTPException(422, str(e))
+        _finish_job(job, source_format=cer.source_platform)
+    job_dir = _new_job("events_convert")
+    out = job_dir / "output"
+    out.mkdir(parents=True, exist_ok=True)
+    manifest = generate_events(cer, target, str(out / "generated"))
+    validation = validate_cer(cer, target)
+    intelligence = event_intelligence(cer, validation)
+    (out / "cer.json").write_text(json.dumps(cer.to_dict(), indent=1))
+    (out / "event_lineage.json").write_text(
+        json.dumps(event_lineage(cer), indent=1))
+    (out / "event_flow.mmd").write_text(to_mermaid(cer))
+    (out / "event_validation.json").write_text(
+        json.dumps(validation, indent=1))
+    (out / "event_intelligence.json").write_text(
+        json.dumps(intelligence, indent=1))
+    meta = _finish_job(job_dir, source_format=cer.source_platform,
+                       target_format=target)
+    return {"event_id": meta["id"],
+            "source_platform": cer.source_platform, "target": target,
+            "generated": manifest["files"],
+            "validation_verdict": validation["verdict"],
+            "automation_score": intelligence["automation_score"],
+            "download_url": "/api/jobs/%s/download" % meta["id"]}
+
+
+@app.post("/api/events/intelligence")
+async def events_intelligence(request: Request):
+    """The Event Intelligence Layer — deterministic analysis AFTER the
+    CER. {"event_id": ...} or {"files": [...]}."""
+    from metabridge.events.insight import analyze_event_intelligence
+    from metabridge.events.parsers import parse_events
+    body = await request.json()
+    if body.get("event_id"):
+        job_dir, cer = _events_load(str(body["event_id"]))
+    else:
+        job_dir = _new_job("events")
+        root = _write_inline_files(body.get("files"), job_dir / "input")
+        try:
+            cer = parse_events(str(root),
+                               str(body.get("platform", "") or ""))
+        except (ValueError, FileNotFoundError) as e:
+            _finish_job(job_dir, status="failed", error=str(e))
+            raise HTTPException(422, str(e))
+        out = job_dir / "output"
+        out.mkdir(parents=True, exist_ok=True)
+        (out / "cer.json").write_text(json.dumps(cer.to_dict(),
+                                                 indent=1))
+        _finish_job(job_dir, source_format=cer.source_platform)
+    intel = analyze_event_intelligence(cer)
+    (job_dir / "output" / "event_intelligence_layer.json").write_text(
+        json.dumps(intel, indent=1))
+    (job_dir / "output" / "event_executive_report.md").write_text(
+        intel["executive_report"])
+    return {"event_id": job_dir.name, **intel}
+
+
+@app.get("/api/events/{event_id}/topology")
+def events_topology(event_id: str):
+    from metabridge.events.insight import analyze_topology
+    _dir, cer = _events_load(event_id)
+    return analyze_topology(cer)
+
+
+@app.get("/api/events/{event_id}/recommendations")
+def events_recommendations(event_id: str):
+    from metabridge.events.insight import (
+        analyze_cdc, analyze_iot, analyze_partitions, analyze_quality,
+        analyze_schema_evolution, analyze_security,
+    )
+    _dir, cer = _events_load(event_id)
+    parts = analyze_partitions(cer)
+    schema = analyze_schema_evolution(cer)
+    quality = analyze_quality(cer)
+    sec = analyze_security(cer)
+    iot = analyze_iot(cer)
+    return {
+        "partitions": parts["recommendations"],
+        "schema": schema["recommendations"],
+        "quality": [{"object": f["object"],
+                     "remediation": f["remediation"]}
+                    for f in quality["findings"]],
+        "cdc": [{"source": c["source"],
+                 "recommended_mode": c["recommended_mode"],
+                 "recommendation": c["recommendation"]}
+                for c in analyze_cdc(cer)["sources"]],
+        "iot": iot["recommendations"],
+        "security": sec["recommendations"],
+    }
+
+
+@app.get("/api/events/{event_id}/cost-analysis")
+def events_cost(event_id: str):
+    from metabridge.events.insight import analyze_cost
+    _dir, cer = _events_load(event_id)
+    return analyze_cost(cer)
+
+
+@app.get("/api/events/{event_id}/readiness")
+def events_readiness(event_id: str):
+    from metabridge.events.insight import (
+        analyze_quality, analyze_schema_evolution, analyze_security,
+        readiness_scores,
+    )
+    from metabridge.events.validate import event_intelligence, validate_cer
+    _dir, cer = _events_load(event_id)
+    validation = validate_cer(cer)
+    base = event_intelligence(cer, validation)
+    return readiness_scores(cer, validation, base,
+                            analyze_schema_evolution(cer),
+                            analyze_quality(cer),
+                            analyze_security(cer))
+
+
+@app.post("/api/events/validate")
+async def events_validate(request: Request):
+    from metabridge.events.validate import validate_cer
+    body = await request.json()
+    _dir, cer = _events_load(str(body.get("event_id", "")))
+    return validate_cer(cer, str(body.get("target", "") or ""))
+
+
+@app.post("/api/events/review")
+async def events_review(request: Request):
+    from metabridge.events.review import review_events
+    from metabridge.events.validate import event_intelligence, validate_cer
+    body = await request.json()
+    _dir, cer = _events_load(str(body.get("event_id", "")))
+    intelligence = event_intelligence(cer, validate_cer(cer))
+    return review_events(cer, intelligence,
+                         use_ai=bool(body.get("ai", True)))
+
+
+@app.get("/api/events/{event_id}/lineage")
+def events_lineage(event_id: str):
+    from metabridge.events.graph import (
+        event_lineage, execution_graph, to_mermaid,
+    )
+    _dir, cer = _events_load(event_id)
+    return {"lineage": event_lineage(cer),
+            "execution_graph": execution_graph(cer),
+            "mermaid": to_mermaid(cer)}
+
+
+@app.get("/api/events/{event_id}/report")
+def events_report(event_id: str):
+    from metabridge.events.validate import event_intelligence, validate_cer
+    _dir, cer = _events_load(event_id)
+    validation = validate_cer(cer)
+    return {"event_id": event_id,
+            "source_platform": cer.source_platform,
+            "inventory": cer.inventory(),
+            "validation": validation,
+            "intelligence": event_intelligence(cer, validation)}
+
+
+# ---------------------------------------------------------------------------
+# SAP modernization (Command 7) — SAP Landscape -> Metadata Extraction ->
+# SAP Semantic Parser -> CIR -> Semantic Intelligence -> Target Generator ->
+# Validation + Governance + AI Review. Same engine path as every source.
+# ---------------------------------------------------------------------------
+
+@app.post("/api/sap/analyze")
+async def sap_analyze(request: Request):
+    """SAP metadata import -> semantic inventory + scores + lineage."""
+    from metabridge.report.complexity import score_pipeline
+    from metabridge.report.confidence import score_pipeline_confidence
+    from metabridge.sap.artifacts import business_lineage
+    from metabridge.sap.normalize import normalize_sap
+    from metabridge.sap.parsers import parse_sap
+    body = await request.json()
+    job_dir = _new_job("analyze")
+    root = _write_inline_files(body.get("files"), job_dir / "input")
+    try:
+        land = parse_sap(str(root))
+        pipeline = normalize_sap(land)
+    except (ValueError, FileNotFoundError) as e:
+        _finish_job(job_dir, status="failed", error=str(e))
+        raise HTTPException(422, str(e))
+    cx = score_pipeline(pipeline)
+    cx.pop("assets", None)
+    conf = score_pipeline_confidence(pipeline)
+    meta = _finish_job(job_dir, source_format="sap")
+    issues = pipeline.all_issues()
+    sap_objects = pipeline.metadata.get("sap_objects", {})
+    return {
+        "project_id": meta["id"],
+        "detected_platform": land.platform,
+        "inventory": land.inventory(),
+        "business_objects": sap_objects.get("business_objects", []),
+        "extractors": sap_objects.get("extractors", []),
+        "infoproviders": sap_objects.get("infoproviders", []),
+        "transformations": sap_objects.get("transformations", []),
+        "process_chains": sap_objects.get("process_chains", []),
+        "queries": sap_objects.get("queries", []),
+        "pipelines": [m.name for m in pipeline.mappings],
+        "automation_score": cx.get("automation_percentage"),
+        "semantic_confidence": conf.get("average_confidence"),
+        "manual_review_items": sum(1 for i in issues
+                                   if i.severity.value == "MANUAL"),
+        "abap_units": [{"name": u.name, "verdict": u.verdict,
+                        "business_rules": u.business_rules}
+                       for u in land.abap_units],
+        "business_lineage": business_lineage(land),
+    }
+
+
+@app.post("/api/sap/convert")
+async def sap_convert(request: Request):
+    """SAP -> target (engine convert) + the SAP artifact pack (business
+    documentation, business lineage, validation SQL)."""
+    body = await request.json()
+    target = str(body.get("target_format", "") or "")
+    if not target:
+        raise HTTPException(422, "target_format is required")
+    upload = _new_job("upload")
+    root = _write_inline_files(body.get("files"), upload / "input")
+    _finish_job(upload)
+    opts = dict(body.get("options") or {})
+    options = {
+        "generate_lineage": bool(opts.get("generate_lineage", True)),
+        "generate_tests": bool(opts.get("generate_validation", True)),
+        "ai_review": bool(opts.get("ai_review", False)),
+    }
+    result = await _convert_impl(
+        file=None, from_job=json.loads(
+            (upload / "meta.json").read_text())["id"],
+        target=target, source="sap",
+        dialect="", llm_assist=False, model_list=None, override_map=None,
+        options=options)
+    # SAP artifact pack rides in the same job output
+    try:
+        from metabridge.sap.artifacts import write_sap_artifacts
+        from metabridge.sap.parsers import parse_sap
+        land = parse_sap(str(root))
+        job_out = _job_dir(result.get("job_id") or result["id"]) / "output"
+        result["sap_artifacts"] = write_sap_artifacts(
+            land, target, str(job_out))
+    except Exception as e:  # noqa: BLE001 — artifacts must not kill convert
+        result["sap_artifacts_error"] = str(e)[:200]
+    return result
+
+
+@app.post("/api/sap/validate")
+async def sap_validate(request: Request):
+    return await api_validate(request)
+
+
+@app.post("/api/sap/review")
+async def sap_review(request: Request):
+    return await api_review(request)
+
+
+@app.get("/api/sap/{migration_id}/lineage")
+def sap_lineage(migration_id: str):
+    job_dir, _meta = _migration_dir(migration_id)
+    stored = job_dir / "output" / "sap_business_lineage.json"
+    base = get_migration_lineage(migration_id)
+    if stored.exists():
+        base["business_lineage"] = json.loads(stored.read_text())
+    return base
+
+
+@app.get("/api/sap/{migration_id}/report")
+def sap_report(migration_id: str, format: str = "json"):
+    return get_migration_report(migration_id, format)
+
+
+# ---------------------------------------------------------------------------
+# Orchestration modernization (Command 6) — every platform flows
+#   Parser -> COR -> Semantic Analysis -> Target Generator -> Validation
+# ---------------------------------------------------------------------------
+
+def _orch_load(orch_id: str):
+    from metabridge.orchestration.cor import cor_from_dict
+    job_dir = _job_dir(orch_id)
+    f = job_dir / "output" / "cor.json"
+    if not f.exists():
+        raise HTTPException(404, "Not an orchestration import")
+    return job_dir, cor_from_dict(json.loads(f.read_text()))
+
+
+def _orch_analyze_payload(cor, validation, intelligence) -> dict:
+    return {
+        "detected_platform": cor.source_platform,
+        "workflows": [{
+            "name": w.name,
+            "tasks": len(w.tasks),
+            "schedules": [s.to_dict() for s in w.schedules],
+            "dependencies": len(w.dependencies),
+        } for w in cor.workflows],
+        "tasks_total": sum(len(w.tasks) for w in cor.workflows),
+        "dependencies_total": sum(len(w.dependencies)
+                                  for w in cor.workflows),
+        "automation_score": intelligence["automation_score"],
+        "migration_complexity": intelligence["migration_complexity"],
+        "complexity_level": intelligence["complexity_level"],
+        "estimated_effort_hours": intelligence["estimated_effort_hours"],
+        "unsupported_features": intelligence["unsupported_features"],
+        "manual_review_items": intelligence["manual_review_items"],
+        "validation_verdict": validation["verdict"],
+        "validation_findings": validation["findings"],
+    }
+
+
+@app.post("/api/orchestration/analyze")
+async def orchestration_analyze(request: Request):
+    """Parse an orchestration export -> COR; validate; score."""
+    from metabridge.orchestration.parsers import parse_orchestration
+    from metabridge.orchestration.validate import (
+        migration_intelligence, validate_cor,
+    )
+    body = await request.json()
+    job_dir = _new_job("orchestration")
+    root = _write_inline_files(body.get("files"), job_dir / "input")
+    platform = str(body.get("platform", "") or "")
+    try:
+        cor = parse_orchestration(str(root), platform)
+    except (ValueError, FileNotFoundError) as e:
+        _finish_job(job_dir, status="failed", error=str(e))
+        raise HTTPException(422, str(e))
+    validation = validate_cor(cor)
+    intelligence = migration_intelligence(cor, validation)
+    out = job_dir / "output"
+    out.mkdir(parents=True, exist_ok=True)
+    (out / "cor.json").write_text(json.dumps(cor.to_dict(), indent=1))
+    (out / "orchestration_validation.json").write_text(
+        json.dumps(validation, indent=1))
+    (out / "orchestration_intelligence.json").write_text(
+        json.dumps(intelligence, indent=1))
+    meta = _finish_job(job_dir, source_format=cor.source_platform)
+    return {"orchestration_id": meta["id"],
+            **_orch_analyze_payload(cor, validation, intelligence)}
+
+
+@app.post("/api/orchestration/convert")
+async def orchestration_convert(request: Request):
+    """COR -> target orchestration + graph exports + lineage + docs.
+    {"orchestration_id": ... | "files": [...], "target": "airflow"}"""
+    from metabridge.orchestration.generators import (
+        ORCH_TARGETS, generate_execution_doc, generate_orchestration,
+    )
+    from metabridge.orchestration.graph import (
+        execution_graph, orchestration_lineage, to_graphml, to_mermaid,
+    )
+    from metabridge.orchestration.parsers import parse_orchestration
+    from metabridge.orchestration.validate import (
+        migration_intelligence, validate_cor,
+    )
+    body = await request.json()
+    target = str(body.get("target", "") or "")
+    if target not in ORCH_TARGETS:
+        raise HTTPException(422, "target must be one of %s"
+                            % ", ".join(ORCH_TARGETS))
+    if body.get("orchestration_id"):
+        src_dir, cor = _orch_load(str(body["orchestration_id"]))
+    else:
+        job = _new_job("orchestration")
+        root = _write_inline_files(body.get("files"), job / "input")
+        try:
+            cor = parse_orchestration(str(root),
+                                      str(body.get("platform", "") or ""))
+        except (ValueError, FileNotFoundError) as e:
+            _finish_job(job, status="failed", error=str(e))
+            raise HTTPException(422, str(e))
+        _finish_job(job, source_format=cor.source_platform)
+        src_dir = job
+    job_dir = _new_job("orchestration_convert")
+    out = job_dir / "output"
+    out.mkdir(parents=True, exist_ok=True)
+    manifest = generate_orchestration(cor, target, str(out / "generated"))
+    validation = validate_cor(cor)
+    intelligence = migration_intelligence(cor, validation)
+    (out / "cor.json").write_text(json.dumps(cor.to_dict(), indent=1))
+    graphs = {}
+    for wf in cor.workflows:
+        graphs[wf.name] = execution_graph(wf)
+        (out / ("graph_%s.mmd" % wf.name)).write_text(to_mermaid(wf))
+        (out / ("graph_%s.graphml" % wf.name)).write_text(to_graphml(wf))
+    (out / "execution_graphs.json").write_text(json.dumps(graphs,
+                                                          indent=1))
+    (out / "orchestration_lineage.json").write_text(
+        json.dumps(orchestration_lineage(cor), indent=1))
+    (out / "orchestration_validation.json").write_text(
+        json.dumps(validation, indent=1))
+    (out / "orchestration_intelligence.json").write_text(
+        json.dumps(intelligence, indent=1))
+    (out / "execution_documentation.md").write_text(
+        generate_execution_doc(cor, intelligence, validation))
+    meta = _finish_job(job_dir, source_format=cor.source_platform,
+                       target_format=target)
+    return {"orchestration_id": meta["id"],
+            "source_platform": cor.source_platform, "target": target,
+            "generated": manifest["files"],
+            "workflows": manifest["workflows"],
+            "validation_verdict": validation["verdict"],
+            "automation_score": intelligence["automation_score"],
+            "download_url": "/api/jobs/%s/download" % meta["id"]}
+
+
+@app.post("/api/orchestration/validate")
+async def orchestration_validate(request: Request):
+    from metabridge.orchestration.validate import validate_cor
+    body = await request.json()
+    _dir, cor = _orch_load(str(body.get("orchestration_id", "")))
+    return validate_cor(cor)
+
+
+@app.post("/api/orchestration/review")
+async def orchestration_review(request: Request):
+    from metabridge.orchestration.review import review_orchestration
+    from metabridge.orchestration.validate import (
+        migration_intelligence, validate_cor,
+    )
+    body = await request.json()
+    _dir, cor = _orch_load(str(body.get("orchestration_id", "")))
+    intelligence = migration_intelligence(cor, validate_cor(cor))
+    return review_orchestration(cor, intelligence,
+                                use_ai=bool(body.get("ai", True)))
+
+
+@app.post("/api/orchestration/{orch_id}/dependencies")
+async def orchestration_edit_dependencies(orch_id: str, request: Request):
+    """Pipeline Studio dependency editing:
+    {"workflow": ..., "add": [{"from","to","kind"}],
+     "remove": [{"from","to"}]} — re-validated after every edit."""
+    from metabridge.orchestration.cor import Dependency
+    from metabridge.orchestration.validate import validate_cor
+    body = await request.json()
+    job_dir, cor = _orch_load(orch_id)
+    wf = cor.workflow(str(body.get("workflow", "")))
+    if wf is None:
+        raise HTTPException(404, "Unknown workflow")
+    keys = {t.key for t in wf.tasks}
+    for rm in body.get("remove", []) or []:
+        wf.dependencies = [d for d in wf.dependencies
+                           if not (d.from_task == rm.get("from")
+                                   and d.to_task == rm.get("to"))]
+    for ad in body.get("add", []) or []:
+        f, t = str(ad.get("from", "")), str(ad.get("to", ""))
+        if f not in keys or t not in keys:
+            raise HTTPException(422, "Unknown task in %s -> %s" % (f, t))
+        kind = str(ad.get("kind", "success"))
+        if kind not in ("success", "failure", "always", "conditional"):
+            raise HTTPException(422, "Bad dependency kind: %s" % kind)
+        wf.dependencies.append(Dependency(f, t, kind,
+                                          str(ad.get("condition", ""))))
+    validation = validate_cor(cor)
+    (job_dir / "output" / "cor.json").write_text(
+        json.dumps(cor.to_dict(), indent=1))
+    return {"workflow": wf.name,
+            "dependencies": [d.to_dict() for d in wf.dependencies],
+            "execution_order": wf.execution_order(),
+            "validation_verdict": validation["verdict"],
+            "validation_findings": [
+                f for f in validation["findings"]
+                if f.get("workflow") == wf.name]}
+
+
+@app.get("/api/orchestration/{orch_id}/graph")
+def orchestration_graph(orch_id: str):
+    from metabridge.orchestration.graph import (
+        execution_graph, to_graphml, to_mermaid,
+    )
+    _dir, cor = _orch_load(orch_id)
+    return {"source_platform": cor.source_platform,
+            "workflows": {w.name: {
+                "graph": execution_graph(w),
+                "mermaid": to_mermaid(w),
+                "graphml": to_graphml(w)} for w in cor.workflows}}
+
+
+@app.get("/api/orchestration/{orch_id}/lineage")
+def orchestration_lineage_api(orch_id: str):
+    from metabridge.orchestration.graph import orchestration_lineage
+    _dir, cor = _orch_load(orch_id)
+    return orchestration_lineage(cor)
+
+
+@app.get("/api/orchestration/{orch_id}/report")
+def orchestration_report(orch_id: str, format: str = "json"):
+    from metabridge.orchestration.generators import generate_execution_doc
+    from metabridge.orchestration.validate import (
+        migration_intelligence, validate_cor,
+    )
+    _dir, cor = _orch_load(orch_id)
+    validation = validate_cor(cor)
+    intelligence = migration_intelligence(cor, validation)
+    if format == "md":
+        return PlainTextResponse(
+            generate_execution_doc(cor, intelligence, validation),
+            media_type="text/markdown")
+    return {"orchestration_id": orch_id,
+            "source_platform": cor.source_platform,
+            "intelligence": intelligence, "validation": validation,
+            "inventory": cor.metadata.get("inventory", {})}
+
+
+def _migration_dir(migration_id: str) -> tuple:
+    job_dir = _job_dir(migration_id)
+    meta = json.loads((job_dir / "meta.json").read_text())
+    if meta.get("kind") != "convert":
+        raise HTTPException(404, "Not a migration (job kind: %s)"
+                            % meta.get("kind"))
+    return job_dir, meta
+
+
+@app.post("/api/validate")
+async def api_validate(request: Request):
+    """Five-layer conversion validation for a migration.
+    {"migration_id": "...", "rerun": false} — returns the stored
+    Migration Validation Report; rerun=true recomputes it."""
+    body = await request.json()
+    mid = str(body.get("migration_id", "") or "")
+    if not mid:
+        raise HTTPException(422, "migration_id is required")
+    job_dir, meta = _migration_dir(mid)
+    stored = job_dir / "output" / "migration_validation_report.json"
+    if not body.get("rerun") and stored.exists():
+        return json.loads(stored.read_text())
+    from metabridge.engine import parse_input
+    from metabridge.validate.conversion_validator import (
+        validate_conversion, write_validation_report,
+    )
+    dialect = str((meta.get("options") or {}).get("dialect", "") or "")
+    try:
+        pipeline = parse_input(str(_job_source_root(job_dir, meta)),
+                               meta.get("source_format", ""), dialect)
+        result = validate_conversion(pipeline, str(job_dir / "output"),
+                                     meta.get("target_format", ""), dialect,
+                                     use_ai=body.get("ai"))
+    except (ValueError, FileNotFoundError) as e:
+        raise HTTPException(422, str(e))
+    write_validation_report(result, str(job_dir / "output"))
+    return result
+
+
+@app.post("/api/review")
+async def api_review(request: Request):
+    """AI migration review for a migration (propose-only), or apply
+    approved corrections:
+    {"migration_id": "...", "mappings": [...], "ai": true}
+    {"migration_id": "...", "approve": ["stg_orders~1"]}"""
+    body = await request.json()
+    mid = str(body.get("migration_id", "") or "")
+    if not mid:
+        raise HTTPException(422, "migration_id is required")
+    job_dir, meta = _migration_dir(mid)
+    dialect = str((meta.get("options") or {}).get("dialect", "") or "")
+    if body.get("approve"):
+        from metabridge.llm.review_agent import apply_corrections
+        try:
+            return apply_corrections(str(job_dir / "output"),
+                                     [str(x) for x in body["approve"]],
+                                     meta.get("target_format", ""), dialect)
+        except FileNotFoundError as e:
+            raise HTTPException(404, str(e))
+    from metabridge.engine import parse_input
+    from metabridge.llm.review_agent import review_migration, write_review
+    try:
+        pipeline = parse_input(str(_job_source_root(job_dir, meta)),
+                               meta.get("source_format", ""), dialect)
+        result = review_migration(pipeline, str(job_dir / "output"),
+                                  meta.get("target_format", ""), dialect,
+                                  mappings=body.get("mappings") or None,
+                                  use_ai=body.get("ai"))
+    except (ValueError, FileNotFoundError) as e:
+        raise HTTPException(422, str(e))
+    write_review(result, str(job_dir / "output"))
+    return result
+
+
+@app.get("/api/migrations/{migration_id}")
+def get_migration(migration_id: str):
+    """Migration state: metadata, executive summary, verdicts, links."""
+    job_dir, meta = _migration_dir(migration_id)
+    exec_summary = None
+    mr = job_dir / "output" / "migration_report.json"
+    if mr.exists():
+        try:
+            exec_summary = json.loads(mr.read_text())["sections"][
+                "executive_summary"]
+        except Exception:  # noqa: BLE001
+            pass
+    return {**meta, "migration_id": migration_id,
+            "executive_summary": exec_summary,
+            "links": {
+                "report": "/api/migrations/%s/report" % migration_id,
+                "lineage": "/api/migrations/%s/lineage" % migration_id,
+                "validate": "/api/validate",
+                "review": "/api/review",
+                "download": "/api/jobs/%s/download" % migration_id}}
+
+
+@app.get("/api/migrations/{migration_id}/lineage")
+def get_migration_lineage(migration_id: str):
+    """Full lineage document (tables, columns, transformations, Mermaid).
+    Built once and cached in the migration output."""
+    job_dir, meta = _migration_dir(migration_id)
+    cached = job_dir / "output" / "lineage.json"
+    if cached.exists():
+        return json.loads(cached.read_text())
+    from metabridge.engine import parse_input
+    from metabridge.report.lineage import build_lineage, write_lineage
+    dialect = str((meta.get("options") or {}).get("dialect", "") or "")
+    try:
+        pipeline = parse_input(str(_job_source_root(job_dir, meta)),
+                               meta.get("source_format", ""), dialect)
+    except (ValueError, FileNotFoundError) as e:
+        raise HTTPException(422, str(e))
+    doc = build_lineage(pipeline)
+    write_lineage(doc, str(job_dir / "output"))
+    return doc
+
+
+@app.get("/api/migrations/{migration_id}/report")
+def get_migration_report(migration_id: str, format: str = "json"):
+    """The 15-section Migration Report: ?format=json | html | md."""
+    job_dir, _meta = _migration_dir(migration_id)
+    out = job_dir / "output"
+    if format == "html":
+        f = out / "migration_report.html"
+        if not f.exists():
+            raise HTTPException(404, "Migration report not generated")
+        return HTMLResponse(f.read_text())
+    if format == "md":
+        f = out / "migration_report.md"
+        if not f.exists():
+            raise HTTPException(404, "Migration report not generated")
+        return PlainTextResponse(f.read_text())
+    f = out / "migration_report.json"
+    if not f.exists():
+        raise HTTPException(404, "Migration report not generated")
+    return json.loads(f.read_text())
+
+
+@app.get("/api/jobs/{job_id}/report", response_class=HTMLResponse)
+def job_report(job_id: str) -> str:
+    for name in ("conversion_report.html", "governance_report.html"):
+        f = _job_dir(job_id) / "output" / name
+        if f.exists():
+            return f.read_text()
+    raise HTTPException(404, "Report not found")
+
+
+@app.get("/api/jobs/{job_id}/report.json")
+def job_report_json(job_id: str):
+    for name in ("conversion_report.json", "governance_report.json"):
+        f = _job_dir(job_id) / "output" / name
+        if f.exists():
+            return json.loads(f.read_text())
+    raise HTTPException(404, "Report not found")
+
+
+@app.get("/api/jobs/{job_id}/migration-report", response_class=HTMLResponse)
+def job_migration_report(job_id: str) -> str:
+    """The client-facing 15-section Migration Report (HTML)."""
+    f = _job_dir(job_id) / "output" / "migration_report.html"
+    if f.exists():
+        return f.read_text()
+    raise HTTPException(404, "Migration report not found for this job")
+
+
+@app.get("/api/jobs/{job_id}/govreport", response_class=HTMLResponse)
+def job_govreport(job_id: str) -> str:
+    f = _job_dir(job_id) / "output" / "governance_report.html"
+    if not f.exists():
+        raise HTTPException(404, "Governance report not found")
+    return f.read_text()
+
+
+@app.get("/api/jobs/{job_id}/download")
+def job_download(job_id: str):
+    out_dir = _job_dir(job_id) / "output"
+    return StreamingResponse(
+        _zip_dir(out_dir), media_type="application/zip",
+        headers={"Content-Disposition":
+                 'attachment; filename="metabridge_%s.zip"' % job_id})
+
+
+# ---------------------------------------------------------------------------
+# Auto-fix (approve-and-apply for the manual queue)
+# ---------------------------------------------------------------------------
+
+def _job_source_root(job_dir: Path, meta: dict) -> Path:
+    """The input used for this conversion (its own upload or the from_job's)."""
+    src_job = str((meta.get("options") or {}).get("from_job") or "")
+    if src_job:
+        return _job_input_root(_job_dir(src_job))
+    return _job_input_root(job_dir)
+
+
+def _review_context(job_id: str):
+    job_dir = _job_dir(job_id)
+    meta = json.loads((job_dir / "meta.json").read_text())
+    if meta.get("kind") != "convert":
+        raise HTTPException(422, "AI review applies to conversion jobs")
+    return job_dir, meta
+
+
+@app.post("/api/jobs/{job_id}/ai-review")
+async def job_ai_review(job_id: str, request: Request):
+    """Run the AI migration review over this job's conversion output.
+    Proposes corrections only — nothing is modified."""
+    from metabridge.engine import parse_input
+    from metabridge.llm.review_agent import review_migration, write_review
+    job_dir, meta = _review_context(job_id)
+    try:
+        body = await request.json()
+    except Exception:  # noqa: BLE001 — body is optional
+        body = {}
+    dialect = str((meta.get("options") or {}).get("dialect", "") or "")
+    try:
+        pipeline = parse_input(str(_job_source_root(job_dir, meta)),
+                               meta.get("source_format", ""), dialect)
+        result = review_migration(
+            pipeline, str(job_dir / "output"),
+            meta.get("target_format", ""), dialect,
+            mappings=body.get("mappings") or None,
+            use_ai=body.get("ai"))
+    except (ValueError, FileNotFoundError) as e:
+        raise HTTPException(422, str(e))
+    write_review(result, str(job_dir / "output"))
+    return result
+
+
+@app.get("/api/jobs/{job_id}/ai-review")
+def job_ai_review_get(job_id: str):
+    job_dir, _meta = _review_context(job_id)
+    f = job_dir / "output" / "ai_review" / "review.json"
+    if not f.exists():
+        raise HTTPException(404, "No review yet — POST to this endpoint "
+                                 "to run one")
+    return json.loads(f.read_text())
+
+
+@app.post("/api/jobs/{job_id}/ai-review/apply")
+async def job_ai_review_apply(job_id: str, request: Request):
+    """Apply user-approved correction ids from the stored review."""
+    from metabridge.llm.review_agent import apply_corrections
+    job_dir, meta = _review_context(job_id)
+    body = await request.json()
+    ids = [str(x) for x in body.get("ids", []) or []]
+    if not ids:
+        raise HTTPException(422, "No correction ids approved")
+    dialect = str((meta.get("options") or {}).get("dialect", "") or "")
+    try:
+        return apply_corrections(str(job_dir / "output"), ids,
+                                 meta.get("target_format", ""), dialect)
+    except FileNotFoundError as e:
+        raise HTTPException(404, str(e))
+
+
+@app.get("/api/jobs/{job_id}/autofix")
+def autofix_plan(job_id: str):
+    """What could be fixed automatically for this conversion job."""
+    from metabridge.engine import parse_input
+    from metabridge.report.autofix import plan_fixes
+    job_dir = _job_dir(job_id)
+    meta = json.loads((job_dir / "meta.json").read_text())
+    if meta.get("kind") != "convert":
+        raise HTTPException(422, "Auto-fix applies to conversion jobs")
+    report = job_report_json(job_id)
+    pipeline = None
+    try:
+        pipeline = parse_input(str(_job_source_root(job_dir, meta)),
+                               meta.get("source_format", ""),
+                               str((meta.get("options") or {}).get("dialect", "") or ""))
+    except Exception:  # noqa: BLE001 — plan still useful without key candidates
+        pass
+    return plan_fixes(report, pipeline)
+
+
+@app.post("/api/jobs/{job_id}/autofix")
+async def autofix_apply(job_id: str, request: Request):
+    """Apply approved fix groups: re-convert with fixes + write LLM drafts."""
+    from metabridge.report.autofix import apply_fixes
+    body = await request.json()
+    accepted = [str(g) for g in body.get("groups", []) or []]
+    if not accepted:
+        raise HTTPException(422, "No fix groups approved")
+    job_dir = _job_dir(job_id)
+    meta = json.loads((job_dir / "meta.json").read_text())
+    report = job_report_json(job_id)
+
+    # full originals for statement drafts come from the stored report
+    stmt_items = []
+    pool = list(report.get("project_issues", []))
+    for m in report.get("mappings", []):
+        pool.extend(m.get("issues", []))
+    for i in pool:
+        if i["code"] in ("STATEMENT_UNSUPPORTED", "STATEMENT_PARSE_FAILED",
+                         "MERGE_UNSUPPORTED"):
+            stmt_items.append({"object": i.get("object", ""), "code": i["code"],
+                               "original": i.get("detail", "")})
+
+    out_dir = job_dir / "output"
+    shutil.rmtree(out_dir, ignore_errors=True)
+    out_dir.mkdir(parents=True)
+    try:
+        new_report = apply_fixes(str(_job_source_root(job_dir, meta)),
+                                 str(out_dir), meta, accepted, stmt_items,
+                                 prior_report=report)
+    except (ValueError, FileNotFoundError) as e:
+        raise HTTPException(422, str(e))
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(500, "Auto-fix failed: %s — %s"
+                            % (type(e).__name__, str(e)[:300]))
+    af = new_report.get("autofix") or {}
+    af["applied_at"] = datetime.datetime.now().isoformat(timespec="seconds")
+    meta = _finish_job(job_dir, summary=new_report["summary"],
+                       validation=new_report.get("validation"), autofix=af)
+    return {**meta, "autofix": new_report.get("autofix"),
+            "report_url": "/api/jobs/%s/report" % job_id,
+            "download_url": "/api/jobs/%s/download" % job_id}
+
+
+# ---------------------------------------------------------------------------
+# Governance
+# ---------------------------------------------------------------------------
+
+@app.post("/api/govern")
+async def api_govern(
+    file: UploadFile = File(...),
+    source: str = Form(""),
+    source_region: str = Form(""),
+    target_region: str = Form(""),
+):
+    from metabridge.engine import parse_input
+    from metabridge.governance.engine import govern as run_govern, \
+        write_governance_report
+    job_dir = _new_job("govern")
+    try:
+        root = await _extract_zip(file, job_dir / "input")
+        pipeline = parse_input(str(root), source)
+        result = run_govern(pipeline, source_region=source_region,
+                            target_region=target_region)
+        write_governance_report(result, str(job_dir / "output"))
+    except (ValueError, FileNotFoundError) as e:
+        _finish_job(job_dir, status="failed", error=str(e))
+        raise HTTPException(422, str(e))
+    except Exception as e:  # noqa: BLE001
+        _finish_job(job_dir, status="failed", error=str(e))
+        raise HTTPException(500, "Governance scan failed: %s — %s"
+                            % (type(e).__name__, str(e)[:300]))
+    meta = _finish_job(job_dir, project=result["project"],
+                       summary=result["summary"], regions=result["regions"])
+    return {**meta, "result": result,
+            "report_url": "/api/jobs/%s/govreport" % meta["id"],
+            "download_url": "/api/jobs/%s/download" % meta["id"]}
+
+
+# ---------------------------------------------------------------------------
+# Scaffold
+# ---------------------------------------------------------------------------
+
+@app.post("/api/scaffold")
+async def api_scaffold(
+    tables: UploadFile = File(...),
+    source: str = Form(...),
+    target: str = Form(...),
+    project: str = Form(""),
+    source_region: str = Form(""),
+    target_region: str = Form(""),
+):
+    from metabridge.scaffold import scaffold as run_scaffold
+    job_dir = _new_job("scaffold")
+    manifest = job_dir / "input" / "tables.yml"
+    manifest.write_bytes(await tables.read())
+    try:
+        report = run_scaffold(source, target, str(manifest),
+                              str(job_dir / "output"), project,
+                              source_region=source_region,
+                              target_region=target_region)
+    except (ValueError, FileNotFoundError) as e:
+        _finish_job(job_dir, status="failed", error=str(e))
+        raise HTTPException(422, str(e))
+    except Exception as e:  # noqa: BLE001
+        _finish_job(job_dir, status="failed", error=str(e))
+        raise HTTPException(500, "Scaffold failed: %s — %s"
+                            % (type(e).__name__, str(e)[:300]))
+    meta = _finish_job(job_dir, project=report["project"],
+                       summary=report["summary"],
+                       governance=report.get("governance"))
+    # make success self-evident: what was created, named, and where
+    out_root = job_dir / "output"
+    artifacts = []
+    for child in sorted(out_root.iterdir()):
+        if child.is_dir():
+            n = sum(1 for f in child.rglob("*") if f.is_file())
+            artifacts.append("%s/ (%d files)" % (child.name, n))
+        else:
+            artifacts.append(child.name)
+    return {**meta,
+            "pipelines": [mm["name"] for mm in report.get("mappings", [])],
+            "artifacts": artifacts,
+            "manifest_notes": report.get("manifest_notes", []),
+            "report_url": "/api/jobs/%s/report" % meta["id"],
+            "gov_report_url": "/api/jobs/%s/govreport" % meta["id"],
+            "download_url": "/api/jobs/%s/download" % meta["id"]}
+
+
+# ---------------------------------------------------------------------------
+# Marketplace
+# ---------------------------------------------------------------------------
+
+@app.get("/api/v1/connectors")
+def v1_connectors(category: str = ""):
+    from metabridge.connectors.base import get_registry
+    reg = get_registry()
+    specs = reg.by_category(category) if category else reg.all()
+    return {"connectors": [s.to_dict() for s in specs]}
+
+
+@app.get("/api/v1/connectors/{key}")
+def v1_connector(key: str):
+    from metabridge.connectors.base import get_registry
+    spec = get_registry().get(key)
+    if spec is None:
+        raise HTTPException(404, "Unknown connector: %s" % key)
+    return spec.to_dict()
+
+
+@app.post("/api/v1/connectors/{key}/artifacts")
+async def v1_connector_artifacts(key: str, request: Request):
+    """Generate connection artifacts (dbt / IDMC / pmrep) from parameters.
+    Secrets are emitted as env-var references only — never echoed back."""
+    from metabridge.connectors.base import get_registry
+    from metabridge.connectors.emit import (
+        dbt_profile, idmc_connection, powercenter_connection, split_secrets)
+    spec = get_registry().get(key)
+    if spec is None:
+        raise HTTPException(404, "Unknown connector: %s" % key)
+    body = await request.json()
+    params = dict(body.get("params", {}) or {})
+    name = str(body.get("name", "") or ("conn_" + key))
+    out = {"connector": key, "name": name}
+    try:
+        out["dbt_profile"] = dbt_profile(spec, params, name)
+    except ValueError as e:
+        out["dbt_profile"] = "# %s" % e
+    out["idmc_connection"] = idmc_connection(spec, params, name)
+    out["pmrep_command"] = powercenter_connection(spec, params, name)
+    _, secrets = split_secrets(spec, params)
+    out["secret_env_vars"] = sorted(secrets.keys())
+    return out
+
+
+@app.post("/api/v1/connectors/{key}/test")
+async def v1_connector_test(key: str, request: Request):
+    """LIVE connection check: opens a real session against the target and
+    runs read-only probes (version, context, object counts). The password
+    is used transiently for this session only — never stored, never
+    logged, never echoed back."""
+    from metabridge.connectors.base import get_registry
+    from metabridge.livecheck import test_connection
+    spec = get_registry().get(key)
+    if spec is None:
+        raise HTTPException(404, "Unknown connector: %s" % key)
+    body = await request.json()
+    params = dict(body.get("params", {}) or {})
+    report = test_connection(key, params)
+    report.pop("password", None)   # defense in depth
+    return report
+
+
+# ---------------------------------------------------------------------------
+# Ask MetaBridge AI — contextual, advisory, never applied automatically
+# ---------------------------------------------------------------------------
+
+@app.post("/api/v1/ai/ask")
+async def v1_ai_ask(request: Request):
+    """Answer a question about a migration using the configured AI
+    provider (Claude via Anthropic API or Bedrock). Context is scoped to
+    the referenced migration's stored report summary — never the whole
+    estate. Advisory only; nothing is modified."""
+    from metabridge.llm.assist import llm_available, make_client
+    body = await request.json()
+    question = str(body.get("question", "") or "").strip()
+    if not question:
+        raise HTTPException(422, "question is required")
+    if not llm_available():
+        raise HTTPException(409, "No AI provider configured — set one up "
+                                 "under Settings → AI provider.")
+    context = ""
+    mid = str(body.get("migration_id", "") or "")
+    if mid:
+        try:
+            job_dir = _job_dir(mid)
+            rep = json.loads(
+                (job_dir / "output" / "conversion_report.json").read_text())
+            issues = [i for m in rep.get("mappings", [])
+                      for i in m.get("issues", [])
+                      if i.get("severity") in ("MANUAL", "WARNING", "ERROR")]
+            context = json.dumps({
+                "project": rep.get("project"),
+                "source_format": rep.get("source_format"),
+                "target_format": rep.get("target_format"),
+                "summary": rep.get("summary"),
+                "validation": rep.get("migration_validation"),
+                "top_findings": issues[:25],
+            }, default=str)[:12000]
+        except Exception:  # noqa: BLE001 — context is best-effort
+            context = ""
+    client, cfg = make_client()
+    system = ("You are MetaBridge AI, the migration assistant inside a "
+              "data modernization platform. Answer using ONLY the "
+              "provided migration context and general data-engineering "
+              "knowledge. Be concrete and cite finding codes when "
+              "relevant. Your answers are advisory — you cannot change "
+              "anything. If the context lacks the answer, say so.")
+    msg = client.messages.create(
+        model=cfg.get("model"), max_tokens=900, system=system,
+        messages=[{"role": "user", "content":
+                   ("MIGRATION CONTEXT:\n%s\n\nQUESTION: %s"
+                    % (context or "(no migration selected)", question))}])
+    answer = "".join(b_.text for b_ in msg.content
+                     if getattr(b_, "type", "") == "text").strip()
+    return {"answer": answer, "model": cfg.get("model", ""),
+            "generated_by": "agent", "advisory": True}
+
+
+# ---------------------------------------------------------------------------
+# Saved connections (persist across sessions; start/stop lifecycle)
+# ---------------------------------------------------------------------------
+
+@app.get("/api/v1/connections")
+def v1_connections_list():
+    from metabridge.connections_store import list_connections
+    return {"connections": list_connections()}
+
+
+@app.post("/api/v1/connections")
+async def v1_connections_save(request: Request):
+    """Save a connection: non-secret params always; the password only
+    when save_secrets=true (stored 0600 on this host, never echoed)."""
+    from metabridge.connections_store import save_connection
+    body = await request.json()
+    try:
+        return save_connection(
+            str(body.get("connector", "")),
+            dict(body.get("params") or {}),
+            name=str(body.get("name", "") or ""),
+            save_secrets=bool(body.get("save_secrets", False)),
+            last_test=body.get("last_test"))
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+
+
+@app.post("/api/v1/connections/{conn_id}/start")
+def v1_connection_start(conn_id: str):
+    from metabridge.connections_store import set_status
+    try:
+        return set_status(conn_id, "active")
+    except KeyError:
+        raise HTTPException(404, "Unknown connection")
+
+
+@app.post("/api/v1/connections/{conn_id}/stop")
+def v1_connection_stop(conn_id: str):
+    from metabridge.connections_store import set_status
+    try:
+        return set_status(conn_id, "stopped")
+    except KeyError:
+        raise HTTPException(404, "Unknown connection")
+
+
+@app.delete("/api/v1/connections/{conn_id}")
+def v1_connection_delete(conn_id: str):
+    from metabridge.connections_store import delete_connection
+    if not delete_connection(conn_id):
+        raise HTTPException(404, "Unknown connection")
+    return {"deleted": conn_id}
+
+
+@app.post("/api/v1/connections/{conn_id}/test")
+def v1_connection_test(conn_id: str):
+    from metabridge.connections_store import (get_connection, record_test,
+                                              resolve_params)
+    from metabridge.livecheck import test_connection
+    row = get_connection(conn_id)
+    if row is None:
+        raise HTTPException(404, "Unknown connection")
+    try:
+        params = resolve_params(conn_id)
+    except PermissionError as e:
+        raise HTTPException(409, str(e))
+    report = test_connection(row["connector"], params)
+    report.pop("password", None)
+    record_test(conn_id, report)
+    return report
+
+
+@app.post("/api/v1/connections/{conn_id}/introspect")
+def v1_connection_introspect(conn_id: str):
+    from metabridge.connections_store import get_connection, resolve_params
+    from metabridge.livecheck import introspect
+    row = get_connection(conn_id)
+    if row is None:
+        raise HTTPException(404, "Unknown connection")
+    try:
+        params = resolve_params(conn_id)
+    except PermissionError as e:
+        raise HTTPException(409, str(e))
+    report = introspect(row["connector"], params)
+    report.pop("password", None)
+    if report.get("ok"):
+        from metabridge.connections_store import record_analysis
+        record_analysis(conn_id, {**report.get("readiness", {}),
+                                  "database": report.get("database", ""),
+                                  "schema": report.get("schema", "")})
+    return report
+
+
+@app.post("/api/v1/connections/{conn_id}/load")
+async def v1_connection_load(conn_id: str,
+                             file: UploadFile = File(...),
+                             table: str = Form(""),
+                             create: bool = Form(True)):
+    """LOAD a tabular file (xlsx/csv/tsv/json) into the connected
+    warehouse using the platform's STANDARD path. Live execution on
+    Snowflake (CREATE -> PUT -> COPY INTO -> verify); other connectors
+    get their standard load package generated instead."""
+    from metabridge.connections_store import get_connection, resolve_params
+    from metabridge.dataload import (generate_load_package,
+                                     load_into_snowflake, read_tabular)
+    row = get_connection(conn_id)
+    if row is None:
+        raise HTTPException(404, "Unknown connection")
+    try:
+        params = resolve_params(conn_id)
+    except PermissionError as e:
+        raise HTTPException(409, str(e))
+    data = await file.read()
+    if row["connector"] == "snowflake":
+        result = load_into_snowflake(params, table, data,
+                                     file.filename or "data.csv",
+                                     create=create)
+        result.pop("password", None)
+        return result
+    # no live driver: emit the target's standard load artifacts
+    try:
+        cols, rows, notes = read_tabular(data, file.filename or "data.csv")
+        pkg = generate_load_package(
+            table or Path(file.filename or "data").stem, cols,
+            file.filename or "data.csv", row["connector"])
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+    pkg["ok"] = True
+    pkg["mode"] = "package"
+    pkg["rows_in_file"] = len(rows)
+    pkg["notes"] = notes + [
+        "no live driver for '%s' yet — the standard DDL + load script "
+        "were generated for you to run" % row["connector"]]
+    return pkg
+
+
+@app.post("/api/v1/dataload/package")
+async def v1_dataload_package(file: UploadFile = File(...),
+                              target: str = Form(...),
+                              table: str = Form("")):
+    """Standard load package (DDL + platform-native load) for a tabular
+    file, without a saved connection."""
+    from metabridge.dataload import generate_load_package, read_tabular
+    data = await file.read()
+    try:
+        cols, rows, notes = read_tabular(data, file.filename or "data.csv")
+        pkg = generate_load_package(
+            table or Path(file.filename or "data").stem, cols,
+            file.filename or "data.csv", target)
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+    pkg.update(ok=True, rows_in_file=len(rows), notes=notes)
+    return pkg
+
+
+@app.post("/api/v1/connectors/{key}/introspect")
+async def v1_connector_introspect(key: str, request: Request):
+    """Read-only database inventory over a live connection: tables with
+    row counts and columns, views with convertibility assessment, and a
+    ready-to-use table manifest for the Pipeline scaffold."""
+    from metabridge.connectors.base import get_registry
+    from metabridge.livecheck import introspect
+    if get_registry().get(key) is None:
+        raise HTTPException(404, "Unknown connector: %s" % key)
+    body = await request.json()
+    params = dict(body.get("params", {}) or {})
+    report = introspect(key, params)
+    report.pop("password", None)
+    return report
+
+
+# ---------------------------------------------------------------------------
+# Validation (v1)
+# ---------------------------------------------------------------------------
+
+@app.get("/api/v1/types")
+def v1_types(native: str = "", source: str = "", target: str = ""):
+    """Data type matrix, or a native->canonical->native conversion with warnings."""
+    from metabridge.sqlx.type_engine import get_type_engine
+    eng = get_type_engine()
+    if native and source and target:
+        return eng.convert_type(native, source, target)
+    return {"canonical_types": eng.matrix()}
+
+
+@app.get("/api/v1/transformations")
+def v1_transformations(source: str = ""):
+    """Transformation mapping registry: source object -> CIR -> target strategy."""
+    from metabridge.cir.transform_map import get_transformation_map
+    return {"mappings": get_transformation_map().rows(source)}
+
+
+@app.get("/api/v1/functions")
+def v1_functions(category: str = "", name: str = ""):
+    """Semantic function registry: catalog + per-platform coverage."""
+    from metabridge.sqlx.registry import get_function_registry
+    reg = get_function_registry()
+    if name:
+        try:
+            return reg.lookup(name).to_dict()
+        except KeyError as e:
+            raise HTTPException(404, str(e))
+    specs = reg.by_category(category) if category else reg.all()
+    return {"coverage": reg.coverage_matrix(),
+            "functions": [f.to_dict() for f in specs]}
+
+
+@app.post("/api/v1/explain")
+async def v1_explain(file: UploadFile = File(...), source: str = Form(""),
+                     dialect: str = Form(""), ai: bool = Form(False)):
+    """Upload a project zip; get business-logic documentation per pipeline."""
+    from metabridge.engine import parse_input
+    from metabridge.report.explainer import explain_pipeline
+    tmp = JOBS_DIR / ("ex_%s" % uuid.uuid4().hex[:10])
+    tmp.mkdir(parents=True)
+    try:
+        root = await _extract_zip(file, tmp)
+        return explain_pipeline(parse_input(str(root), source, dialect),
+                                use_ai=ai or None)
+    except (ValueError, FileNotFoundError) as e:
+        raise HTTPException(422, str(e))
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+@app.post("/api/v1/impact")
+async def v1_impact(file: UploadFile = File(...), entity: str = Form(...),
+                    entity_type: str = Form("auto"), source: str = Form(""),
+                    dialect: str = Form(""), reports: str = Form("")):
+    """Upload a project zip; get downstream impact of changing an entity."""
+    from metabridge.engine import parse_input
+    from metabridge.report.impact import analyze_impact
+    catalog = json.loads(reports) if reports else None
+    tmp = JOBS_DIR / ("im_%s" % uuid.uuid4().hex[:10])
+    tmp.mkdir(parents=True)
+    try:
+        root = await _extract_zip(file, tmp)
+        return analyze_impact(parse_input(str(root), source, dialect),
+                              entity, entity_type, catalog)
+    except (ValueError, FileNotFoundError) as e:
+        raise HTTPException(422, str(e))
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+@app.get("/api/v1/compatibility")
+def v1_compatibility(source: str = "", target: str = ""):
+    """Format catalog + conversion compatibility. Every pair routes
+    SOURCE PARSER -> CIR -> TARGET GENERATOR; only same-format pairs are
+    unsupported. Pass ?source=&target= for a single pair evaluation."""
+    from metabridge.engine import compatibility_matrix, evaluate_compatibility
+    if target:
+        try:
+            return evaluate_compatibility(source, target)
+        except ValueError as e:
+            raise HTTPException(422, str(e))
+    return compatibility_matrix()
+
+
+@app.post("/api/v1/tests")
+async def v1_tests(file: UploadFile = File(...), source: str = Form(""),
+                   dialect: str = Form(""), target: str = Form(""),
+                   source_platform: str = Form(""),
+                   target_platform: str = Form("")):
+    """Upload a project zip; get the migration validation test suite
+    (11 test types + reconciliation SQL; dbt schema tests when target=dbt)."""
+    from metabridge.engine import parse_input
+    from metabridge.report.testgen import generate_tests
+    tmp = JOBS_DIR / ("tg_%s" % uuid.uuid4().hex[:10])
+    tmp.mkdir(parents=True)
+    try:
+        root = await _extract_zip(file, tmp)
+        return generate_tests(parse_input(str(root), source, dialect),
+                              source_platform, target_platform, target)
+    except (ValueError, FileNotFoundError) as e:
+        raise HTTPException(422, str(e))
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+@app.post("/api/v1/lineage")
+async def v1_lineage(file: UploadFile = File(...), source: str = Form(""),
+                     dialect: str = Form("")):
+    """Upload a project zip; get table/column/transformation lineage + Mermaid."""
+    from metabridge.engine import parse_input
+    from metabridge.report.lineage import build_lineage
+    tmp = JOBS_DIR / ("ln_%s" % uuid.uuid4().hex[:10])
+    tmp.mkdir(parents=True)
+    try:
+        root = await _extract_zip(file, tmp)
+        return build_lineage(parse_input(str(root), source, dialect))
+    except (ValueError, FileNotFoundError) as e:
+        raise HTTPException(422, str(e))
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+@app.post("/api/v1/complexity")
+async def v1_complexity(file: UploadFile = File(...), source: str = Form(""),
+                        dialect: str = Form("")):
+    """Upload a project zip; get per-asset migration complexity scoring."""
+    from metabridge.engine import parse_input
+    from metabridge.report.complexity import score_pipeline
+    tmp = JOBS_DIR / ("cx_%s" % uuid.uuid4().hex[:10])
+    tmp.mkdir(parents=True)
+    try:
+        root = await _extract_zip(file, tmp)
+        return score_pipeline(parse_input(str(root), source, dialect))
+    except (ValueError, FileNotFoundError) as e:
+        raise HTTPException(422, str(e))
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+@app.post("/api/v1/detect")
+async def v1_detect(file: UploadFile = File(...)):
+    """Upload a project zip; get format detection with confidence + evidence."""
+    from metabridge.engine import detect_format_detailed
+    tmp = JOBS_DIR / ("det_%s" % uuid.uuid4().hex[:10])
+    tmp.mkdir(parents=True)
+    try:
+        root = await _extract_zip(file, tmp)
+        return detect_format_detailed(str(root)).to_dict()
+    except (ValueError, FileNotFoundError) as e:
+        raise HTTPException(422, str(e))
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+@app.get("/api/v1/transformations/powercenter")
+def v1_pc_transformations(level: str = ""):
+    """The PowerCenter transformation semantic registry: 60 types with
+    automation levels and dbt/Databricks strategies."""
+    from metabridge.parsers.pc_registry import get_pc_registry
+    reg = get_pc_registry()
+    rows = reg.all()
+    if level:
+        rows = {k: r for k, r in rows.items()
+                if r["automation_level"] == level.upper()}
+    return {"coverage": reg.coverage(), "transformations": rows}
+
+
+@app.post("/api/v1/pcmodel")
+async def v1_pcmodel(file: UploadFile = File(...), summary: bool = Form(True)):
+    """Upload a PowerCenter XML export; get the full-fidelity domain model
+    (pre-CIR representation) — summary by default, full model with
+    summary=false."""
+    from metabridge.parsers.pc_model import build_pc_model
+    tmp = JOBS_DIR / ("pcm_%s" % uuid.uuid4().hex[:10])
+    tmp.mkdir(parents=True)
+    try:
+        if (file.filename or "").lower().endswith(".zip"):
+            root = await _extract_zip(file, tmp)
+        else:
+            root = tmp / (file.filename or "export.xml")
+            root.write_bytes(await file.read())
+        model = build_pc_model(str(root))
+        return model.summary() if summary else model.to_dict()
+    except (ValueError, FileNotFoundError) as e:
+        raise HTTPException(422, str(e))
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+@app.post("/api/v1/validate/powercenter")
+async def v1_validate(file: UploadFile = File(...)):
+    from metabridge.validate.powercenter_validator import validate_powercenter_xml
+    data = await file.read()
+    tmp = JOBS_DIR / ("val_%s.xml" % uuid.uuid4().hex[:10])
+    tmp.write_bytes(data)
+    try:
+        return validate_powercenter_xml(str(tmp)).to_dict()
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
+@app.post("/api/v1/govern")
+async def v1_govern(
+    file: UploadFile = File(...),
+    source: str = Form(""),
+    source_region: str = Form(""),
+    target_region: str = Form(""),
+):
+    """Stateless governance scan (JSON only, nothing persisted)."""
+    from metabridge.engine import parse_input
+    from metabridge.governance.engine import govern as run_govern
+    tmp = JOBS_DIR / ("gov_%s" % uuid.uuid4().hex[:10])
+    tmp.mkdir(parents=True)
+    try:
+        root = await _extract_zip(file, tmp)
+        pipeline = parse_input(str(root), source)
+        return run_govern(pipeline, source_region=source_region,
+                          target_region=target_region)
+    except (ValueError, FileNotFoundError) as e:
+        raise HTTPException(422, str(e))
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+@app.get("/api/formats")
+def formats():
+    return {"formats": list(FORMATS)}
