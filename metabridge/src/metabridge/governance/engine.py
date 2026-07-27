@@ -67,8 +67,26 @@ RULES: List[Rule] = [
     Rule("financial.salary", r"salary|compensation|income", "personal data", "CPRA sensitive", "", "MEDIUM"),
     Rule("pii.special.health", r"diagnos|medical|health|prescri|icd[-_]?10|blood",
          "SPECIAL CATEGORY (Art. 9)", "health — CPRA sensitive", "health data", "HIGH"),
-    Rule("pii.special.biometric", r"biometric|fingerprint|face[-_]?id", "SPECIAL CATEGORY (Art. 9)",
-         "biometric — CPRA sensitive", "biometric", "HIGH"),
+    # Device/browser fingerprints are PSEUDONYMOUS ONLINE IDENTIFIERS, not
+    # biometric data (Art. 9). This rule is ordered BEFORE the biometric rule
+    # (first-match-wins) so `device_fingerprint`, `browser_fingerprint`,
+    # `fingerprint_id`, etc. are classified as device identifiers — while a
+    # genuine biometric fingerprint field still falls through to the biometric
+    # rule below (no blanket exclusion of "fingerprint").
+    Rule("pii.online.device_fingerprint",
+         r"(device|browser|visitor|client|canvas|audio|webgl|tls|ssl|ja3|"
+         r"hardware|machine|session|user|app|installation|os|network|net|"
+         r"screen|gpu|cpu|cookie|font|tcp|http|header|ua|user[-_]?agent|"
+         r"agent|platform|host)[-_]?fingerprint"
+         r"|fingerprint[-_]?(id|hash|token|value|signature|string|uuid|key)",
+         "personal data (online identifier, Rec. 30)",
+         "device identifier — CPRA sensitive", "", "MEDIUM"),
+    Rule("pii.special.biometric",
+         r"biometric|face[-_]?id|facial[-_]?recognition|(^|_)iris($|_)|"
+         r"iris[-_]?scan|retina|voice[-_]?print|palm[-_]?print|"
+         r"(^|_)finger[-_]?print",
+         "SPECIAL CATEGORY (Art. 9)", "biometric — CPRA sensitive",
+         "biometric", "HIGH"),
     Rule("pii.special.ethnicity", r"ethnic|race($|_)", "SPECIAL CATEGORY (Art. 9)",
          "CPRA sensitive", "", "HIGH"),
     Rule("pii.special.religion", r"religio", "SPECIAL CATEGORY (Art. 9)", "CPRA sensitive", "", "HIGH"),
@@ -97,6 +115,57 @@ RULES: List[Rule] = [
 
 _COMPILED = [(r, re.compile(r.pattern, re.IGNORECASE)) for r in RULES]
 
+# Human-readable label per taxonomy category — surfaced as the classification
+# `reason` so every decision is explainable (and, e.g., makes clear that a
+# device fingerprint is a pseudonymous identifier, NOT biometric data).
+CATEGORY_LABEL = {
+    "pii.direct.email": "email address (direct identifier)",
+    "pii.direct.name": "personal name (direct identifier)",
+    "pii.direct.phone": "phone number (direct identifier)",
+    "pii.direct.address": "postal address (direct identifier)",
+    "pii.direct.dob": "date of birth (direct identifier)",
+    "pii.gov_id.ssn": "government ID — SSN",
+    "pii.gov_id.tax": "government ID — tax number",
+    "pii.gov_id.passport": "government ID — passport",
+    "pii.gov_id.license": "government ID — driver's licence",
+    "financial.card": "payment card number",
+    "financial.account": "bank account number",
+    "financial.salary": "salary / compensation",
+    "pii.special.health": "health data (GDPR Art. 9 special category)",
+    "pii.special.biometric": "biometric data (GDPR Art. 9 special category)",
+    "pii.special.ethnicity": "ethnicity / race (GDPR Art. 9 special category)",
+    "pii.special.religion": "religion (GDPR Art. 9 special category)",
+    "pii.online.ip": "IP address (online identifier)",
+    "pii.online.device": "device identifier (online identifier)",
+    "pii.online.device_fingerprint":
+        "device/browser fingerprint — pseudonymous online identifier "
+        "(NOT biometric)",
+    "pii.online.geo": "geolocation",
+}
+
+
+def _normalize(name: str) -> str:
+    """Canonicalize a field name before matching so classification is
+    consistent regardless of casing, separators, or camelCase/PascalCase:
+    `DeviceFingerprint`, `device.fingerprint`, `DEVICE FINGERPRINT` and
+    `device_fingerprint` all normalize to `device_fingerprint`."""
+    s = str(name or "")
+    # split camelCase / PascalCase / acronym boundaries
+    s = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", s)
+    s = re.sub(r"(?<=[A-Z])(?=[A-Z][a-z])", "_", s)
+    s = s.lower()
+    s = re.sub(r"[^a-z0-9]+", "_", s)     # any separator -> underscore
+    s = re.sub(r"_+", "_", s).strip("_")
+    return s
+
+
+def _confidence(matched: str, normalized: str) -> str:
+    """Deterministic confidence from how much of the field the rule matched."""
+    if not normalized:
+        return "low"
+    ratio = len(matched) / len(normalized)
+    return "high" if ratio >= 0.5 else "medium" if ratio >= 0.25 else "low"
+
 
 @dataclass
 class Classification:
@@ -109,9 +178,28 @@ class Classification:
     gdpr: str
     ccpa: str
     hipaa: str
+    # explainability — why this column was classified the way it was
+    reason: str = ""        # human-readable category label
+    evidence: str = ""      # the normalized field + the substring that matched
+    confidence: str = ""    # high | medium | low (match coverage)
 
     def to_dict(self) -> dict:
         return self.__dict__.copy()
+
+
+def classify_field(name: str):
+    """Classify a single field name against the ONE centralized taxonomy.
+    Deterministic: normalize, then first matching rule wins. Returns
+    (rule, evidence, confidence) or None. Shared by every consumer so a given
+    field always classifies the same way across scans, reports and exports."""
+    norm = _normalize(name)
+    for rule, rx in _COMPILED:
+        mo = rx.search(norm)
+        if mo:
+            matched = mo.group(0)
+            return rule, "field '%s' matched '%s'" % (norm, matched), \
+                _confidence(matched, norm)
+    return None
 
 
 def classify_pipeline(pipeline: Pipeline) -> List[Classification]:
@@ -126,14 +214,17 @@ def classify_pipeline(pipeline: Pipeline) -> List[Classification]:
             if kind == "transformation":
                 continue  # classify at the boundaries; lineage covers the middle
             for p in t.ports:
-                for rule, rx in _COMPILED:
-                    if rx.search(p.name):
-                        out.append(Classification(
-                            mapping=m.name, node=t.name, node_kind=kind,
-                            column=p.name, category=rule.category,
-                            severity=rule.severity, gdpr=rule.gdpr,
-                            ccpa=rule.ccpa, hipaa=rule.hipaa))
-                        break  # first matching rule wins per column
+                hit = classify_field(p.name)
+                if hit is None:
+                    continue
+                rule, evidence, confidence = hit
+                out.append(Classification(
+                    mapping=m.name, node=t.name, node_kind=kind,
+                    column=p.name, category=rule.category,
+                    severity=rule.severity, gdpr=rule.gdpr,
+                    ccpa=rule.ccpa, hipaa=rule.hipaa,
+                    reason=CATEGORY_LABEL.get(rule.category, rule.category),
+                    evidence=evidence, confidence=confidence))
     return out
 
 
@@ -328,9 +419,13 @@ def render_html(r: dict) -> str:
 
     cls_rows = "".join(
         "<tr><td>%s</td><td>%s</td><td style='font-family:monospace'>%s</td>"
-        "<td style='font-family:monospace'>%s</td><td>%s</td><td>%s</td></tr>"
+        "<td style='font-family:monospace'>%s</td><td>%s</td><td>%s</td>"
+        "<td>%s <span style='color:#889'>(%s confidence)</span>"
+        "<div style='color:#889;font-size:11px'>%s</div></td></tr>"
         % (e(c["mapping"]), e(c["node_kind"]), e(c["column"]), e(c["category"]),
-           e(c["gdpr"]), e(c["ccpa"]))
+           e(c["gdpr"]), e(c["ccpa"]),
+           e(c.get("reason", "")), e(c.get("confidence", "") or "—"),
+           e(c.get("evidence", "")))
         for c in r["classifications"])
     f_rows = "".join(
         "<tr><td><span style='color:%s;font-weight:700'>%s</span></td>"
@@ -368,7 +463,7 @@ regions: %(sreg)s → %(treg)s &nbsp;|&nbsp; %(ts)s</div></div>
  <div class="card"><div class="n" style="color:#c77d0a">%(warn)d</div><div class="l">Warnings</div></div>
 </div>
 <section><h2>Policy findings</h2><table><tr><th>Severity</th><th>Rule</th><th>Finding</th></tr>%(frows)s</table></section>
-<section><h2>Classified columns</h2><table><tr><th>Pipeline</th><th>Where</th><th>Column</th><th>Category</th><th>GDPR</th><th>CCPA/CPRA</th></tr>%(crows)s</table></section>
+<section><h2>Classified columns</h2><table><tr><th>Pipeline</th><th>Where</th><th>Column</th><th>Category</th><th>GDPR</th><th>CCPA/CPRA</th><th>Why</th></tr>%(crows)s</table></section>
 <section><h2>Record of processing activities (Art. 30 style)</h2>
 <table><tr><th>Activity</th><th>Sources</th><th>Targets</th><th>Data categories</th><th>Cross-border</th></tr>%(rrows)s</table></section>
 <div class="foot">%(disc)s</div></body></html>""" % {
@@ -377,6 +472,6 @@ regions: %(sreg)s → %(treg)s &nbsp;|&nbsp; %(ts)s</div></div>
         "cols": s["classified_columns"], "spec": s["special_category_columns"],
         "viol": s["violations"], "warn": s["warnings"],
         "frows": f_rows or "<tr><td colspan=3>none</td></tr>",
-        "crows": cls_rows or "<tr><td colspan=6>none</td></tr>",
+        "crows": cls_rows or "<tr><td colspan=7>none</td></tr>",
         "rrows": reg_rows, "disc": e(r["disclaimer"]),
     }

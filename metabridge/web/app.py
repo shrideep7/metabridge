@@ -4094,6 +4094,93 @@ def v1_connections_list():
     return {"connections": list_connections()}
 
 
+def _estate_cards(scope: list, aggregate: bool, convert_jobs: int) -> list:
+    """Statistics cards computed for exactly the systems in `scope`. When
+    `aggregate` is False, `scope` is a single system and the cards describe
+    only that system — never the whole estate."""
+    analyzed = [c for c in scope if c.get("last_analysis")]
+    tables = sum(int((c.get("last_analysis") or {}).get("tables") or 0)
+                 for c in analyzed)
+    rows = sum(int((c.get("last_analysis") or {}).get("total_rows") or 0)
+               for c in analyzed)
+    if aggregate:
+        connected = [c for c in scope if c.get("state") == "connected"]
+        return [
+            {"n": len(connected) or "--", "label": "Connected systems",
+             "sub": "%d saved" % len(scope)},
+            {"n": len(analyzed) or "--", "label": "Systems analyzed",
+             "sub": ""},
+            {"n": tables or "--", "label": "Tables",
+             "sub": "across analyzed systems" if analyzed
+                    else "run Analyze on a connection"},
+            {"n": "{:,}".format(rows) if rows else "--", "label": "Rows",
+             "sub": ""},
+            {"n": convert_jobs or "--", "label": "Transformation workloads",
+             "sub": "modernization runs"},
+        ]
+    c = scope[0]
+    la = c.get("last_analysis") or {}
+    return [
+        {"n": (c.get("state") or "unknown").title(), "label": "Status",
+         "sub": c.get("connector", "")},
+        {"n": (la.get("tables") if la.get("tables") is not None else "--"),
+         "label": "Tables",
+         "sub": "live metadata analysis" if la else "run Analyze on this system"},
+        {"n": (la.get("views") if la.get("views") is not None else "--"),
+         "label": "Views", "sub": ""},
+        {"n": "{:,}".format(la["total_rows"]) if la.get("total_rows")
+              else ("0" if la else "--"), "label": "Rows", "sub": ""},
+        {"n": (la.get("at", "") or "never").split("T")[0],
+         "label": "Last analyzed",
+         "sub": la.get("verdict", "") or ""},
+    ]
+
+
+@app.get("/api/estate/stats")
+def estate_stats(system: str = ""):
+    """System-scoped estate statistics. `system` = a connection id, or "all"
+    for the explicit aggregate. Counts are scoped to exactly that system and
+    NEVER combined across systems unless "all" is requested. No selection or
+    an unknown id returns a safe selection-required/empty state, not a crash
+    or a stale aggregate."""
+    from metabridge.connections_store import list_connections
+    conns = list_connections()
+    convert_jobs = sum(1 for f in JOBS_DIR.glob("*/meta.json")
+                       if _job_kind_is(f, "convert"))
+    systems = [{"id": c["id"], "name": c.get("name", c["id"]),
+                "connector": c.get("connector", ""),
+                "analyzed": bool(c.get("last_analysis"))}
+               for c in conns]
+    if system == "all":
+        return {"scope": "all", "system": "all", "known": True,
+                "label": "All systems",
+                "cards": _estate_cards(conns, True, convert_jobs),
+                "systems": systems}
+    if system:
+        scope = [c for c in conns if c.get("id") == system]
+        if not scope:
+            return {"scope": "unknown", "system": system, "known": False,
+                    "label": "Unknown system",
+                    "message": "That system was not found — it may have been "
+                               "removed. Pick a system from the list.",
+                    "cards": [], "systems": systems}
+        return {"scope": "system", "system": system, "known": True,
+                "label": scope[0].get("name", system),
+                "cards": _estate_cards(scope, False, convert_jobs),
+                "systems": systems}
+    return {"scope": "none", "system": "", "known": False,
+            "label": "", "message": "Select a system to view its statistics.",
+            "cards": [], "systems": systems}
+
+
+def _job_kind_is(meta_file: Path, kind: str) -> bool:
+    try:
+        data = json.loads(meta_file.read_text())
+        return isinstance(data, dict) and data.get("kind") == kind
+    except Exception:  # noqa: BLE001 — a corrupt/partial meta must never 500 the scan
+        return False
+
+
 @app.post("/api/v1/connections")
 async def v1_connections_save(request: Request):
     """Save a connection: non-secret params always; the password only

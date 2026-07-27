@@ -67,6 +67,7 @@ _MASK_TECHNIQUE = {
     "pii.special.religion": "suppress unless lawful basis documented",
     "pii.online.ip": "truncate last octet",
     "pii.online.device": "hash",
+    "pii.online.device_fingerprint": "hash / rotate (pseudonymous identifier)",
     "pii.online.geo": "reduce coordinate precision",
     "financial.salary": "band / redact",
 }
