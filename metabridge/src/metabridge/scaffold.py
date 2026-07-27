@@ -38,6 +38,27 @@ def _canonical(spec: ConnectorSpec, native_type: str) -> str:
     return spec.type_map.get(base) or canonical_type(native_type)
 
 
+def _precision_scale(native_type: str):
+    """Parse (precision, scale) from a native type like 'decimal(12,2)' or
+    'varchar(18)'. Returns (0, 0) when none is declared so the generators use
+    their documented fallback. Preserving this is what stops every numeric
+    column collapsing to decimal(38,6)."""
+    import re
+    mo = re.search(r"\(\s*(\d+)\s*(?:,\s*(\d+)\s*)?\)", native_type or "")
+    if not mo:
+        return 0, 0
+    return int(mo.group(1)), int(mo.group(2) or 0)
+
+
+def _port(spec: ConnectorSpec, col: dict) -> Port:
+    native = str(col.get("type", "string"))
+    prec, scale = _precision_scale(native)
+    return Port(name=str(col["name"]),
+                datatype=_canonical(spec, native),
+                precision=prec, scale=scale,
+                type_declared=bool(str(col.get("type", "")).strip()))
+
+
 def build_pipeline(project: str, source: ConnectorSpec,
                    tables: List[dict]) -> Pipeline:
     pipeline = Pipeline(name=project, source_format="scaffold")
@@ -47,13 +68,12 @@ def build_pipeline(project: str, source: ConnectorSpec,
     for spec in tables:
         tname = str(spec["name"])
         model = str(spec.get("target_name") or ("stg_" + tname.lower()))
-        cols = [Port(name=str(c["name"]),
-                     datatype=_canonical(source, str(c.get("type", "string"))))
-                for c in spec.get("columns", []) or []]
+        cols = [_port(source, c) for c in spec.get("columns", []) or []]
         if not cols:
             cols = [Port(name="ROW_DATA")]
+        db = str(spec.get("database", "") or "")
         src_table = SourceTable(name=tname, schema=str(spec.get("schema", "")),
-                                columns=cols)
+                                database=db, columns=cols)
         if all(s.name != tname for s in pipeline.sources):
             pipeline.sources.append(src_table)
 
@@ -63,7 +83,7 @@ def build_pipeline(project: str, source: ConnectorSpec,
                                ports=list(cols),
                                properties={"table": tname,
                                            "schema": spec.get("schema", ""),
-                                           "database": ""})
+                                           "database": db})
         sq = Transformation(name="SQ_" + tname,
                             type=TransformationType.SOURCE_QUALIFIER,
                             ports=list(cols), properties={"source": src_t.name})
@@ -274,6 +294,13 @@ def scaffold(source_key: str, target_key: str, tables_file: str, out_dir: str,
     # target dialect drives expression rendering for warehouse-native SQL
     if target.dialect:
         pipeline.metadata["dialect"] = target.dialect
+    # ONE canonical source/target platform value flows to every generator,
+    # artifact, manifest and report — so changing the target genuinely
+    # changes the output (and its labels), never a hardcoded default.
+    pipeline.metadata["source_platform"] = source.name or source.key
+    pipeline.metadata["target_platform"] = target.name or target.key
+    pipeline.metadata["source_pc_dbtype"] = source.powercenter_dbtype or ""
+    pipeline.metadata["target_pc_dbtype"] = target.powercenter_dbtype or ""
 
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)

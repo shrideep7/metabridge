@@ -53,18 +53,50 @@ _PC_TX_TYPE = {
 
 AssistFn = Optional[Callable[[str, str], Optional[str]]]  # (sql, context) -> infa expr
 
+# Map a canonical dialect/platform to the PowerCenter DATABASETYPE label.
+# Used so generated XML reflects the ACTUAL source/target platform instead
+# of a hardcoded "Oracle" on every object.
+_DIALECT_TO_PC_DBTYPE = {
+    "oracle": "Oracle", "snowflake": "Snowflake",
+    "teradata": "Teradata", "sqlserver": "Microsoft SQL Server",
+    "mssql": "Microsoft SQL Server", "synapse": "Microsoft SQL Server",
+    "postgres": "ODBC", "postgresql": "ODBC", "redshift": "ODBC",
+    "bigquery": "ODBC", "databricks": "ODBC", "mysql": "ODBC",
+    "db2": "DB2", "netezza": "Netezza",
+}
+
+
+def _pc_dbtype(value: str) -> str:
+    """Resolve a PowerCenter DATABASETYPE from a connector's powercenter_dbtype,
+    a dialect, or a platform name. Falls back to the neutral 'ODBC' — never
+    silently 'Oracle' — when the platform is unknown."""
+    v = (value or "").strip()
+    if not v:
+        return ""
+    return _DIALECT_TO_PC_DBTYPE.get(v.lower(), v)
+
 
 def generate_powercenter(pipeline: Pipeline, folder_name: str = "",
                          assist: AssistFn = None) -> str:
     """Return the POWERMART XML document as a string."""
     dialect = str(pipeline.metadata.get("dialect", ""))
+    meta = pipeline.metadata
+    # actual source/target database types — never a blanket Oracle default.
+    # Only trust an explicit connector powercenter_dbtype or the SQL dialect;
+    # source_platform/target_platform can be FORMAT names (dbt/idmc) which are
+    # not valid DATABASETYPE values, so they are deliberately not used here.
+    src_dbtype = (_pc_dbtype(str(meta.get("source_pc_dbtype", "")))
+                  or _pc_dbtype(dialect) or "ODBC")
+    tgt_dbtype = (_pc_dbtype(str(meta.get("target_pc_dbtype", "")))
+                  or _pc_dbtype(dialect) or src_dbtype)
+    repo_dbtype = tgt_dbtype or src_dbtype or "ODBC"
     root = ET.Element("POWERMART", {
         "CREATION_DATE": datetime.datetime.now().strftime("%m/%d/%Y %H:%M:%S"),
         "REPOSITORY_VERSION": "188.97",
     })
     repo = ET.SubElement(root, "REPOSITORY", {
         "NAME": "MetaBridge AI_Repo", "VERSION": "188", "CODEPAGE": "UTF-8",
-        "DATABASETYPE": "Oracle",
+        "DATABASETYPE": repo_dbtype,
     })
     folder = ET.SubElement(repo, "FOLDER", {
         "NAME": folder_name or pipeline.name, "GROUP": "", "OWNER": "metabridge",
@@ -74,7 +106,8 @@ def generate_powercenter(pipeline: Pipeline, folder_name: str = "",
 
     emitted_defs: Dict[str, bool] = {}
     for mapping in pipeline.mappings:
-        _emit_source_and_target_defs(folder, mapping, pipeline, emitted_defs)
+        _emit_source_and_target_defs(folder, mapping, pipeline, emitted_defs,
+                                     src_dbtype, tgt_dbtype)
     for mapping in pipeline.mappings:
         _emit_mapping(folder, mapping, dialect, assist)
     _emit_workflow(folder, pipeline)
@@ -97,7 +130,9 @@ def _pc_type(port: Port) -> Dict[str, str]:
 
 
 def _emit_source_and_target_defs(folder: ET.Element, mapping: Mapping,
-                                 pipeline: Pipeline, done: Dict[str, bool]) -> None:
+                                 pipeline: Pipeline, done: Dict[str, bool],
+                                 src_dbtype: str = "ODBC",
+                                 tgt_dbtype: str = "ODBC") -> None:
     for t in mapping.by_type(TransformationType.SOURCE):
         key = "SRC::" + str(t.properties.get("table", t.name))
         if key in done:
@@ -105,7 +140,8 @@ def _emit_source_and_target_defs(folder: ET.Element, mapping: Mapping,
         done[key] = True
         src = ET.SubElement(folder, "SOURCE", {
             "NAME": str(t.properties.get("table", t.name)),
-            "DATABASETYPE": "Oracle",
+            "DATABASETYPE": _pc_dbtype(str(t.properties.get("database_type", "")))
+            or src_dbtype,
             "DBDNAME": str(t.properties.get("database") or "SRC_DB"),
             "OWNERNAME": str(t.properties.get("schema") or ""),
             "DESCRIPTION": "", "BUSINESSNAME": "",
@@ -130,7 +166,7 @@ def _emit_source_and_target_defs(folder: ET.Element, mapping: Mapping,
         done[key] = True
         tgt = ET.SubElement(folder, "TARGET", {
             "NAME": str(t.properties.get("table", t.name)),
-            "DATABASETYPE": "Oracle", "DESCRIPTION": "", "BUSINESSNAME": "",
+            "DATABASETYPE": tgt_dbtype, "DESCRIPTION": "", "BUSINESSNAME": "",
             "CONSTRAINT": "", "TABLEOPTIONS": "",
             "OBJECTVERSION": "1", "VERSIONNUMBER": "1",
         })

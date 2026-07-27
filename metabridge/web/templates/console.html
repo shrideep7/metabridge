@@ -1161,7 +1161,8 @@
       <button type="submit">Generate pipelines</button>
     </form>
     <div class="err" id="scafErr" style="white-space:pre-wrap"></div>
-    <div id="scafResult" style="display:none;margin-top:20px">\n      <div id="scafBanner" style="display:none;background:#e8f6ee;border:1px solid #bfe6cf;border-radius:10px;padding:12px 14px;margin-bottom:12px;color:#14522d"></div>
+    <div id="scafResult" style="display:none;margin-top:20px">
+      <div id="scafBanner" style="display:none;background:#e8f6ee;border:1px solid #bfe6cf;border-radius:10px;padding:12px 14px;margin-bottom:12px;color:#14522d"></div>
       <div class="cards" id="scafCards"></div>
       <div class="links"><a id="scafReport" target="_blank">Conversion report</a>
         <a id="scafGov" target="_blank">Governance report</a><a id="scafDownload">Download all assets</a></div>
@@ -1416,10 +1417,32 @@ let apiKey = localStorage.getItem('mb_api_key') || '';
 
 async function api(url, opts = {}) {
   opts.headers = Object.assign({}, opts.headers, apiKey ? {'X-API-Key': apiKey} : {});
-  const r = await fetch(url, opts);
+  // Optional per-call timeout via AbortController. Opt-in (opts.timeoutMs) so
+  // legitimately long endpoints are unaffected — but any caller that sets it
+  // is guaranteed the promise SETTLES (a hung/black-holed request can never
+  // leave a loading state stuck forever).
+  let timer = null;
+  if (opts.timeoutMs && typeof AbortController !== 'undefined' && !opts.signal) {
+    const ctrl = new AbortController();
+    opts.signal = ctrl.signal;
+    timer = setTimeout(() => ctrl.abort(), opts.timeoutMs);
+  }
+  let r;
+  try {
+    r = await fetch(url, opts);
+  } catch (e) {
+    if (e && (e.name === 'AbortError' || e.code === 20))
+      throw new Error('The request timed out — the server may still be busy. '
+        + 'Try again, or use a smaller input.');
+    throw new Error('Network error — could not reach the server. '
+      + 'Check your connection and try again.');
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
   if (r.status === 401) { window.location.href = '/login'; throw new Error('Signing in…'); }
-  const data = await r.json().catch(() => ({}));
-  if (!r.ok) throw new Error(data.detail || ('HTTP ' + r.status));
+  let data = {};
+  try { data = await r.json(); } catch (e) { data = {}; }
+  if (!r.ok) throw new Error((data && data.detail) || ('Request failed (HTTP ' + r.status + ')'));
   return data;
 }
 
@@ -2568,7 +2591,7 @@ async function loadDashboard() {
     mcard(conns.filter(x => x.state === 'connected').length || '--', 'Connected systems', conns.length ? conns.length + ' saved' : 'Connect under Integrations')
     + mcard(assets || '--', 'Assets analyzed', withR.length ? 'across ' + withR.length + ' recent runs' : '')
     + mcard(converts.length || '--', 'Modernizations', jobs.filter(j => j.kind === 'convert' && j.status !== 'done').length + ' in flight')
-    + mcard(pipelines || '--', 'Pipelines generated', scaffolds.length ? scaffolds.length + ' scaffold runs' : '')
+    + mcard(pipelines || '--', 'Models scaffolded', scaffolds.length ? scaffolds.length + ' scaffold runs' : '')
     + mcard(passRate, 'Validation pass rate', verdicts.length ? 'last ' + verdicts.length + ' runs' : 'no validated runs yet')
     + mcard(manual || (withR.length ? 0 : '--'), 'Manual review items', '');
   const mrows = withR.map(({job, r}) => {
@@ -2643,7 +2666,9 @@ async function updateCompat() {
 $('#convForm').source.onchange = updateCompat;
 $('#convForm').target.onchange = updateCompat;
 
+let analyzeInFlight = false;
 $('#analyzeBtn').onclick = async () => {
+  if (analyzeInFlight) return;                 // no duplicate submissions
   const err = $('#convErr'); err.style.display = 'none';
   $('#planPanel').style.display = 'none'; $('#convResult').style.display = 'none';
   if (!chosen.convFile) { err.textContent = 'Choose a .zip first.'; err.style.display = 'block'; return; }
@@ -2652,9 +2677,15 @@ $('#analyzeBtn').onclick = async () => {
   fd.set('file', chosen.convFile);
   fd.set('source', form.source.value);
   fd.set('dialect', form.dialect.value);
-  const btn = $('#analyzeBtn'); btn.disabled = true; btn.textContent = 'Analyzing workload…'; setStep(2);
+  const btn = $('#analyzeBtn');
+  analyzeInFlight = true;
+  btn.disabled = true; btn.textContent = 'Analyzing workload…'; setStep(2);
   try {
-    const d = await api('/api/analyze', {method: 'POST', body: fd});
+    // timeout so a hung/slow request can't strand the button (root cause of
+    // the "stuck Analyze" bug); the finally below always restores the button
+    const d = await api('/api/analyze', {method: 'POST', body: fd, timeoutMs: 120000});
+    if (!d || !Array.isArray(d.models))
+      throw new Error('The server returned an unexpected response. Please try again.');
     planJob = d;
     setStep(3);
     $('#generateAllBtn').disabled = false;
@@ -2689,8 +2720,19 @@ $('#analyzeBtn').onclick = async () => {
     document.querySelectorAll('.planSel').forEach(c => c.onchange = updateCount);
     updateCount();
     $('#planPanel').style.display = 'block';
-  } catch (e) { err.textContent = e.message; err.style.display = 'block'; }
-  finally { btn.disabled = false; btn.textContent = 'Analyze models →'; }
+  } catch (e) {
+    setStep(1);                                // roll the stepper back
+    err.innerHTML = esc(e.message || 'Analysis failed — please try again.')
+      + ' <a id="analyzeRetry" style="color:var(--accent);cursor:pointer;font-weight:600">Retry</a>';
+    err.style.display = 'block';
+    const rb = $('#analyzeRetry');
+    if (rb) rb.onclick = () => { err.style.display = 'none'; $('#analyzeBtn').click(); };
+  } finally {
+    // ALWAYS restore the button — success, validation failure, API error,
+    // timeout, cancellation or a malformed response all land here
+    analyzeInFlight = false;
+    btn.disabled = false; btn.textContent = 'Analyze workload';
+  }
 };
 
 function updateCount() {
@@ -4406,15 +4448,15 @@ $('#scafForm').onsubmit = async ev => {
       + '</code> · project <strong>' + esc(d.project || '') + '</strong> · '
       + esc($('#scafSource').selectedOptions[0].text) + ' &rarr; ' + esc($('#scafTarget').selectedOptions[0].text)
       + ' · ' + esc(d.created || '')
-      + '<div style="margin-top:6px;font-size:13px"><strong>Pipelines:</strong> '
+      + '<div style="margin-top:6px;font-size:13px"><strong>Scaffolded models:</strong> '
       + (d.pipelines || []).map(esc).join(', ')
       + '</div><div style="font-size:13px"><strong>Generated:</strong> '
       + (d.artifacts || []).map(esc).join(' · ') + '</div>'
       + ((d.manifest_notes && d.manifest_notes.length) ? '<div style="font-size:13px;color:#667">' + d.manifest_notes.map(esc).join('; ') + '</div>' : '')
       + '<div style="font-size:13px;color:#667">Also listed under Dashboard &rarr; recent jobs. Use the links below to open the reports or download everything.</div>';
     banner.style.display = 'block';
-    $('#scafCards').innerHTML = card(d.summary.objects_total,'Pipelines')
-      + card('3','Stacks emitted','var(--accent)')
+    $('#scafCards').innerHTML = card(d.summary.objects_total,'Scaffolded models')
+      + card((d.artifacts || []).filter(a => /\/\s*\(/.test(a)).length || '3','Stacks emitted','var(--accent)')
       + card(d.governance ? d.governance.classified_columns : 0,'Classified columns')
       + card(d.governance ? d.governance.violations : 0,'Violations', d.governance && d.governance.violations ? 'var(--red)' : 'var(--green)');
     $('#scafReport').href = withKey(d.report_url); $('#scafGov').href = withKey(d.gov_report_url);

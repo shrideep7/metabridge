@@ -13,15 +13,44 @@ from typing import Dict, List, Optional
 import yaml
 
 from ..ir.model import (
-    IssueSeverity, LoadStrategy, Mapping, Pipeline, Transformation,
-    TransformationType,
+    ConversionIssue, IssueSeverity, LoadStrategy, Mapping, Pipeline,
+    SourceTable, Transformation, TransformationType,
 )
+
+
+def _source_name(s: "SourceTable") -> str:
+    """dbt source() name for a SourceTable. The name is the schema; the
+    database is preserved separately via the source's `database:` property
+    (see _write_sources_yaml), matching dbt's own source() resolution."""
+    return s.schema or "raw"
 
 _CANONICAL_TO_DBT = {
     "string": "varchar", "integer": "integer", "bigint": "bigint",
-    "decimal": "decimal(38,6)", "double": "double precision", "date": "date",
+    "decimal": "decimal", "double": "double precision", "date": "date",
     "timestamp": "timestamp", "boolean": "boolean", "binary": "binary",
 }
+
+# Documented fallback when a decimal column declares no precision/scale.
+# Emitted with a warning so it is never mistaken for the real source scale.
+_DECIMAL_FALLBACK = (38, 6)
+
+
+def _dbt_type(port) -> str:
+    """dbt column type from an IR Port, PRESERVING declared numeric
+    precision/scale (never collapsing everything to decimal(38,6)). When a
+    decimal has no declared precision, use the documented fallback."""
+    base = _CANONICAL_TO_DBT.get(port.datatype, "varchar")
+    if port.datatype == "decimal":
+        if port.precision:
+            return "decimal(%d,%d)" % (port.precision, port.scale or 0)
+        return "decimal(%d,%d)" % _DECIMAL_FALLBACK
+    if port.datatype == "string" and port.precision:
+        return "varchar(%d)" % port.precision
+    return base
+
+
+def _decimal_needs_fallback(port) -> bool:
+    return port.datatype == "decimal" and not port.precision
 
 
 def _layer_of(m: Mapping, pipeline: Pipeline) -> str:
@@ -74,6 +103,14 @@ def generate_dbt_project(pipeline: Pipeline, out_dir: str,
     manifest: List[dict] = []
     schema_models: List[dict] = []
 
+    # classify manifest objects by the REAL source platform, not
+    # "PowerCenter" by default — a Snowflake schema is not a PC object
+    src_fmt = (pipeline.source_format or "").lower()
+    platform_label = {"powercenter": "PowerCenter", "idmc": "IDMC",
+                      "dbt": "dbt", "scaffold": "scaffold"}.get(
+                          src_fmt, src_fmt or "unknown")
+    legacy_pc = src_fmt == "powercenter"
+
     # ref-resolution map: raw source tables -> stg models; mapping names
     # AND their target tables -> the mapping's FINAL model (mart if split)
     names: Dict[str, str] = dict(stg_names)
@@ -93,29 +130,54 @@ def generate_dbt_project(pipeline: Pipeline, out_dir: str,
             continue
         cols = [c.name for c in s.columns
                 if c.name not in ("*", "ROW_DATA")]
-        body = ("select\n    %s\nfrom {{ source('%s', '%s') }}\n"
-                % (",\n    ".join(cols) if cols else "*",
-                   s.schema or "raw", s.name))
+        if cols:
+            select = "select\n    %s" % ",\n    ".join(cols)
+        else:
+            # schema genuinely unavailable — SELECT * with a VISIBLE warning
+            # so nobody mistakes a passthrough for a real projection
+            select = ("-- WARNING: no column metadata for this source; using\n"
+                      "-- SELECT * passthrough. Add columns to the manifest or\n"
+                      "-- introspect the live system for an explicit projection.\n"
+                      "select *")
+            pipeline.issues.append(ConversionIssue(
+                severity=IssueSeverity.WARNING, code="SELECT_STAR_PASSTHROUGH",
+                message="Staging model '%s' emits SELECT * — no column "
+                        "metadata for source %s.%s" % (name, s.schema or "raw",
+                                                       s.name),
+                obj=name,
+                suggestion="Provide columns in the manifest or introspect the "
+                           "source so the model projects explicit columns."))
+        body = "%s\nfrom {{ source('%s', '%s') }}\n" % (
+            select, _source_name(s), s.name)
         (root / "models" / "staging" / (name + ".sql")).write_text(body)
         schema_models.append({
             "name": name,
             "description": "Staging view over source %s.%s"
             % (s.schema or "raw", s.name)})
-        manifest.append({
-            "powercenter_object": s.name,
-            "powercenter_type": "source_definition",
+        entry_src: Dict[str, object] = {
+            "source_object": s.name, "source_type": "source_definition",
+            "source_platform": platform_label,
             "cir_object": s.name, "cir_type": "SourceTable",
             "dbt_objects": [{"name": name, "role": "staging",
-                             "path": "models/staging/%s.sql" % name}]})
+                             "path": "models/staging/%s.sql" % name}]}
+        if legacy_pc:
+            entry_src["powercenter_object"] = s.name
+            entry_src["powercenter_type"] = "source_definition"
+        manifest.append(entry_src)
 
     for m in pipeline.mappings:
         unresolved = [t.name for t in m.by_type(TransformationType.SOURCE)
                       if not str(t.properties.get("table", "")).strip()]
-        entry = {"powercenter_object": m.origin or m.name,
-                 "powercenter_type": "mapping",
-                 "powercenter_folder": m.properties.get("folder", ""),
+        entry = {"source_object": m.origin or m.name,
+                 "source_type": "mapping",
+                 "source_platform": platform_label,
+                 "source_folder": m.properties.get("folder", ""),
                  "cir_object": m.name, "cir_type": "Mapping",
                  "dbt_objects": []}
+        if legacy_pc:
+            entry["powercenter_object"] = m.origin or m.name
+            entry["powercenter_type"] = "mapping"
+            entry["powercenter_folder"] = m.properties.get("folder", "")
         manifest.append(entry)
         if unresolved:
             # never emit a model reading FROM <nothing> — manual queue
@@ -171,9 +233,16 @@ def generate_dbt_project(pipeline: Pipeline, out_dir: str,
              "path": "models/%s/%s.sql" % (int_dir, p["int"])})
         desc = ("Converted from Informatica mapping '%s' by MetaBridge AI"
                 % (m.origin or m.name))
+
+        def _meta():
+            md = {"source_mapping": m.origin or m.name,
+                  "source_platform": platform_label}
+            if legacy_pc:
+                md["powercenter_mapping"] = m.origin or m.name
+            return dict(md)
+
         schema_models.append({"name": p["int"], "description": desc,
-                              "meta": {"powercenter_mapping":
-                                       m.origin or m.name}})
+                              "meta": _meta()})
         if split:
             mart_sql = (_config_block(m) +
                         "select * from {{ ref('%s') }}\n" % p["int"])
@@ -183,8 +252,7 @@ def generate_dbt_project(pipeline: Pipeline, out_dir: str,
                 {"name": p["mart"], "role": "mart",
                  "path": "models/marts/%s.sql" % p["mart"]})
             mart_entry = {"name": p["mart"], "description": desc,
-                          "meta": {"powercenter_mapping":
-                                   m.origin or m.name}}
+                          "meta": _meta()}
             cols = _target_columns(m)
             if cols:
                 mart_entry["columns"] = cols
@@ -196,6 +264,9 @@ def generate_dbt_project(pipeline: Pipeline, out_dir: str,
     import json as _json
     (root / "migration_manifest.json").write_text(_json.dumps(
         {"project": pipeline.name, "generator": "MetaBridge AI",
+         "source_platform": platform_label,
+         "target_platform": str(pipeline.metadata.get("target_platform", "")
+                                 or pipeline.metadata.get("dialect", "")),
          "objects": manifest}, indent=2) + "\n")
 
     # workflow orchestration: model dependencies live in dbt's own DAG;
@@ -226,28 +297,64 @@ def _target_columns(m: Mapping) -> List[dict]:
     if not tgts or not tgts[0].ports:
         return []
     out = []
+    fallback = False
     for p in tgts[0].ports:
-        col = {"name": p.name, "data_type": _CANONICAL_TO_DBT.get(p.datatype, "varchar")}
+        col = {"name": p.name, "data_type": _dbt_type(p)}
+        fallback = fallback or _decimal_needs_fallback(p)
         if p.name in m.unique_key:
             col["tests"] = ["unique", "not_null"]
         out.append(col)
+    if fallback:
+        m.add_issue(IssueSeverity.WARNING, "NUMERIC_PRECISION_FALLBACK",
+                    "Target of '%s' has decimal column(s) without declared "
+                    "precision — using documented fallback decimal(%d,%d)"
+                    % (m.name, *_DECIMAL_FALLBACK),
+                    suggestion="Declare precision/scale in the source "
+                               "manifest to preserve exact numeric types.")
     return out
 
 
 def _write_sources_yaml(pipeline: Pipeline, root: Path) -> None:
+    # One dbt source per schema (its source() name — kept consistent with the
+    # staging refs). PRESERVE the source database and schema — never silently
+    # flatten to raw/raw. Supports multiple source databases: each distinct
+    # schema keeps its own database. A dbt source name resolves to exactly one
+    # database, so if one schema name genuinely spans several databases we keep
+    # the first and note the others rather than emit a ref that won't compile.
     by_schema: Dict[str, List] = {}
     for s in pipeline.sources:
         by_schema.setdefault(s.schema or "raw", []).append(s)
     src_entries = []
     for schema, tables in sorted(by_schema.items()):
-        entry = {"name": schema, "schema": schema, "tables": []}
+        dbs = sorted({t.database for t in tables if t.database})
+        entry: Dict[str, object] = {"name": schema, "schema": schema}
+        if dbs:
+            entry["database"] = dbs[0]             # preserved from the manifest
+            if len(dbs) > 1:
+                pipeline.issues.append(ConversionIssue(
+                    severity=IssueSeverity.WARNING, code="SCHEMA_MULTI_DATABASE",
+                    message="Schema '%s' spans multiple source databases (%s); "
+                            "dbt source '%s' uses '%s'. Split the schema per "
+                            "database to model the others."
+                            % (schema, ", ".join(dbs), schema, dbs[0]),
+                    obj=schema))
+        entry["tables"] = []
         for t in tables:
             tbl = {"name": t.name}
             if t.columns:
-                tbl["columns"] = [{"name": c.name,
-                                   "data_type": _CANONICAL_TO_DBT.get(c.datatype, "varchar")}
+                tbl["columns"] = [{"name": c.name, "data_type": _dbt_type(c)}
                                   for c in t.columns]
-            entry["tables"].append(tbl)
+                if any(_decimal_needs_fallback(c) for c in t.columns):
+                    pipeline.issues.append(ConversionIssue(
+                        severity=IssueSeverity.WARNING,
+                        code="NUMERIC_PRECISION_FALLBACK",
+                        message="Source %s has decimal column(s) without "
+                                "declared precision — using documented "
+                                "fallback decimal(%d,%d)"
+                                % (t.name, *_DECIMAL_FALLBACK), obj=t.name,
+                        suggestion="Declare precision/scale in the manifest to "
+                                   "preserve exact numeric types."))
+            entry["tables"].append(tbl)  # type: ignore[attr-defined]
         src_entries.append(entry)
     (root / "models" / "staging").mkdir(parents=True, exist_ok=True)
     (root / "models" / "staging" / "sources.yml").write_text(
@@ -464,7 +571,7 @@ def _render_graph(m: Mapping, pipeline: Pipeline, mapping_names: set,
             rel = "{{ ref('%s') }}" % _safe(table)
         elif any(s.name.lower() == table.lower() for s in pipeline.sources):
             s = next(s for s in pipeline.sources if s.name.lower() == table.lower())
-            rel = "{{ source('%s', '%s') }}" % (s.schema or "raw", s.name)
+            rel = "{{ source('%s', '%s') }}" % (_source_name(s), s.name)
         else:
             rel = table
         source_ref_cache[table] = rel

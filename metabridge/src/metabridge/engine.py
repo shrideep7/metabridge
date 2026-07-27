@@ -316,7 +316,17 @@ def convert(input_path: str, output_dir: str, source_format: str = "",
         ai_review         default False — ai_review/ (propose-only)
     """
     opts = dict(options or {})
-    src = source_format or detect_format(input_path)
+    # When the source format is not explicitly selected, run auto-detection
+    # and PROPAGATE its verdict (format + confidence + evidence) so the
+    # generation flow and report can surface how the source was identified.
+    detection = None
+    if source_format:
+        src = source_format
+    else:
+        from .detection.engine import detect as _detect
+        det = _detect(input_path)
+        src = det.detected_format
+        detection = det.to_dict()
     if not target_format:
         # warehouse SQL modernizes to dbt by default; dbt goes to Informatica
         target_format = "dbt" if src in ("powercenter", "idmc") \
@@ -327,6 +337,11 @@ def convert(input_path: str, output_dir: str, source_format: str = "",
     pipeline = parse_input(input_path, src, dialect)
     if dialect:
         pipeline.metadata["dialect"] = dialect
+    # one canonical source/target platform value for every generator/report
+    pipeline.metadata["source_platform"] = src
+    pipeline.metadata["target_platform"] = target_format
+    if detection is not None:
+        pipeline.metadata["source_detection"] = detection
     if models or overrides:
         apply_plan(pipeline, models, overrides)
 
@@ -355,6 +370,8 @@ def convert(input_path: str, output_dir: str, source_format: str = "",
     report = write_report(pipeline, target_format, str(out))
     if validation is not None:
         report["validation"] = validation
+    if detection is not None:
+        report["source_detection"] = detection
 
     # every conversion ships with its migration validation suite
     if opts.get("generate_tests", True):
