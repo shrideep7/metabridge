@@ -3653,6 +3653,20 @@ async def api_govern(
 # Scaffold
 # ---------------------------------------------------------------------------
 
+def _scaffold_conn_params(conn_id: str, connector: str):
+    """Non-secret params of a saved connection, when it matches the chosen
+    connector — so generated dbt/IDMC/PowerCenter connection artifacts carry
+    that system's real connection settings (host/account/database/…).
+    Secrets stay as env-var references; they are never resolved here."""
+    if not conn_id:
+        return None
+    from metabridge.connections_store import get_connection
+    row = get_connection(conn_id)
+    if row is None or row.get("connector") != connector:
+        return None
+    return dict(row.get("params") or {})
+
+
 @app.post("/api/scaffold")
 async def api_scaffold(
     tables: UploadFile = File(...),
@@ -3661,6 +3675,8 @@ async def api_scaffold(
     project: str = Form(""),
     source_region: str = Form(""),
     target_region: str = Form(""),
+    source_conn: str = Form(""),
+    target_conn: str = Form(""),
 ):
     from metabridge.scaffold import scaffold as run_scaffold
     job_dir = _new_job("scaffold")
@@ -3669,6 +3685,10 @@ async def api_scaffold(
     try:
         report = run_scaffold(source, target, str(manifest),
                               str(job_dir / "output"), project,
+                              source_params=_scaffold_conn_params(source_conn,
+                                                                  source),
+                              target_params=_scaffold_conn_params(target_conn,
+                                                                  target),
                               source_region=source_region,
                               target_region=target_region)
     except (ValueError, FileNotFoundError) as e:
@@ -3703,12 +3723,29 @@ async def api_scaffold(
 # Marketplace
 # ---------------------------------------------------------------------------
 
+def _connector_dict(spec) -> dict:
+    """A connector's public shape, enriched with `supports` — the concrete
+    flows this connector can actually be driven through in THIS build. The
+    console uses it to offer only working actions, so a connector is never
+    shown as live-integrated when it only has the declarative flows."""
+    from metabridge.livecheck import live_support
+    d = spec.to_dict()
+    sup = dict(live_support(spec.key))
+    sup["artifacts"] = bool(spec.dbt_adapter or spec.idmc_type
+                            or spec.powercenter_dbtype)
+    sup["scaffold_source"] = True
+    sup["scaffold_target"] = bool(spec.dbt_adapter
+                                  or spec.category in ("cloud_dw", "lakehouse"))
+    d["supports"] = sup
+    return d
+
+
 @app.get("/api/v1/connectors")
 def v1_connectors(category: str = ""):
     from metabridge.connectors.base import get_registry
     reg = get_registry()
     specs = reg.by_category(category) if category else reg.all()
-    return {"connectors": [s.to_dict() for s in specs]}
+    return {"connectors": [_connector_dict(s) for s in specs]}
 
 
 @app.get("/api/v1/connectors/{key}")
@@ -3717,7 +3754,7 @@ def v1_connector(key: str):
     spec = get_registry().get(key)
     if spec is None:
         raise HTTPException(404, "Unknown connector: %s" % key)
-    return spec.to_dict()
+    return _connector_dict(spec)
 
 
 @app.post("/api/v1/connectors/{key}/artifacts")
@@ -3832,16 +3869,29 @@ def v1_connections_list():
 @app.post("/api/v1/connections")
 async def v1_connections_save(request: Request):
     """Save a connection: non-secret params always; the password only
-    when save_secrets=true (stored 0600 on this host, never echoed)."""
-    from metabridge.connections_store import save_connection
+    when save_secrets=true (stored 0600 on this host, never echoed). Pass
+    an `id` to update an existing connection in place (edit)."""
+    from metabridge.connections_store import (_missing_required,
+                                              save_connection)
     body = await request.json()
+    connector = str(body.get("connector", ""))
+    params = dict(body.get("params") or {})
+    # required-field validation at the API boundary — the console form runs
+    # the same check, so UI and API reject the same incomplete inputs
+    missing = _missing_required(connector, params)
+    if missing:
+        raise HTTPException(422, "Missing required field%s: %s"
+                            % ("" if len(missing) == 1 else "s",
+                               ", ".join(missing)))
     try:
         return save_connection(
-            str(body.get("connector", "")),
-            dict(body.get("params") or {}),
+            connector, params,
             name=str(body.get("name", "") or ""),
             save_secrets=bool(body.get("save_secrets", False)),
-            last_test=body.get("last_test"))
+            last_test=body.get("last_test"),
+            conn_id=str(body.get("id", "") or ""))
+    except KeyError:
+        raise HTTPException(404, "Unknown connection")
     except ValueError as e:
         raise HTTPException(422, str(e))
 
@@ -3874,8 +3924,8 @@ def v1_connection_delete(conn_id: str):
 
 @app.post("/api/v1/connections/{conn_id}/test")
 def v1_connection_test(conn_id: str):
-    from metabridge.connections_store import (get_connection, record_test,
-                                              resolve_params)
+    from metabridge.connections_store import (get_connection, mark_testing,
+                                              record_test, resolve_params)
     from metabridge.livecheck import test_connection
     row = get_connection(conn_id)
     if row is None:
@@ -3884,9 +3934,10 @@ def v1_connection_test(conn_id: str):
         params = resolve_params(conn_id)
     except PermissionError as e:
         raise HTTPException(409, str(e))
-    report = test_connection(row["connector"], params)
+    mark_testing(conn_id)              # visible TESTING state for concurrent readers
+    report = test_connection(row["connector"], params)   # never raises
     report.pop("password", None)
-    record_test(conn_id, report)
+    record_test(conn_id, report)       # always clears the TESTING flag
     return report
 
 

@@ -132,8 +132,11 @@
   .sc .meta { color:#667; font-size:12.5px; margin-top:6px; line-height:1.5; }
   .sc .acts { margin-top:12px; display:flex; gap:6px; align-items:center; flex-wrap:wrap; }
   .sc .acts button { padding:7px 13px; font-size:13px; margin:0; }
-  .dot { width:8px; height:8px; border-radius:50%; display:inline-block; background:#1e8449; }
-  .dot.err { background:#c0392b; } .dot.dis { background:#aab; } .dot.warn { background:#c77d0a; }
+  .dot { width:8px; height:8px; border-radius:50%; display:inline-block; background:#1e8449; vertical-align:middle; }
+  .dot.err { background:#c0392b; } .dot.dis { background:#aab; } .dot.warn { background:#c77d0a; animation:dotpulse 1.1s ease-in-out infinite; }
+  @keyframes dotpulse { 0%,100%{opacity:1} 50%{opacity:.35} }
+  .req { color:#c0392b; font-weight:700; }
+  .opt { color:#98a0ad; font-weight:400; font-size:11px; }
   .kebab { position:absolute; top:14px; right:12px; background:none; color:#667; padding:2px 8px;
            font-size:18px; line-height:1; border-radius:8px; }
   .kebab:hover { background:#eef1f6; }
@@ -2554,7 +2557,7 @@ async function loadDashboard() {
   const manual = withR.reduce((n, x) => n + ((x.r.summary || {}).workload ? x.r.summary.workload.manual_queue || 0 : 0), 0);
   const pipelines = scaffolds.reduce((n, j) => n + ((j.summary || {}).objects_total || 0), 0);
   $('#dashCards').innerHTML =
-    mcard(conns.filter(x => x.status === 'active').length || '--', 'Connected systems', conns.length ? conns.length + ' saved' : 'Connect under Integrations')
+    mcard(conns.filter(x => x.state === 'connected').length || '--', 'Connected systems', conns.length ? conns.length + ' saved' : 'Connect under Integrations')
     + mcard(assets || '--', 'Assets analyzed', withR.length ? 'across ' + withR.length + ' recent runs' : '')
     + mcard(converts.length || '--', 'Modernizations', jobs.filter(j => j.kind === 'convert' && j.status !== 'done').length + ' in flight')
     + mcard(pipelines || '--', 'Pipelines generated', scaffolds.length ? scaffolds.length + ' scaffold runs' : '')
@@ -2817,11 +2820,18 @@ document.querySelectorAll('input[name="tmode"]').forEach(r => r.onchange = () =>
 async function fillModConnList() {
   try {
     if (!allConnections.length) allConnections = (await api('/api/v1/connections')).connections || [];
-    const act = allConnections.filter(x => x.status === 'active');
+    if (!allConnectors.length) allConnectors = (await api('/api/v1/connectors')).connectors || [];
+    // only systems that are started AND whose connector can actually be
+    // introspected — otherwise "Analyze" would hit an unsupported path
+    const canIntrospect = k => {
+      const s = allConnectors.find(c => c.key === k);
+      return !s || !s.supports || s.supports.introspect !== false;
+    };
+    const act = allConnections.filter(x => x.status === 'active' && canIntrospect(x.connector));
     $('#modConnList').innerHTML = act.length
       ? act.map(x => '<button type="button" class="secondary" style="margin:0 6px 6px 0;padding:7px 12px;font-size:12.5px" data-cid="' + x.id + '">' + esc(x.name) + '</button>').join('')
         + '<div style="font-size:11.5px;color:#889;margin-top:2px">Analyzes the connected system and opens Pipeline Studio with its manifest.</div>'
-      : 'No connected systems yet — connect one under Integrations.';
+      : 'No connectable systems yet — connect one that supports live introspection under Integrations.';
     $('#modConnList').querySelectorAll('[data-cid]').forEach(b => b.onclick = async () => {
       b.disabled = true; b.textContent = 'Analyzing…';
       try {
@@ -2844,17 +2854,23 @@ const CAT_NAMES = {cloud_dw:'Cloud data platforms', lakehouse:'Lakehouse', on_pr
 const CAP_LABELS = {pipeline_scaffold:'Pipeline Scaffold', dbt:'dbt', idmc:'IDMC',
   powercenter:'PowerCenter', sql_modernization:'SQL Modernization',
   metadata_analysis:'Metadata Analysis', lineage:'Lineage', bidirectional:'Bidirectional'};
-const STATE_LABELS = {NOT_CONNECTED:'Connect', CONNECTING:'Connecting…', ACTIVE:'Connected',
-  ANALYZING:'Analyzing…', ANALYZED:'Analysis complete', SCAFFOLD_READY:'Scaffold ready',
-  LOADING:'Loading data', ERROR:'Connection issue', DISABLED:'Disabled'};
+// Display states mirror the server's canonical connection_state() — the API
+// is the single source of truth, the console never re-derives connectivity.
+const STATE_LABELS = {NOT_CONNECTED:'Connect', CONNECTED:'Connected',
+  FAILED:'Failed', TESTING:'Testing…', UNCONNECTED:'Unconnected',
+  STOPPED:'Stopped'};
+// dot colour class + accessible wording per state; only genuine failures are
+// styled as errors — unconnected/stopped use a neutral indicator
+const STATE_DOT = {CONNECTED:'', FAILED:'err', TESTING:'warn',
+  UNCONNECTED:'dis', STOPPED:'dis', NOT_CONNECTED:'dis'};
 let allConnections = [];
 let mktFilters = {q:'', cap:'', status:''};
 
+// The server already computed x.state (connected|failed|testing|unconnected|
+// stopped). Uppercase it for the label/dot maps; fall back defensively.
 function connState(x) {
-  if (x.status !== 'active') return 'DISABLED';
-  if (x.last_test && x.last_test.ok === false) return 'ERROR';
-  if (x.last_analysis) return 'ANALYZED';
-  return 'ACTIVE';
+  const s = (x && x.state ? String(x.state) : 'unconnected').toUpperCase();
+  return STATE_LABELS[s] ? s : 'UNCONNECTED';
 }
 function fmtAgo(iso) {
   if (!iso) return '';
@@ -2865,7 +2881,9 @@ function fmtAgo(iso) {
   return Math.round(s/86400) + ' d ago';
 }
 function connectionFor(key) {
-  return allConnections.find(x => x.connector === key && x.status === 'active');
+  const mine = allConnections.filter(x => x.connector === key);
+  // prefer a proven-connected one, else any saved connection for this key
+  return mine.find(x => x.state === 'connected') || mine[0];
 }
 
 async function loadSavedConnections() {
@@ -2883,22 +2901,32 @@ async function loadSavedConnections() {
   el.innerHTML = '<div class="sc-row">' + allConnections.map(x => {
     const st = connState(x);
     const spec = allConnectors.find(k => k.key === x.connector) || {name: x.connector};
+    const sup = (spec.supports) || {};
     const t = x.last_test;
-    const health = st === 'ERROR' ? 'Connection issue — ' + esc((t && t.error) || '')
-      : (t && t.ok ? 'Last tested ' + fmtAgo(t.at) + ' · Connection healthy' : 'Not tested yet');
+    const label = STATE_LABELS[st];
+    const health = st === 'FAILED' ? 'Connection failed — ' + esc((t && t.error) || 'last test did not pass')
+      : st === 'CONNECTED' ? (t && t.ok ? 'Last tested ' + fmtAgo(t.at) + ' · connection healthy' : 'Reachable · analyzed ' + fmtAgo((x.last_analysis||{}).at))
+      : st === 'STOPPED' ? 'Stopped — start it to use this connection'
+      : st === 'TESTING' ? 'Testing connection…'
+      : (t && t.unsupported ? 'Live test not available for this connector' : 'Not tested yet');
     const an = x.last_analysis;
     const anLine = an ? esc((an.database||'') + (an.schema && an.schema !== '(all)' ? '.' + an.schema : ''))
       + ' · ' + an.tables + ' tables · ' + Number(an.total_rows||0).toLocaleString() + ' rows analyzed ' + fmtAgo(an.at) : '';
-    const dotCls = st === 'ERROR' ? 'err' : (st === 'DISABLED' ? 'dis' : '');
-    const stCls = st === 'ERROR' ? 'err' : (st === 'DISABLED' ? 'dis' : '');
-    const primary = st === 'ERROR' ? '<button data-act="fix" data-id="' + x.id + '">Fix connection</button>'
-      : st === 'DISABLED' ? '<button data-act="start" data-id="' + x.id + '">Start</button>'
-      : st === 'ANALYZED' ? '<button data-act="scaffold" data-id="' + x.id + '">Scaffold pipeline</button>'
-      : '<button data-act="analyze" data-id="' + x.id + '">Analyze</button>';
-    return '<div class="sc" role="group" aria-label="Connection ' + esc(x.name) + '">'
+    const dotCls = STATE_DOT[st] || 'dis';
+    const stCls = st === 'FAILED' ? 'err' : (st === 'CONNECTED' ? '' : 'dis');
+    // primary action depends on the real state AND what the connector supports.
+    // A connector with no live driver can't be introspected, so its primary
+    // action opens the modal to generate artifacts rather than a live probe.
+    const canLive = sup.introspect !== false;   // undefined (old cache) => allow
+    const primary = st === 'FAILED' ? '<button data-act="fix" data-id="' + x.id + '">Fix connection</button>'
+      : st === 'STOPPED' ? '<button data-act="start" data-id="' + x.id + '">Start</button>'
+      : (canLive ? '<button data-act="analyze" data-id="' + x.id + '">Analyze</button>'
+                 : '<button data-act="edit" data-id="' + x.id + '">Generate artifacts</button>');
+    const liveActs = canLive && (st === 'CONNECTED' || st === 'UNCONNECTED') && st !== 'STOPPED';
+    return '<div class="sc" role="group" aria-label="Connection ' + esc(x.name) + ', ' + esc(label) + '">'
       + '<div class="hd"><img src="/static/logos/' + esc(x.connector) + '.svg" alt="" onerror="this.style.display=\'none\'">'
-      + '<strong>' + esc(spec.name) + '</strong> <span class="dot ' + dotCls + '" aria-hidden="true"></span>'
-      + '<span class="st ' + stCls + '" role="status">' + STATE_LABELS[st].toUpperCase() + '</span></div>'
+      + '<strong>' + esc(spec.name) + '</strong> <span class="dot ' + dotCls + '" role="img" aria-label="Status: ' + esc(label) + '" title="' + esc(label) + '"></span>'
+      + '<span class="st ' + stCls + '" role="status">' + esc(label) + '</span></div>'
       + '<button class="kebab" data-menu="' + x.id + '" aria-label="More actions for ' + esc(x.name) + '" aria-haspopup="menu">&#8942;</button>'
       + '<div class="menu" id="menu_' + x.id + '" role="menu">'
       +   '<button data-act="' + (x.status === 'active' ? 'stop' : 'start') + '" data-id="' + x.id + '">' + (x.status === 'active' ? 'Stop' : 'Start') + '</button>'
@@ -2910,8 +2938,8 @@ async function loadSavedConnections() {
       + esc([x.params.database, x.params.warehouse].filter(Boolean).join(' · ')) + (anLine ? '<br>' + anLine : '')
       + '<br>' + health + '</div>'
       + '<div class="acts">' + primary
-      + (st === 'ACTIVE' || st === 'ANALYZED' ? ' <button class="secondary" data-act="test" data-id="' + x.id + '">Test</button>'
-        + (st === 'ANALYZED' ? ' <button class="secondary" data-act="analyze" data-id="' + x.id + '">Analyze</button>' : '')
+      + (liveActs && canLive ? ' <button class="secondary" data-act="test" data-id="' + x.id + '">Test</button>'
+        + (st === 'CONNECTED' ? ' <button class="secondary" data-act="analyze" data-id="' + x.id + '">Analyze</button>' : '')
         + ' <button class="secondary" data-act="load" data-id="' + x.id + '" title="Upload sample data to load — accepts .xlsx, .csv, .tsv or .json">Load data</button>'
         + '<input type="file" id="loadFile_' + x.id + '" accept=".xlsx,.csv,.tsv,.json" style="display:none">' : '')
       + '</div><div id="connOut_' + x.id + '"></div></div>';
@@ -2944,7 +2972,7 @@ async function loadSavedConnections() {
         await api('/api/v1/connections/' + id, {method:'DELETE'}); return loadSavedConnections();
       }
       if (act === 'start' || act === 'stop') { await api('/api/v1/connections/' + id + '/' + act, {method:'POST'}); return loadSavedConnections(); }
-      if (act === 'fix' || act === 'edit') { return openConnector(row.connector); }
+      if (act === 'fix' || act === 'edit') { return openConnector(row.connector, row.id); }
       if (act === 'config') {
         out.innerHTML = '<pre style="margin-top:8px">' + esc(JSON.stringify(row.params, null, 2))
           + '\n\ncredentials: ' + (row.has_secrets ? 'password stored on this host (file mode 0600)' : 'password from MB_* environment variable') + '</pre>';
@@ -3255,10 +3283,10 @@ async function loadMarketplace() {
   if (!allConnectors.length) allConnectors = (await api('/api/v1/connectors')).connectors;
   // metrics
   const byCat = k => allConnectors.filter(c => c.category === k).length;
-  const active = allConnections.filter(x => x.status === 'active').length;
+  const connected = allConnections.filter(x => x.state === 'connected').length;
   $('#mktMetrics').innerHTML =
     '<span><b>' + allConnectors.length + '</b> Integrations</span>'
-    + '<span><b>' + active + '</b> Active Connection' + (active === 1 ? '' : 's') + '</span>'
+    + '<span><b>' + connected + '</b> Connected system' + (connected === 1 ? '' : 's') + '</span>'
     + '<span><b>' + (byCat('cloud_dw') + byCat('lakehouse')) + '</b> Cloud Platforms</span>'
     + '<span><b>' + byCat('on_prem_db') + '</b> Legacy / On-Prem Systems</span>'
     + '<span><b>' + byCat('sap') + '</b> SAP Connectors</span>';
@@ -3280,9 +3308,9 @@ function renderMarketplace() {
     if (activeCat && c.category !== activeCat) return false;
     if (mktFilters.cap && !(c.capabilities||[]).includes(mktFilters.cap)) return false;
     const conn = connectionFor(c.key);
-    if (mktFilters.status === 'connected' && !conn) return false;
-    if (mktFilters.status === 'not_connected' && conn) return false;
-    if (mktFilters.status === 'issue' && !(conn && connState(conn) === 'ERROR')) return false;
+    if (mktFilters.status === 'connected' && !(conn && connState(conn) === 'CONNECTED')) return false;
+    if (mktFilters.status === 'not_connected' && conn && connState(conn) === 'CONNECTED') return false;
+    if (mktFilters.status === 'issue' && !(conn && connState(conn) === 'FAILED')) return false;
     if (!q) return true;
     const syn = {on_prem_db: 'legacy on-prem hybrid database sql', cloud_dw: 'cloud warehouse',
                  lakehouse: 'cloud lakehouse spark delta', sap: 'sap erp', app: 'saas business application'};
@@ -3304,7 +3332,7 @@ function renderMarketplace() {
     const shown = capBadges.slice(0, 3);
     const extra = capBadges.length - shown.length;
     const foot = conn
-      ? '<span class="dot ' + (st === 'ERROR' ? 'err' : '') + '" aria-hidden="true"></span> ' + STATE_LABELS[st]
+      ? '<span class="dot ' + (STATE_DOT[st] || 'dis') + '" role="img" aria-label="Status: ' + esc(STATE_LABELS[st]) + '" title="' + esc(STATE_LABELS[st]) + '"></span> ' + esc(STATE_LABELS[st])
         + '<span class="go">Configure &rarr;</span>'
       : '<span class="go" style="margin-left:auto">Connect &rarr;</span>';
     return '<div class="conn" role="listitem" tabindex="0" data-key="' + c.key + '"'
@@ -3324,14 +3352,60 @@ function renderMarketplace() {
 $('#mktSearch').oninput = ev => { mktFilters.q = ev.target.value; renderMarketplace(); };
 $('#fltCap').onchange = ev => { mktFilters.cap = ev.target.value; renderMarketplace(); };
 $('#fltStatus').onchange = ev => { mktFilters.status = ev.target.value; renderMarketplace(); };
-$('#newConnBtn').onclick = () => { $('#mktSearch').focus(); window.scrollTo({top: 0, behavior: 'smooth'}); };
+// "New connection" opens a connector picker modal (the intended creation
+// entry point) — it never navigates away or redirects to another page.
+async function openNewConnectionPicker() {
+  if (!allConnectors.length) {
+    try { allConnectors = (await api('/api/v1/connectors')).connectors || []; } catch (e) {}
+  }
+  const render = (q) => {
+    const ql = (q || '').toLowerCase();
+    const list = allConnectors.filter(c => !ql
+      || [c.name, c.vendor, CAT_NAMES[c.category] || c.category,
+          (c.capabilities || []).join(' ')].join(' ').toLowerCase().includes(ql));
+    $('#npList').innerHTML = list.length ? list.map(c =>
+      '<button type="button" class="np-item" data-key="' + esc(c.key) + '" style="display:flex;gap:10px;align-items:center;width:100%;text-align:left;background:#fff;border:1px solid #e2e6ee;border-radius:8px;padding:9px 11px;margin:0 0 6px;cursor:pointer">'
+      + '<img src="/static/logos/' + esc(c.key) + '.svg" alt="" style="width:22px;height:22px" onerror="this.style.display=\'none\'">'
+      + '<span><b style="font-size:13px">' + esc(c.name) + '</b>'
+      + '<span style="display:block;color:#889;font-size:11.5px">' + esc(c.vendor || '') + ' · ' + esc(CAT_NAMES[c.category] || c.category) + '</span></span></button>').join('')
+      : '<div style="color:#889;font-size:13px;padding:8px 0">No integrations match “' + esc(q) + '”.</div>';
+    $('#npList').querySelectorAll('.np-item').forEach(b =>
+      b.onclick = () => { $('#modalBg').style.display = 'none'; openConnector(b.dataset.key); });
+  };
+  $('#modalBody').innerHTML = '<h3 style="margin:0 0 4px">New connection</h3>'
+    + '<div style="color:#667;font-size:13px;margin-bottom:10px">Choose an integration to connect.</div>'
+    + '<input type="search" id="npSearch" placeholder="Search integrations..." style="width:100%;margin-bottom:10px" aria-label="Search integrations">'
+    + '<div id="npList" style="max-height:52vh;overflow-y:auto"></div>'
+    + '<div style="display:flex;justify-content:flex-end;margin-top:12px"><button class="secondary" id="npClose">Close</button></div>';
+  $('#modalBg').style.display = 'flex';
+  $('#npClose').onclick = () => { $('#modalBg').style.display = 'none'; };
+  $('#npSearch').oninput = ev => render(ev.target.value);
+  render('');
+  $('#npSearch').focus();
+}
+$('#newConnBtn').onclick = openNewConnectionPicker;
 
-async function openConnector(key) {
+async function openConnector(key, connId) {
   const c = allConnectors.find(x => x.key === key);
-  const fieldRows = c.fields.map(f =>
-    '<div><label>' + f.label + (f.required?'':' (optional)') + (f.secret?' 🔒':'') + '</label>'
-    + '<input type="' + (f.secret?'password':'text') + '" data-field="' + f.name + '" value="' + (f.default||'') + '"></div>').join('');
-  const existing = connectionFor(key);
+  const sup = c.supports || {};
+  // EDIT mode: preload from the saved connection (by id, else the one for
+  // this connector). Non-secret params preload from storage; secret fields
+  // stay blank (secrets are never returned) with a "keep stored" hint.
+  const editRow = connId ? allConnections.find(x => x.id === connId)
+                         : connectionFor(key);
+  const saved = (editRow && editRow.params) || {};
+  const fieldRows = c.fields.map(f => {
+    const req = f.required
+      ? ' <span class="req" title="Required" aria-label="required">*</span>' : ' <span class="opt">(optional)</span>';
+    const val = f.secret ? '' : String(saved[f.name] != null ? saved[f.name] : (f.default || ''));
+    const ph = f.secret && editRow && editRow.has_secrets
+      ? ' placeholder="•••••••• (leave blank to keep stored)"' : '';
+    return '<div><label>' + esc(f.label) + req + (f.secret ? ' 🔒' : '') + '</label>'
+      + '<input type="' + (f.secret ? 'password' : 'text') + '" data-field="' + esc(f.name) + '"'
+      + ' data-required="' + (f.required ? '1' : '') + '" data-secret="' + (f.secret ? '1' : '') + '"'
+      + ' value="' + esc(val) + '"' + ph + '></div>';
+  }).join('');
+  const existing = editRow || connectionFor(key);
   const auth = c.fields.some(f => f.secret) ? 'Username / password'
     : c.fields.some(f => /token/i.test(f.name)) ? 'Token' : 'Configured per platform';
   const capRow = (c.capabilities||[]).map(k => '<span class="tag">' + (CAP_LABELS[k]||k) + '</span>').join('');
@@ -3339,25 +3413,52 @@ async function openConnector(key) {
     + '<img class="logo" src="/static/logos/' + c.key + '.svg" alt="" onerror="this.style.display=\'none\'">'
     + '<div><h2 style="font-size:18px">' + c.name + '</h2>'
     + '<div class="v" style="color:#667;font-size:13px">' + c.vendor + ' · ' + (CAT_NAMES[c.category]||c.category) + ' · ' + c.deployment_model + '</div></div></div>'
-    + (existing ? '<div style="margin-top:10px;font-size:13px;color:#14522d"><span class="dot"></span> ' + STATE_LABELS[connState(existing)] + ' — saved as \u201C' + esc(existing.name) + '\u201D (see Saved connections for Analyze / Scaffold / Load)</div>' : '')
+    + (existing ? '<div style="margin-top:10px;font-size:13px;color:#445"><span class="dot ' + (STATE_DOT[connState(existing)]||'dis') + '" role="img" aria-label="Status"></span> ' + STATE_LABELS[connState(existing)] + ' — saved as \u201C' + esc(existing.name) + '\u201D (see Saved connections for Analyze / Scaffold / Load)</div>' : '')
     + '<div class="drawer-meta">'
     + '<b>Capabilities</b><div class="tags" style="margin:4px 0 8px">' + capRow + '</div>'
     + '<b>Source modes</b> — Full load · Incremental (watermark) · Metadata only<br>'
-    + '<b>Targets</b> — ' + [c.dbt_adapter && 'dbt', c.idmc_type && 'IDMC', c.powercenter_dbtype && 'PowerCenter'].filter(Boolean).join(' · ')
+    + '<b>Targets</b> — ' + ([c.dbt_adapter && 'dbt', c.idmc_type && 'IDMC', c.powercenter_dbtype && 'PowerCenter'].filter(Boolean).join(' · ') || 'source system (extract / analyze)')
     + '<br><b>Authentication</b> — ' + auth
+    + '<br><b>Live actions</b> — ' + (sup.live_test ? 'Test & Analyze supported' : 'declarative only (artifacts & scaffold)')
     + '<br><b>Regions</b> — ' + c.regions.join(', ') + '</div>'
     + (c.notes ? '<div style="font-size:13px;background:#f4f7fb;border-radius:8px;padding:10px 12px;margin-bottom:8px">' + c.notes + '</div>' : '')
-    + '<h3 style="font-size:14px;margin-top:12px">' + (existing ? 'Connection details' : 'Connect') + '</h3>'
+    + '<h3 style="font-size:14px;margin-top:12px">' + (editRow ? 'Connection details' : 'Connect') + '</h3>'
+    + '<div><label>Connection name <span class="opt">(optional)</span></label>'
+    + '<input type="text" id="connName" placeholder="' + esc(c.name) + '" value="' + esc(editRow ? editRow.name : '') + '"></div>'
     + '<div class="row">' + fieldRows + '</div>'
-    + '<button id="genArt">Generate</button> <button class="secondary" id="testConn">Test connection</button> <button class="secondary" id="analyzeDb">Analyze database</button> <button class="secondary" id="saveConn">Save connection</button> <button class="secondary" id="closeModal">Close</button>'
-    + '<label style="display:inline-flex;align-items:center;gap:6px;margin-left:10px;font-size:13px;color:#667"><input type="checkbox" id="savePw"> remember password on this host</label>'
+    + '<div id="connFieldErr" style="display:none;color:#b03a2e;font-size:13px;margin:6px 0"></div>'
+    + (sup.artifacts ? '<button id="genArt">Generate artifacts</button> ' : '')
+    + (sup.live_test ? '<button class="secondary" id="testConn">Test connection</button> ' : '')
+    + (sup.introspect ? '<button class="secondary" id="analyzeDb">Analyze database</button> ' : '')
+    + '<button class="secondary" id="saveConn">' + (editRow ? 'Update connection' : 'Save connection') + '</button> <button class="secondary" id="closeModal">Close</button>'
+    + '<label style="display:inline-flex;align-items:center;gap:6px;margin-left:10px;font-size:13px;color:#667"><input type="checkbox" id="savePw"' + (editRow && editRow.has_secrets ? ' checked' : '') + '> remember password on this host</label>'
+    + (!sup.live_test ? '<div style="font-size:12px;color:#889;margin-top:8px">Live test and introspection are not available for this connector yet — save it, generate connection artifacts, or analyze a table manifest in Pipeline Studio.</div>' : '')
     + '<div id="artOut"></div>';
   $('#modalBg').style.display = 'flex';
   ['#genArt', '#testConn', '#analyzeDb', '#saveConn'].forEach(sel => {
-    if (!can('jobs:run')) { $(sel).disabled = true; $(sel).title = permTitle('jobs:run'); }
+    const el = $(sel);
+    if (el && !can('jobs:run')) { el.disabled = true; el.title = permTitle('jobs:run'); }
   });
+  // client-side required-field check mirroring the server (a secret field is
+  // exempt when editing a connection that already has a stored secret)
+  function validateFields(requireSecrets) {
+    const missing = [];
+    $('#modalBody').querySelectorAll('input[data-field]').forEach(i => {
+      if (i.dataset.required && !i.value.trim()) {
+        // a stored secret satisfies "required" only when we are NOT about to
+        // send params to a live probe (test/analyze need the actual value)
+        if (i.dataset.secret && !requireSecrets && editRow && editRow.has_secrets) return;
+        missing.push((i.previousElementSibling.textContent || '').replace('*', '').replace('🔒', '').replace('(optional)', '').trim());
+      }
+    });
+    const err = $('#connFieldErr');
+    if (missing.length) { err.textContent = 'Fill required field(s): ' + missing.join(', '); err.style.display = 'block'; return false; }
+    err.style.display = 'none'; return true;
+  }
   $('#closeModal').onclick = () => $('#modalBg').style.display = 'none';
-  $('#testConn').onclick = async () => {
+  const testBtn = $('#testConn');
+  if (testBtn) testBtn.onclick = async () => {
+    if (!validateFields(true)) return;   // live test needs the secret too
     const params = {};
     $('#modalBody').querySelectorAll('input[data-field]').forEach(i => params[i.dataset.field] = i.value);
     $('#artOut').innerHTML = '<div style="padding:8px 0">Connecting…</div>';
@@ -3378,7 +3479,9 @@ async function openConnector(key) {
       }
     } catch (e) { $('#artOut').innerHTML = '<label style="color:#b03a2e">Connection failed</label><pre>' + esc(e.message || e) + '</pre>'; }
   };
-  $('#analyzeDb').onclick = async () => {
+  const analyzeBtn = $('#analyzeDb');
+  if (analyzeBtn) analyzeBtn.onclick = async () => {
+    if (!validateFields(true)) return;
     const params = {};
     $('#modalBody').querySelectorAll('input[data-field]').forEach(i => params[i.dataset.field] = i.value);
     $('#artOut').innerHTML = '<div style="padding:8px 0">Analyzing database (read-only)…</div>';
@@ -3404,21 +3507,32 @@ async function openConnector(key) {
     } catch (e) { $('#artOut').innerHTML = '<label style="color:#b03a2e">Analysis failed</label><pre>' + esc(e.message || e) + '</pre>'; }
   };
   $('#saveConn').onclick = async () => {
+    if (!validateFields(false)) return;   // secret may stay stored on edit
     const params = {};
-    $('#modalBody').querySelectorAll('input[data-field]').forEach(i => params[i.dataset.field] = i.value);
+    $('#modalBody').querySelectorAll('input[data-field]').forEach(i => {
+      // don't overwrite a stored secret with an empty box on edit
+      if (i.dataset.secret && !i.value && editRow && editRow.has_secrets) return;
+      params[i.dataset.field] = i.value;
+    });
+    const payload = {connector: key, params, save_secrets: $('#savePw').checked,
+                     name: ($('#connName').value || '').trim()};
+    if (editRow) payload.id = editRow.id;
     try {
       const d = await api('/api/v1/connections', {method:'POST', headers:{'Content-Type':'application/json'},
-        body: JSON.stringify({connector: key, params, save_secrets: $('#savePw').checked})});
-      $('#artOut').innerHTML = '<label style="color:#1e8449">Saved as \u201C' + esc(d.name) + '\u201D — it stays available under Marketplace \u2192 Saved connections until you stop or delete it'
+        body: JSON.stringify(payload)});
+      $('#artOut').innerHTML = '<label style="color:#1e8449">' + (editRow ? 'Updated \u201C' : 'Saved as \u201C') + esc(d.name) + '\u201D — it stays available under Marketplace \u2192 Saved connections until you stop or delete it'
         + (d.has_secrets ? ' (password stored on this host, file mode 0600).' : ' (password NOT stored — supply MB_* env var or re-enter when asked).') + '</label>';
       loadSavedConnections();
     } catch (e) { $('#artOut').innerHTML = '<label style="color:#b03a2e">Save failed</label><pre>' + esc(e.message||e) + '</pre>'; }
   };
-  $('#genArt').onclick = async () => {
+  const genBtn = $('#genArt');
+  if (genBtn) genBtn.onclick = async () => {
+    if (!validateFields(false)) return;
     const params = {};
     $('#modalBody').querySelectorAll('input[data-field]').forEach(i => params[i.dataset.field] = i.value);
+    const cname = ($('#connName').value || '').trim() || ('conn_' + key);
     const d = await api('/api/v1/connectors/' + key + '/artifacts',
-      {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({params, name: 'conn_' + key})});
+      {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({params, name: cname})});
     $('#artOut').innerHTML =
       '<label>Secrets — set these env vars on the runtime host (values are never stored)</label><pre>' + (d.secret_env_vars.join('\n') || '(none)') + '</pre>'
       + '<label>dbt profiles.yml</label><pre>' + esc(d.dbt_profile) + '</pre>'
@@ -4237,6 +4351,14 @@ $('#scafForm').onsubmit = async ev => {
   $('#scafBanner').style.display = 'none';
   if (!chosen.scafFile) { err.textContent = 'Choose a tables .yml first.'; err.style.display = 'block'; return; }
   const fd = new FormData(ev.target); fd.set('tables', chosen.scafFile);
+  // if a saved connection exists for the chosen source/target connector,
+  // pass its id so generated dbt/IDMC/PowerCenter connection artifacts carry
+  // that system's real connection settings (secrets stay as env-var refs)
+  const connFor = k => { const m = allConnections.filter(x => x.connector === k);
+    return (m.find(x => x.state === 'connected') || m[0] || {}).id; };
+  const sc = connFor($('#scafSource').value), tc = connFor($('#scafTarget').value);
+  if (sc) fd.set('source_conn', sc);
+  if (tc) fd.set('target_conn', tc);
   const btn = ev.target.querySelector('button'); btn.disabled = true; btn.textContent = 'Generating…';
   try {
     const d = await api('/api/scaffold', {method:'POST', body: fd});
@@ -4267,20 +4389,27 @@ $('#scafForm').onsubmit = async ev => {
 async function loadEstate() {
   loadTwin();
   try { allConnections = (await api('/api/v1/connections')).connections || []; } catch (e) { allConnections = []; }
-  const act = allConnections.filter(x => x.status === 'active');
+  if (!allConnectors.length) { try { allConnectors = (await api('/api/v1/connectors')).connectors || []; } catch (e) {} }
+  const connected = allConnections.filter(x => x.state === 'connected');
+  const startable = allConnections.filter(x => x.status === 'active');
   const analyzed = allConnections.filter(x => x.last_analysis);
   const tables = analyzed.reduce((n, x) => n + (x.last_analysis.tables || 0), 0);
   const rows = analyzed.reduce((n, x) => n + (x.last_analysis.total_rows || 0), 0);
   $('#estateCards').innerHTML =
-    mcard(act.length || '--', 'Connected systems', allConnections.length + ' saved')
+    mcard(connected.length || '--', 'Connected systems', allConnections.length + ' saved')
     + mcard(analyzed.length || '--', 'Systems analyzed', '')
     + mcard(tables || '--', 'Tables', analyzed.length ? 'from live metadata analysis' : 'run Analyze on a connection')
     + mcard(rows ? rows.toLocaleString() : '--', 'Rows', '')
     + mcard((gJobsCache || []).filter(j => j.kind === 'convert').length || '--', 'Transformation workloads', 'modernization runs');
+  // only offer systems that can actually be introspected live
+  const introspectable = startable.filter(x => {
+    const s = allConnectors.find(c => c.key === x.connector);
+    return !s || !s.supports || s.supports.introspect !== false;
+  });
   $('#estateSystem').innerHTML = '<option value="">Select a connected system…</option>'
-    + act.map(x => '<option value="' + x.id + '">' + esc(x.name) + '</option>').join('');
-  $('#estateHint').textContent = act.length ? 'Pick a system to explore its live assets (read-only).'
-    : 'No active connections — connect one under Integrations.';
+    + introspectable.map(x => '<option value="' + x.id + '">' + esc(x.name) + '</option>').join('');
+  $('#estateHint').textContent = introspectable.length ? 'Pick a system to explore its live assets (read-only).'
+    : 'No connectable systems — connect one that supports live introspection under Integrations.';
   $('#estateTable').innerHTML = '';
   $('#estateSystem').onchange = async ev => {
     const id = ev.target.value;

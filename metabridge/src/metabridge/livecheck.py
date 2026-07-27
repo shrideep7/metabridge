@@ -30,6 +30,21 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 
+# Connectors that have a real, live driver in this build. Everything else is
+# reachable only through the declarative flows (artifact generation, scaffold
+# from a table manifest) — attempting a live probe returns an HONEST
+# "unsupported" result, which callers must NOT treat as a failed connection.
+LIVE_CONNECTORS = frozenset({"snowflake"})
+
+
+def live_support(key: str) -> Dict[str, bool]:
+    """What live actions a connector's driver actually implements. The UI
+    reads this to offer only working flows instead of showing every
+    connector as if it were fully live-integrated."""
+    live = key in LIVE_CONNECTORS
+    return {"live_test": live, "introspect": live, "live_load": live}
+
+
 def _secret(key: str, field: str, params: Dict[str, str]) -> str:
     return (params.get(field)
             or os.environ.get("MB_%s_%s" % (key.upper(), field.upper()))
@@ -64,8 +79,8 @@ def test_connection(key: str, params: Dict[str, str]) -> dict:
     database/schema are verified as separate steps — so one wrong context
     value never masks the fact that authentication works, and a missing
     database comes back with the list of databases the role CAN see."""
-    if key != "snowflake":
-        return {"ok": False, "connector": key,
+    if key not in LIVE_CONNECTORS:
+        return {"ok": False, "connector": key, "unsupported": True,
                 "error": "live check not implemented for '%s' yet — "
                          "snowflake is the first certified connector"
                          % key}
@@ -226,8 +241,8 @@ def introspect(key: str, params: Dict[str, str],
     every view definition, and a ready-to-use table manifest for the
     Pipeline scaffold. Nothing is written, nothing is executed beyond
     INFORMATION_SCHEMA selects."""
-    if key != "snowflake":
-        return {"ok": False, "connector": key,
+    if key not in LIVE_CONNECTORS:
+        return {"ok": False, "connector": key, "unsupported": True,
                 "error": "introspection not implemented for '%s' yet" % key}
     database = params.get("database", "")
     schema = (params.get("schema") or "").upper()
