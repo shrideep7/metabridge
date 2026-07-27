@@ -42,7 +42,18 @@ def dbt_profile(spec: ConnectorSpec, params: Dict[str, str],
         raise ValueError("Connector %s has no dbt adapter — use it as a source "
                          "system, not a dbt target." % spec.key)
     safe, secrets = split_secrets(spec, params)
-    output = {"type": spec.dbt_adapter, **{k: v for k, v in safe.items() if v}}
+    output = {"type": spec.dbt_adapter}
+    # Emit EVERY non-secret connection field so profiles.yml is structurally
+    # complete (host/user/account/database/schema/…). A field with a real
+    # value is written as-is; a missing one becomes an env_var() reference so
+    # the file is connectable once the env is populated — and never embeds a
+    # secret.
+    for f in spec.fields:
+        if f.secret:
+            continue
+        val = safe.get(f.name, "")
+        output[f.name] = val if val else (
+            "{{ env_var('%s') }}" % _envvar(spec, f.name))
     for env in secrets:
         fname = env.split("_")[-1].lower()
         output[fname] = "{{ env_var('%s') }}" % env

@@ -20,15 +20,32 @@ from typing import List
 
 import sqlglot
 
-from ..ir.model import IssueSeverity, LoadStrategy, Mapping, Pipeline, TransformationType
+from ..ir.model import (ConversionIssue, IssueSeverity, LoadStrategy, Mapping,
+                        Pipeline, TransformationType)
 from ..parsers.sql_parser import SQL_DIALECT_FORMATS
 from .dbt_generator import render_plain_select
 
 _CANONICAL_TO_SQL = {
     "string": "VARCHAR", "integer": "INT", "bigint": "BIGINT",
-    "decimal": "DECIMAL(38,6)", "double": "DOUBLE", "date": "DATE",
+    "decimal": "DECIMAL", "double": "DOUBLE", "date": "DATE",
     "timestamp": "TIMESTAMP", "boolean": "BOOLEAN", "binary": "BINARY",
 }
+
+# Documented fallback when a decimal declares no precision/scale.
+_SQL_DECIMAL_FALLBACK = (38, 6)
+
+
+def _sql_type(port) -> str:
+    """SQL DDL type from an IR Port, PRESERVING declared numeric
+    precision/scale rather than collapsing to DECIMAL(38,6)."""
+    base = _CANONICAL_TO_SQL.get(port.datatype, "VARCHAR")
+    if port.datatype == "decimal":
+        if port.precision:
+            return "DECIMAL(%d,%d)" % (port.precision, port.scale or 0)
+        return "DECIMAL(%d,%d)" % _SQL_DECIMAL_FALLBACK
+    if port.datatype == "string" and port.precision:
+        return "VARCHAR(%d)" % port.precision
+    return base
 
 
 def generate_sql_scripts(pipeline: Pipeline, out_dir: str, format_name: str,
@@ -476,7 +493,14 @@ def _sources_ddl(pipeline: Pipeline, dialect: str) -> str:
     for s in pipeline.sources:
         if not s.columns or all(c.name == "ROW_DATA" for c in s.columns):
             continue
-        cols = ",\n".join("    %s %s" % (c.name, _CANONICAL_TO_SQL.get(c.datatype, "VARCHAR"))
+        if any(c.datatype == "decimal" and not c.precision for c in s.columns):
+            pipeline.issues.append(ConversionIssue(
+                severity=IssueSeverity.WARNING, code="NUMERIC_PRECISION_FALLBACK",
+                message="Source %s has decimal column(s) without declared "
+                        "precision — using documented fallback DECIMAL(%d,%d)"
+                        % (s.name, *_SQL_DECIMAL_FALLBACK), obj=s.name,
+                suggestion="Declare precision/scale to preserve exact types."))
+        cols = ",\n".join("    %s %s" % (c.name, _sql_type(c))
                           for c in s.columns)
         qualified = "%s.%s" % (s.schema, s.name) if s.schema else s.name
         stmt = "CREATE TABLE IF NOT EXISTS %s (\n%s\n)" % (qualified, cols)
