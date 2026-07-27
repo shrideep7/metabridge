@@ -1802,6 +1802,32 @@ def security_export(security_id: str, format: str = "pdf"):
 # (PDF / Word / Markdown / HTML). Deterministic.
 # ---------------------------------------------------------------------------
 
+def _source_snapshot(paths, pipelines) -> str:
+    """A short, immutable fingerprint of THIS documentation run's inputs:
+    a content hash of the uploaded/selected files plus IR counts. Recorded in
+    the document for traceability and to make cross-project leakage obvious."""
+    import hashlib
+    h = hashlib.sha256()
+    files = 0
+    for base in paths or []:
+        p = Path(base)
+        candidates = sorted(p.rglob("*")) if p.is_dir() else [p]
+        for f in candidates:
+            if f.is_file():
+                try:
+                    st = f.stat()
+                    h.update(f.name.encode("utf-8", "ignore"))
+                    h.update(str(st.st_size).encode())
+                    files += 1
+                except OSError:
+                    continue
+    tables = sum(len(pp.sources) for pp in pipelines or [])
+    mappings = sum(len(pp.mappings) for pp in pipelines or [])
+    return ("sha256:%s (%d file(s), %d pipeline(s), %d mapping(s), "
+            "%d source table(s))" % (h.hexdigest()[:12], files,
+                                     len(pipelines or []), mappings, tables))
+
+
 @app.get("/api/docs/catalog")
 def docs_catalog():
     from metabridge.docs.generate import catalog
@@ -1831,10 +1857,22 @@ async def docs_run(request: Request):
         if not formats:
             raise HTTPException(422, "formats must be a subset of %s"
                                 % ", ".join(EXTENSIONS))
+        # Documentation is ALWAYS scoped to a concrete, current project — an
+        # uploaded tree or an explicitly selected job. It is never generated
+        # from empty/default state or a previously-persisted Digital Twin
+        # (which would leak a prior project's metadata into this document).
         paths = []
+        source_ref = ""
         if body.get("from_job"):
-            root = _job_input_root(_job_dir(str(body["from_job"])))
+            src_job = str(body["from_job"])
+            src_meta = _job_dir(src_job) / "meta.json"
+            if not src_meta.exists():
+                raise HTTPException(404, "Selected job %s was not found — "
+                                    "choose an existing analyzed/converted "
+                                    "job to document." % src_job)
+            root = _job_input_root(_job_dir(src_job))
             paths = [str(root)]
+            source_ref = "job:" + src_job
         elif body.get("files"):
             root = _write_tree_files(body["files"], job_dir / "input")
             entries = [p for p in root.iterdir()
@@ -1842,25 +1880,27 @@ async def docs_run(request: Request):
             paths = ([str(entries[0])]
                      if len(entries) == 1 and entries[0].is_dir()
                      else [str(root)])
-        twin = None
-        if _TWIN_FILE.exists():
-            try:
-                twin = json.loads(_TWIN_FILE.read_text())
-            except (ValueError, OSError):
-                twin = None
-        if twin is None and paths:
-            from metabridge.twin.discover import build_twin
-            twin = build_twin(paths=paths, include_connections=False)
+            source_ref = "upload"
+        if not paths:
+            raise HTTPException(422, "Upload a project (or select an existing "
+                                "analyzed/converted job) to document. "
+                                "Documentation is never generated from empty "
+                                "or cached state.")
+        # twin + pipelines built STRICTLY from this project's inputs — no
+        # process-global _TWIN_FILE, so nothing from a prior project leaks in.
+        from metabridge.twin.discover import build_twin
+        twin = build_twin(paths=paths, include_connections=False)
         pipelines = _parse_pipelines(paths)
-        if twin is None and not pipelines:
-            raise HTTPException(422, "Build a Digital Twin (POST "
-                                     "/api/twin/build) or upload a "
-                                     "project to document")
-        gen_at = datetime.datetime.now().strftime("%Y-%m-%d")
+        gen_at = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        snapshot = _source_snapshot(paths, pipelines)
         ctx = build_context(pipelines, twin,
                             project=str(body.get("project", "")
-                                        or "estate"),
-                            generated_at=gen_at)
+                                        or (pipelines[0].name if pipelines
+                                            else "project")),
+                            generated_at=gen_at,
+                            job_id=job_dir.name,
+                            source_ref=source_ref,
+                            source_snapshot=snapshot)
         docs = generate_all(ctx, slugs)
         out = job_dir / "output"
         out.mkdir(parents=True, exist_ok=True)

@@ -678,7 +678,7 @@
       mapping, technical &amp; solution design, migration runbook, deployment &amp; operations guides,
       business glossary, data dictionary, API &amp; pipeline docs, and validation / lineage / governance
       reports. Every document exports to PDF, Word, Markdown and HTML.
-      <br><span style="color:#889">Reachability/inventory come from your Digital Twin; uploaded projects add pipeline &amp; column detail.</span></div>
+      <br><span style="color:#889">Upload your project folder — every document is generated from that project's metadata. Documentation is never produced from empty or previously-cached data.</span></div>
     <input type="file" id="docsFiles" multiple webkitdirectory
            accept=".xml,.sql,.yml,.yaml,.dtsx,.dsx,.item,.mp,.dml,.xfr,.ddls,.cds,.abap,.hdbcalculationview,.json,.properties">
     <div class="fhint"><b>Pick a folder, not a file.</b> Choose your project directory — it reads the metadata inside:
@@ -4088,8 +4088,8 @@ $('#docsRun').onclick = async () => {
     const formats = [...document.querySelectorAll('.docFmt:checked')].map(c => c.value);
     if (!documents.length) throw new Error('Select at least one document.');
     if (!formats.length) throw new Error('Select at least one format.');
-    const body = {documents, formats};
-    if (files.length) body.files = files;
+    if (!files.length) throw new Error('Choose your project folder first — documentation is generated from the uploaded project, never from empty or previously-cached data.');
+    const body = {documents, formats, files};
     const d = await api('/api/docs', {method: 'POST',
       headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)});
     $('#docsStatus').textContent = '';
