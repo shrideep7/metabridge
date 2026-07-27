@@ -1823,8 +1823,9 @@ def _source_snapshot(paths, pipelines) -> str:
                     continue
     tables = sum(len(pp.sources) for pp in pipelines or [])
     mappings = sum(len(pp.mappings) for pp in pipelines or [])
-    return "sha256:%s (%d file(s), %d pipeline(s), %d source table(s))" % (
-        h.hexdigest()[:12], files, mappings, tables)
+    return ("sha256:%s (%d file(s), %d pipeline(s), %d mapping(s), "
+            "%d source table(s))" % (h.hexdigest()[:12], files,
+                                     len(pipelines or []), mappings, tables))
 
 
 @app.get("/api/docs/catalog")

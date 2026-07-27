@@ -466,9 +466,10 @@ def _input_snapshot(input_path: str, pipeline: Pipeline) -> str:
                 files += 1
             except OSError:
                 continue
-    return "sha256:%s (%d file(s), %d pipeline(s), %d source table(s))" % (
-        h.hexdigest()[:12], files, len(pipeline.mappings),
-        len(pipeline.sources))
+    return ("sha256:%s (%d file(s), 1 pipeline, %d mapping(s), "
+            "%d source table(s))" % (h.hexdigest()[:12], files,
+                                     len(pipeline.mappings),
+                                     len(pipeline.sources)))
 
 
 def _safe(name: str) -> str:
