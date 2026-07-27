@@ -3821,23 +3821,51 @@ async def autofix_apply(job_id: str, request: Request):
             stmt_items.append({"object": i.get("object", ""), "code": i["code"],
                                "original": i.get("detail", "")})
 
+    # Build into a fresh working directory and swap it in ONLY on success, so
+    # a failed auto-fix can never destroy the job's existing report/output.
     out_dir = job_dir / "output"
-    shutil.rmtree(out_dir, ignore_errors=True)
-    out_dir.mkdir(parents=True)
+    work = job_dir / "output.applying"
+    shutil.rmtree(work, ignore_errors=True)
+    work.mkdir(parents=True)
     try:
         new_report = apply_fixes(str(_job_source_root(job_dir, meta)),
-                                 str(out_dir), meta, accepted, stmt_items,
+                                 str(work), meta, accepted, stmt_items,
                                  prior_report=report)
     except (ValueError, FileNotFoundError) as e:
+        shutil.rmtree(work, ignore_errors=True)
         raise HTTPException(422, str(e))
     except Exception as e:  # noqa: BLE001
-        raise HTTPException(500, "Auto-fix failed: %s — %s"
+        shutil.rmtree(work, ignore_errors=True)
+        raise HTTPException(500, "Auto-fix failed: %s — %s. Your existing "
+                            "output is unchanged."
                             % (type(e).__name__, str(e)[:300]))
+    # atomic swap: rename old aside, move new into place, drop the old. If the
+    # move fails, restore the old output so the job is never left with none.
+    backup = job_dir / "output.prev"
+    shutil.rmtree(backup, ignore_errors=True)
+    if out_dir.exists():
+        out_dir.rename(backup)
+    try:
+        work.rename(out_dir)
+    except OSError:
+        if backup.exists() and not out_dir.exists():
+            backup.rename(out_dir)          # roll back to the prior output
+        shutil.rmtree(work, ignore_errors=True)
+        raise HTTPException(500, "Auto-fix could not be finalized; your "
+                            "existing output was restored.")
+    shutil.rmtree(backup, ignore_errors=True)
+
     af = new_report.get("autofix") or {}
     af["applied_at"] = datetime.datetime.now().isoformat(timespec="seconds")
-    meta = _finish_job(job_dir, summary=new_report["summary"],
-                       validation=new_report.get("validation"), autofix=af)
-    return {**meta, "autofix": new_report.get("autofix"),
+    changed = bool(af.get("changed"))
+    # Only badge the job as auto-fixed when something actually changed — a
+    # no-op must never masquerade as a successful fix.
+    finish = {"summary": new_report["summary"],
+              "validation": new_report.get("validation")}
+    if changed:
+        finish["autofix"] = af
+    meta = _finish_job(job_dir, **finish)
+    return {**meta, "autofix": af,
             "report_url": "/api/jobs/%s/report" % job_id,
             "download_url": "/api/jobs/%s/download" % job_id}
 
