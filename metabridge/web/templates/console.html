@@ -4538,44 +4538,97 @@ $('#scafForm').onsubmit = async ev => {
 };
 
 /* ---------------- Data Estate ---------------- */
+// Estate statistics, search and assets are ALWAYS scoped to the selected
+// system. Nothing is aggregated across systems unless the user explicitly
+// picks "All systems". With no selection we show a selection-required state
+// and Search is disabled — never a stale all-systems total.
+let estateSystem = '';
+let estateSummary = [];
 async function loadEstate() {
   loadTwin();
   try { allConnections = (await api('/api/v1/connections')).connections || []; } catch (e) { allConnections = []; }
   if (!allConnectors.length) { try { allConnectors = (await api('/api/v1/connectors')).connectors || []; } catch (e) {} }
-  const connected = allConnections.filter(x => x.state === 'connected');
   const startable = allConnections.filter(x => x.status === 'active');
-  const analyzed = allConnections.filter(x => x.last_analysis);
-  const tables = analyzed.reduce((n, x) => n + (x.last_analysis.tables || 0), 0);
-  const rows = analyzed.reduce((n, x) => n + (x.last_analysis.total_rows || 0), 0);
-  $('#estateCards').innerHTML =
-    mcard(connected.length || '--', 'Connected systems', allConnections.length + ' saved')
-    + mcard(analyzed.length || '--', 'Systems analyzed', '')
-    + mcard(tables || '--', 'Tables', analyzed.length ? 'from live metadata analysis' : 'run Analyze on a connection')
-    + mcard(rows ? rows.toLocaleString() : '--', 'Rows', '')
-    + mcard((gJobsCache || []).filter(j => j.kind === 'convert').length || '--', 'Transformation workloads', 'modernization runs');
   // only offer systems that can actually be introspected live
   const introspectable = startable.filter(x => {
     const s = allConnectors.find(c => c.key === x.connector);
     return !s || !s.supports || s.supports.introspect !== false;
   });
-  $('#estateSystem').innerHTML = '<option value="">Select a connected system…</option>'
+  $('#estateSystem').innerHTML = '<option value="">Select a system…</option>'
+    + '<option value="all">All systems (aggregate)</option>'
     + introspectable.map(x => '<option value="' + x.id + '">' + esc(x.name) + '</option>').join('');
-  $('#estateHint').textContent = introspectable.length ? 'Pick a system to explore its live assets (read-only).'
-    : 'No connectable systems — connect one that supports live introspection under Integrations.';
-  $('#estateTable').innerHTML = '';
-  $('#estateSystem').onchange = async ev => {
-    const id = ev.target.value;
-    if (!id) return;
-    $('#estateTable').innerHTML = '<tr><td style="color:#889">Analyzing metadata (read-only)…</td></tr>';
-    try {
-      const d = await api('/api/v1/connections/' + id + '/introspect', {method:'POST'});
-      if (!d.ok) throw new Error(d.error || 'analysis failed');
-      window._estate = d;
-      estatePage = 1;
-      renderEstateTable();
-      $('#estateSearch').oninput = () => estateReRender(true);
-    } catch (e) { $('#estateTable').innerHTML = '<tr><td style="color:#b03a2e">' + esc(e.message) + '</td></tr>'; }
-  };
+  $('#estateSystem').value = '';
+  $('#estateSystem').onchange = ev => estateSelect(ev.target.value);
+  $('#estateSearch').oninput = () => estateReRender(true);
+  await estateSelect('');   // start in the selection-required state
+}
+
+async function estateSelect(id) {
+  estateSystem = id;
+  window._estate = null;
+  estateSummary = [];
+  // Search is gated on a selection and cleared whenever the system changes,
+  // so results never carry over from a previously selected system.
+  const search = $('#estateSearch');
+  search.value = '';
+  search.disabled = !id;
+  search.placeholder = id ? 'Search this system…' : 'Select a system first';
+  estatePage = 1;
+  let stats = null;
+  try { stats = await api('/api/estate/stats?system=' + encodeURIComponent(id)); }
+  catch (e) { stats = null; }
+  renderEstateCards(stats);
+  const table = $('#estateTable');
+  $('#estatePager').style.display = 'none';
+  if (!id) {
+    $('#estateHint').textContent = 'Pick a system to explore its assets (read-only), or “All systems” for the aggregate.';
+    table.innerHTML = '<tr><td style="color:#889">Select a system to view its statistics and assets.</td></tr>';
+    return;
+  }
+  if (stats && stats.known === false) {          // unknown / removed system
+    $('#estateHint').textContent = stats.message || 'Unknown system.';
+    table.innerHTML = '<tr><td style="color:#b03a2e">' + esc(stats.message || 'Unknown system.') + '</td></tr>';
+    return;
+  }
+  if (id === 'all') {
+    $('#estateHint').textContent = 'Aggregate across all systems — pick a single system for live asset browsing.';
+    estateSummary = (stats && stats.systems) || [];
+    renderEstateSummaryTable();
+    return;
+  }
+  // a specific system: its live assets only
+  $('#estateHint').textContent = '';
+  table.innerHTML = '<tr><td style="color:#889">Analyzing metadata (read-only)…</td></tr>';
+  try {
+    const d = await api('/api/v1/connections/' + id + '/introspect', {method:'POST'});
+    if (!d.ok) throw new Error(d.error || 'analysis failed');
+    if (estateSystem !== id) return;             // selection changed mid-flight
+    window._estate = d;
+    renderEstateTable();
+  } catch (e) {
+    if (estateSystem === id) table.innerHTML = '<tr><td style="color:#b03a2e">' + esc(e.message) + '</td></tr>';
+  }
+}
+
+function renderEstateCards(stats) {
+  if (!stats || !stats.cards || !stats.cards.length) {
+    $('#estateCards').innerHTML = '<div style="grid-column:1/-1;color:#889;font-size:13.5px">'
+      + esc((stats && stats.message) || 'Select a system to view its statistics.') + '</div>';
+    return;
+  }
+  $('#estateCards').innerHTML = stats.cards.map(c => mcard(c.n, c.label, c.sub || '')).join('');
+}
+
+function renderEstateSummaryTable() {
+  const q = ($('#estateSearch').value || '').toLowerCase();
+  const rows = estateSummary.filter(s => !q
+    || (s.name || '').toLowerCase().includes(q)
+    || (s.connector || '').toLowerCase().includes(q));
+  $('#estateTable').innerHTML = '<tr><th>System</th><th>Connector</th><th>Analyzed</th></tr>'
+    + (rows.map(s => '<tr><td><b>' + esc(s.name) + '</b></td><td>' + esc(s.connector) + '</td><td>'
+        + (s.analyzed ? badge('analyzed', '#1e8449') : badge('not analyzed', '#889')) + '</td></tr>').join('')
+      || '<tr><td colspan=3 style="color:#889">No systems match.</td></tr>');
+  $('#estatePager').style.display = 'none';
 }
 // Estate "Analyze" results can run to hundreds of tables. The full result
 // arrives in one live introspection call (window._estate.tables), so we
@@ -4626,7 +4679,8 @@ function renderEstateTable() {
 }
 function estateReRender(resetPage) {
   if (resetPage) estatePage = 1;
-  renderEstateTable();
+  if (estateSystem === 'all') renderEstateSummaryTable();
+  else if (window._estate) renderEstateTable();
 }
 $('#estPrev').onclick = () => { estatePage--; renderEstateTable(); };
 $('#estNext').onclick = () => { estatePage++; renderEstateTable(); };
