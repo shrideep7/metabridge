@@ -25,7 +25,7 @@ import yaml
 
 from ..ir.model import (
     IssueSeverity, Link, LoadStrategy, Mapping, Pipeline, Port, SourceTable,
-    Transformation, TransformationType, canonical_type,
+    Transformation, TransformationType, canonical_type, is_known_type,
 )
 from ..sqlx.decompose import decompose_model
 
@@ -186,7 +186,8 @@ def _parse_yaml_docs(root: Path, project: dict
             schema = src.get("schema", src.get("name", ""))
             for tbl in src.get("tables", []) or []:
                 cols = [Port(name=c["name"],
-                             datatype=canonical_type(str(c.get("data_type", "string"))))
+                             datatype=canonical_type(str(c.get("data_type", "string"))),
+                             type_declared=is_known_type(str(c.get("data_type", ""))))
                         for c in tbl.get("columns", []) or []]
                 st = SourceTable(name=tbl.get("identifier", tbl["name"]),
                                  schema=schema, database=src.get("database", ""),
@@ -198,7 +199,8 @@ def _parse_yaml_docs(root: Path, project: dict
             cols = []
             for c in mdl.get("columns", []) or []:
                 cols.append(Port(name=c["name"],
-                                 datatype=canonical_type(str(c.get("data_type", "string")))))
+                                 datatype=canonical_type(str(c.get("data_type", "string"))),
+                                 type_declared=is_known_type(str(c.get("data_type", "")))))
                 for t in c.get("tests", []) or c.get("data_tests", []) or []:
                     tname = t if isinstance(t, str) else list(t.keys())[0]
                     tests.setdefault(mdl["name"], []).append("%s(%s)" % (tname, c["name"]))
@@ -346,6 +348,13 @@ def _convert_model(model_name: str, raw: str, pipeline: Pipeline,
     mapping.load_strategy = strategy
     mapping.unique_key = unique_key
     mapping.depends_on = sorted(set(refs))
+    # subject-area module = the model's folder (deterministic path metadata,
+    # e.g. models/marts/x.sql -> "marts"). This gives the assessment a valid,
+    # comment-free application grouping signal; flat projects have none.
+    folder = rel.parent.name
+    if folder and folder not in ("", ".", "models", "model"):
+        mapping.properties = getattr(mapping, "properties", {}) or {}
+        mapping.properties.setdefault("module", folder)
     mapping.origin = raw
 
     if strategy == LoadStrategy.VIEW:
@@ -429,10 +438,12 @@ def _convert_snapshot(name: str, body: str, pipeline: Pipeline,
 def _attach_target(mapping: Mapping, model_name: str,
                    target_columns: Optional[List[Port]]) -> None:
     out = mapping.transformation("__OUTPUT__")
-    ports = [Port(name=p.name, datatype=p.datatype, precision=p.precision, scale=p.scale)
+    ports = [Port(name=p.name, datatype=p.datatype, precision=p.precision,
+                  scale=p.scale, type_declared=p.type_declared)
              for p in (target_columns or (out.ports if out else []))]
     if not ports:
-        ports = [Port(name="ROW_DATA")]
+        # a model with no declared/derivable columns is untyped by definition
+        ports = [Port(name="ROW_DATA", type_declared=False)]
     tgt = Transformation(name="TGT_" + model_name, type=TransformationType.TARGET,
                          ports=ports, properties={"table": model_name})
     mapping.transformations.append(tgt)

@@ -387,6 +387,14 @@
       <span id="estateHint" style="font-size:12.5px;color:#889"></span>
     </div>
     <table id="estateTable"></table>
+    <div id="estatePager" style="display:none;align-items:center;gap:12px;margin-top:12px;flex-wrap:wrap">
+      <button type="button" class="secondary" id="estPrev" style="margin:0;padding:5px 12px">&larr; Previous</button>
+      <span id="estPageInfo" style="font-size:12.5px;color:#556" role="status" aria-live="polite"></span>
+      <button type="button" class="secondary" id="estNext" style="margin:0;padding:5px 12px">Next &rarr;</button>
+      <label style="font-size:12.5px;color:#889;margin-left:auto">Rows per page
+        <select id="estPageSize" style="width:auto;margin-left:6px">
+          <option>25</option><option>50</option><option>100</option></select></label>
+    </div>
   </div>
 
   <div class="panel" id="twinPanel">
@@ -3582,12 +3590,15 @@ async function fillScaffoldSelects() {
 /* ---------------- Reports: migration assessment ------------------------- */
 $('#assessRun').onclick = async () => {
   const err = $('#assessErr'); err.style.display = 'none';
+  $('#assessResult').style.display = 'none';
   $('#assessStatus').textContent = 'Assessing…';
   try {
     const files = await Promise.all([...$('#assessFiles').files].map(f =>
       new Promise((res, rej) => {
         const r = new FileReader();
-        r.onload = () => res({name: f.name, content: r.result});
+        // keep the relative path when a folder is picked so project
+        // structure (models/ etc.) survives — same as AI readiness
+        r.onload = () => res({name: f.webkitRelativePath || f.name, content: r.result});
         r.onerror = rej;
         r.readAsText(f);
       })));
@@ -3596,6 +3607,13 @@ $('#assessRun').onclick = async () => {
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({files})});
     $('#assessStatus').textContent = '';
+    if (d.empty) {
+      err.innerHTML = 'No assessable objects were found in those files. '
+        + 'Pick the <b>project folder</b> (so models/mappings are included), '
+        + 'or check the source format.';
+      err.style.display = 'block';
+      return;
+    }
     const es = d.executive_summary;
     $('#assessHeadline').textContent = es.headline
       + ' Source: ' + d.source_label + '.';
@@ -3610,7 +3628,14 @@ $('#assessRun').onclick = async () => {
       + card(es.technical_debt_score + '/100', 'Technical debt')
       + card('~' + es.estimated_weeks + ' wks', 'Timeline')
       + card('$' + Math.round(es.estimated_labor_usd).toLocaleString(), 'Labor estimate');
-    $('#assessRisks').innerHTML = '<b>Risks:</b><ul style="margin:4px 0 0 18px">'
+    const apps = d.application_inventory || [];
+    $('#assessRisks').innerHTML =
+      '<b>Application groups</b> (' + apps.length + '): '
+      + (apps.map(x => esc(x.application) + ' <span style="color:#889">('
+          + x.objects + ' obj)</span>').join(' · ') || 'Unassigned')
+      + '<div style="font-size:11.5px;color:#889;margin-top:2px">Grouped from '
+      + 'project/module metadata — never from SQL comments.</div>'
+      + '<b style="display:block;margin-top:10px">Risks:</b><ul style="margin:4px 0 0 18px">'
       + d.migration_risks.map(r => '<li><b>' + esc(r.risk) + '</b> ['
         + esc(r.level) + '] — ' + esc(r.evidence) + ' → ' + esc(r.mitigation)
         + '</li>').join('') + '</ul>';
@@ -3653,6 +3678,7 @@ function airGauge(score, band) {
 
 $('#airRun').onclick = async () => {
   const err = $('#airErr'); err.style.display = 'none';
+  $('#airResult').style.display = 'none';
   $('#airStatus').textContent = 'Assessing AI readiness…';
   try {
     const files = await Promise.all([...$('#airFiles').files].map(f =>
@@ -3670,6 +3696,13 @@ $('#airRun').onclick = async () => {
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({files})});
     $('#airStatus').textContent = '';
+    if (d.empty) {
+      err.innerHTML = 'No assessable metadata was found. Pick your '
+        + '<b>project folder</b> (dbt / PowerCenter / SAP…) so its models '
+        + 'and schemas are included.';
+      err.style.display = 'block';
+      return;
+    }
     const sc = d.ai_readiness_score;
     $('#airGauge').innerHTML = airGauge(sc.score, sc.band);
     $('#airHeadline').innerHTML = '<b>' + esc(sc.headline) + '</b>'
@@ -4425,30 +4458,66 @@ async function loadEstate() {
       const d = await api('/api/v1/connections/' + id + '/introspect', {method:'POST'});
       if (!d.ok) throw new Error(d.error || 'analysis failed');
       window._estate = d;
+      estatePage = 1;
       renderEstateTable();
-      $('#estateSearch').oninput = renderEstateTable;
+      $('#estateSearch').oninput = () => estateReRender(true);
     } catch (e) { $('#estateTable').innerHTML = '<tr><td style="color:#b03a2e">' + esc(e.message) + '</td></tr>'; }
   };
 }
+// Estate "Analyze" results can run to hundreds of tables. The full result
+// arrives in one live introspection call (window._estate.tables), so we
+// paginate client-side over the filtered rows — stable ordering (the
+// introspect's -rows,name order is preserved), a page size, total count,
+// prev/next controls and current-page info. The search filter is applied
+// before paging and resets to page 1 (see the oninput handler).
+let estatePage = 1;
+let estatePageSize = 25;
+function _estateFiltered() {
+  const d = window._estate || {tables: []};
+  const q = ($('#estateSearch').value || '').toLowerCase();
+  return d.tables.filter(t => !q || t.name.toLowerCase().includes(q)
+      || t.columns.some(cc => cc.name.toLowerCase().includes(q)));
+}
 function renderEstateTable() {
   const d = window._estate;
-  const q = ($('#estateSearch').value || '').toLowerCase();
   const conn = allConnections.find(x => x.id === $('#estateSystem').value) || {connector: ''};
-  const rows = d.tables.filter(t => !q || t.name.toLowerCase().includes(q)
-      || t.columns.some(cc => cc.name.toLowerCase().includes(q)))
-    .map((t, i) => '<tr data-i="' + i + '" style="cursor:pointer"><td><b>' + esc(t.name) + '</b></td>'
+  const filtered = _estateFiltered();
+  const total = filtered.length;
+  const pages = Math.max(1, Math.ceil(total / estatePageSize));
+  if (estatePage > pages) estatePage = pages;
+  if (estatePage < 1) estatePage = 1;
+  const start = (estatePage - 1) * estatePageSize;
+  const pageRows = filtered.slice(start, start + estatePageSize);
+  $('#estateTable').innerHTML = '<tr><th>Asset</th><th>Type</th><th>System</th><th>Schema</th><th>Rows</th><th>Columns</th><th>Status</th></tr>'
+    + (pageRows.map((t, i) => '<tr data-i="' + (start + i) + '" style="cursor:pointer"><td><b>' + esc(t.name) + '</b></td>'
       + '<td>' + (t.type.includes('VIEW') ? 'View' : 'Table') + '</td>'
       + '<td>' + esc(conn.connector) + '</td><td>' + esc(t.schema) + '</td>'
       + '<td>' + t.rows.toLocaleString() + '</td><td>' + t.columns.length + '</td>'
-      + '<td>' + statChip('DISCOVERED') + '</td></tr>');
-  $('#estateTable').innerHTML = '<tr><th>Asset</th><th>Type</th><th>System</th><th>Schema</th><th>Rows</th><th>Columns</th><th>Status</th></tr>'
-    + (rows.join('') || '<tr><td colspan=7 style="color:#889">No assets match.</td></tr>');
+      + '<td>' + statChip('DISCOVERED') + '</td></tr>').join('')
+      || '<tr><td colspan=7 style="color:#889">No assets match.</td></tr>');
+  // pager
+  const pager = $('#estatePager');
+  pager.style.display = total ? 'flex' : 'none';
+  if (total) {
+    const from = start + 1, to = Math.min(start + estatePageSize, total);
+    $('#estPageInfo').textContent = 'Showing ' + from + '–' + to
+      + ' of ' + total.toLocaleString() + ' asset' + (total === 1 ? '' : 's')
+      + ' · page ' + estatePage + ' of ' + pages;
+    $('#estPrev').disabled = estatePage <= 1;
+    $('#estNext').disabled = estatePage >= pages;
+  }
   $('#estateTable').querySelectorAll('tr[data-i]').forEach(tr => tr.onclick = () => {
-    const t = d.tables.filter(x => !q || x.name.toLowerCase().includes(q)
-      || x.columns.some(cc => cc.name.toLowerCase().includes(q)))[+tr.dataset.i];
-    openAssetDrawer(t, conn, d);
+    const t = filtered[+tr.dataset.i];
+    if (t) openAssetDrawer(t, conn, d);
   });
 }
+function estateReRender(resetPage) {
+  if (resetPage) estatePage = 1;
+  renderEstateTable();
+}
+$('#estPrev').onclick = () => { estatePage--; renderEstateTable(); };
+$('#estNext').onclick = () => { estatePage++; renderEstateTable(); };
+$('#estPageSize').onchange = ev => { estatePageSize = parseInt(ev.target.value, 10) || 25; estateReRender(true); };
 function openAssetDrawer(t, conn, d) {
   $('#modalBody').innerHTML = '<h2 style="font-size:18px">' + esc(t.schema) + '.' + esc(t.name) + '</h2>'
     + '<div class="v" style="color:#667;font-size:13px;margin-bottom:10px">' + (t.type.includes('VIEW') ? 'View' : 'Table')
