@@ -28,6 +28,8 @@
                 align-items:center; justify-content:center; font-size:12.5px; font-weight:700; flex-shrink:0; }
   nav .pname { font-size:13px; font-weight:600; color:#e6eefb; line-height:1.25; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:130px; }
   nav .prole { font-size:11px; color:#8fa4c6; text-transform:capitalize; }
+  nav .navbadge { margin-left:auto; background:#c77d0a; color:#fff; border-radius:9px; font-size:10.5px; font-weight:700; padding:1px 7px; display:none; }
+  body.nav-min nav .navbadge { display:none !important; }
   nav .pmenu-btn { margin-left:auto; background:none; color:#8fa4c6; padding:2px 7px; font-size:16px; border-radius:7px; margin-top:0; }
   nav .pmenu { position:absolute; bottom:46px; right:6px; background:#fff; color:#123; border-radius:10px;
                box-shadow:0 10px 30px rgba(5,12,28,.35); min-width:180px; display:none; padding:6px; z-index:60; }
@@ -130,8 +132,11 @@
   .sc .meta { color:#667; font-size:12.5px; margin-top:6px; line-height:1.5; }
   .sc .acts { margin-top:12px; display:flex; gap:6px; align-items:center; flex-wrap:wrap; }
   .sc .acts button { padding:7px 13px; font-size:13px; margin:0; }
-  .dot { width:8px; height:8px; border-radius:50%; display:inline-block; background:#1e8449; }
-  .dot.err { background:#c0392b; } .dot.dis { background:#aab; } .dot.warn { background:#c77d0a; }
+  .dot { width:8px; height:8px; border-radius:50%; display:inline-block; background:#1e8449; vertical-align:middle; }
+  .dot.err { background:#c0392b; } .dot.dis { background:#aab; } .dot.warn { background:#c77d0a; animation:dotpulse 1.1s ease-in-out infinite; }
+  @keyframes dotpulse { 0%,100%{opacity:1} 50%{opacity:.35} }
+  .req { color:#c0392b; font-weight:700; }
+  .opt { color:#98a0ad; font-weight:400; font-size:11px; }
   .kebab { position:absolute; top:14px; right:12px; background:none; color:#667; padding:2px 8px;
            font-size:18px; line-height:1; border-radius:8px; }
   .kebab:hover { background:#eef1f6; }
@@ -1086,6 +1091,15 @@
     <div class="sub">Approvals, AI recommendations, migration risks, policy compliance and audit trail.</div></div>
     <button class="secondary" id="askAiGov" style="margin-top:0">Ask MetaBridge AI</button>
   </div>
+  <div class="panel" id="agentApprovalsPanel">
+    <h3 style="margin-bottom:4px">Agent approvals <span id="aqCount" style="color:#889;font-size:12px"></span></h3>
+    <div style="color:#667;font-size:13px;margin-bottom:8px">Consequential agent actions are held here until a
+    <b>different</b>, permissioned approver signs off — the person who ran the swarm can never approve their own
+    actions (they may withdraw them). Owners and admins can approve or reject.</div>
+    <div id="aqEscalation"></div>
+    <div id="aqList"></div>
+    <div id="aqDecided"></div>
+  </div>
   <div class="panel">
     <h3 style="margin-bottom:4px">Approval queue &amp; AI recommendations</h3>
     <div style="color:#667;font-size:13px;margin-bottom:8px">AI-proposed corrections are never applied automatically —
@@ -1271,6 +1285,7 @@
         <div class="facts">
           <button type="submit" id="pnSave" disabled>Save changes</button>
           <span class="dirty" id="pnDirty" hidden>Unsaved changes</span>
+          <span id="pnOk" hidden style="color:#1e8449;font-size:12.5px;font-weight:600">✓ Saved</span>
         </div>
         <div class="err" id="pnErr"></div>
       </form>
@@ -1400,25 +1415,19 @@ async function api(url, opts = {}) {
   return data;
 }
 
-// One normalized display-name source for every render site (sidebar, header
-// menu, avatars, team table). Resolution: display_name > full_name > name >
-// composed parts > email local-part. Collapses accidental adjacent duplicate
-// tokens (bad signup/autofill data) and un-shouts ALL-CAPS tokens while
-// leaving mixed-case names (McDonald, van der Berg) as typed.
+// One display-name source for every render site (sidebar, header menu,
+// avatars, team table). Resolution: display_name > full_name > name >
+// composed parts > email local-part. The stored name is shown EXACTLY as
+// the user saved it — no case or token rewriting, otherwise a saved profile
+// edit appears not to persist (the form and header would silently show a
+// different string than the one on the server).
 function getUserDisplayName(user) {
   if (!user) return 'User';
   const raw = String(user.display_name || user.full_name || user.name
     || [user.first_name, user.middle_name, user.last_name]
        .filter(Boolean).join(' ')).trim();
   if (!raw) return (user.email || '').split('@')[0] || 'User';
-  const toks = [];
-  for (const t of raw.split(/\s+/).filter(Boolean)) {
-    if (toks.length && toks[toks.length - 1].toLowerCase() === t.toLowerCase()) continue;
-    toks.push(t);
-  }
-  return toks.map(t =>
-    (t.length > 1 && t === t.toUpperCase() && /[A-Z]/.test(t))
-      ? t[0] + t.slice(1).toLowerCase() : t).join(' ');
+  return raw.split(/\s+/).filter(Boolean).join(' ');
 }
 function getUserInitials(displayName) {
   const t = String(displayName || '').trim().split(/\s+/).filter(Boolean);
@@ -1475,6 +1484,7 @@ async function loadUser() {
       $('#topMenuEmail').textContent = 'authentication disabled';
       $('#profilePanel').style.display = 'none';
     }
+    applyRbacUi();
   } catch (e) { /* open mode */ }
 }
 const acctBtn = $('#topAvatarBtn'), acctMenu = $('#topMenu');
@@ -1771,6 +1781,55 @@ $('#setNavSel').onchange = ev => showSettings(ev.target.value);
 
 function canManageSettings() { return myPerms.includes('*') || myPerms.includes('settings:manage'); }
 function canManageUsers() { return myPerms.includes('*') || myPerms.includes('users:manage'); }
+// open mode (no accounts configured) leaves every action available; once a
+// session exists the server-issued permission list is the single source
+function can(p) {
+  if (!myUser) return true;              // open mode / server still enforces
+  return myPerms.includes('*') || myPerms.includes(p);
+}
+function permTitle(p) {
+  return 'Your role (' + (myPerms._role || 'viewer') + ') does not allow this — needs ' + p + '. Ask a workspace admin.';
+}
+// Static run/config controls, disabled for roles that lack the permission
+// the API will demand — the same map the server enforces (see web/app.py
+// _required_permission). Dynamic renderers gate inline at render time.
+const RBAC_UI = [
+  // pipeline / analysis runs -> jobs:run
+  ['#analyzeBtn', 'jobs:run'], ['#convertSelected', 'jobs:run'],
+  ['#convForm button[type=submit]', 'jobs:run'],
+  // NB: #autofixBtn is gated inline in showFindings() — it is created
+  // dynamically in a modal, after this boot-time pass runs.
+  ['#govForm button[type=submit]', 'jobs:run'],
+  ['#scafForm button[type=submit]', 'jobs:run'],
+  ['#assessRun', 'jobs:run'], ['#airRun', 'jobs:run'], ['#debtRun', 'jobs:run'],
+  ['#finRun', 'jobs:run'], ['#secRun', 'jobs:run'], ['#docsRun', 'jobs:run'],
+  ['#evtAnalyze', 'jobs:run'], ['#evtIntel', 'jobs:run'], ['#evtGenerate', 'jobs:run'],
+  ['#orchAnalyze', 'jobs:run'], ['#orchGenerate', 'jobs:run'], ['#orchDepAdd', 'jobs:run'],
+  ['#twinBuild', 'jobs:run'], ['#twinSimulate', 'jobs:run'],
+  ['#agRun', 'jobs:run'], ['#plugScaffold', 'jobs:run'],
+  // platform configuration -> settings:manage
+  ['#aiTest', 'settings:manage'], ['#mktKeypair', 'settings:manage'],
+];
+function applyRbacUi() {
+  // Only ever DISABLE controls the role can't use — never force-enable, or
+  // we would clobber a button's own lifecycle state (e.g. #generateAllBtn
+  // ships disabled until analysis, run buttons disable themselves in-flight).
+  // When the role regains a permission the tooltip is cleared but the app's
+  // own disabled state is left intact.
+  RBAC_UI.forEach(([sel, perm]) => {
+    document.querySelectorAll(sel).forEach(el => {
+      if (!can(perm)) {
+        el.disabled = true;
+        el.dataset.rbacBlocked = '1';
+        el.title = permTitle(perm);
+      } else if (el.dataset.rbacBlocked) {
+        delete el.dataset.rbacBlocked;
+        el.disabled = false;
+        if (el.title && el.title.startsWith('Your role')) el.title = '';
+      }
+    });
+  });
+}
 
 /* ---- workspace ---- */
 let wsSnapshot = '';
@@ -1825,19 +1884,24 @@ function pnDirtyCheck() {
 }
 function loadProfileSec() {
   if (!myUser) return;
-  $('#pnName').value = getUserDisplayName(myUser);
+  // the form edits the RAW stored name (myUser.name), never a prettified
+  // rendering of it — what you save is exactly what reloads
+  $('#pnName').value = myUser.name || getUserDisplayName(myUser);
   $('#pnEmail').textContent = myUser.email;
   pnSnapshot = $('#pnName').value.trim(); pnDirtyCheck();
 }
 $('#pnName').oninput = pnDirtyCheck;
 $('#pnForm').onsubmit = async ev => {
   ev.preventDefault();
-  const err = $('#pnErr'); err.style.display = 'none';
+  const err = $('#pnErr'), okEl = $('#pnOk');
+  err.style.display = 'none'; okEl.hidden = true;
   try {
     await api('/api/v1/me', {method: 'PATCH', headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({name: $('#pnName').value})});
     await loadUser();               // header + dropdown update immediately
     loadProfileSec();
+    okEl.hidden = false;            // explicit success feedback
+    setTimeout(() => { okEl.hidden = true; }, 2500);
   } catch (e) { err.textContent = e.message; err.style.display = 'block'; }
 };
 
@@ -2079,6 +2143,10 @@ async function loadMembers() {
     + d.users.map(u => {
         const isMe = u.email === myEmail;
         const soleOwner = u.role === 'owner' && owners <= 1;
+        // mirrors the server rules: only owners may change/remove/reset
+        // owner accounts; the sole owner can never be demoted or removed
+        const canMutate = !soleOwner && (u.role !== 'owner' || myPerms._role === 'owner');
+        const canReset = canResetFor(u);
         return '<tr data-email="' + esc(u.email) + '">'
           + '<td><div class="mem-cell"><span class="avatar" data-avatar></span>'
           + '<span><b>' + esc(getUserDisplayName(u)) + '</b>'
@@ -2087,11 +2155,14 @@ async function loadMembers() {
           + '<td>' + badge(ROLE_LABEL[u.role] || u.role, roleColor[u.role] || '#667') + '</td>'
           + '<td style="color:#889">' + esc((u.created || '').slice(0, 10)) + '</td>'
           + '<td><span class="stat"><i style="background:#1e8449"></i>Active</span></td>'
-          + '<td style="text-align:right">' + (isMe || soleOwner ? ''
+          + '<td style="text-align:right">' + (isMe || !(canMutate || canReset) ? ''
               : '<div class="rowmenu"><button class="kebab" style="position:static" '
                 + 'aria-haspopup="menu" aria-label="Member actions">&#8942;</button>'
-                + '<div class="menu" role="menu"><button data-act="role" role="menuitem">Change role…</button>'
-                + '<button data-act="rm" class="signout" role="menuitem">Remove from workspace</button></div></div>')
+                + '<div class="menu" role="menu">'
+                + (canMutate ? '<button data-act="role" role="menuitem">Change role…</button>' : '')
+                + (canReset ? '<button data-act="reset" role="menuitem">Send reset link…</button>' : '')
+                + (canMutate ? '<button data-act="rm" class="signout" role="menuitem">Remove from workspace</button>' : '')
+                + '</div></div>')
           + '</td></tr>';
       }).join('') + '</table></div>';
   d.users.forEach(u => {
@@ -2111,16 +2182,61 @@ async function loadMembers() {
     const email = b.closest('tr').dataset.email;
     const u = d.users.find(x => x.email === email);
     if (b.dataset.act === 'role') openRoleDialog(u);
+    else if (b.dataset.act === 'reset') openResetLinkDialog(u);
     else openRemoveMemberDialog(u);
   });
+}
+// resetting an owner's password would hand over the owner account, so only
+// an owner may mint reset links for owner accounts (mirrors the server rule)
+function canResetFor(u) {
+  return u.role !== 'owner' || myPerms._role === 'owner';
+}
+function openResetLinkDialog(u) {
+  $('#modalBody').innerHTML = '<h3 style="margin:0 0 6px">Send a password reset link</h3>'
+    + '<div style="color:#556;font-size:13.5px;margin-bottom:12px">'
+    + esc(getUserDisplayName(u)) + ' · ' + esc(u.email) + '</div>'
+    + '<div style="color:#556;font-size:13px">Generates a <b>one-time</b> link (expires in 60 minutes) '
+    + 'that lets them choose a new password. Share it with them directly — it is shown only once '
+    + 'and never emailed or logged by MetaBridge.</div>'
+    + '<div id="rlOut" style="display:none;margin-top:12px">'
+    +   '<label>One-time reset link</label>'
+    +   '<div style="display:flex;gap:8px;align-items:center">'
+    +   '<input type="text" id="rlLink" readonly style="flex:1;font-size:12px">'
+    +   '<button type="button" id="rlCopy" class="secondary" style="margin:0;white-space:nowrap">Copy</button></div>'
+    +   '<div class="fhint">Minting a new link invalidates this one.</div></div>'
+    + '<div class="err" id="rlErr"></div>'
+    + '<div style="display:flex;gap:8px;justify-content:flex-end;margin-top:18px">'
+    + '<button class="secondary" id="rlCancel">Close</button><button id="rlGo">Generate link</button></div>';
+  $('#modalBg').style.display = 'flex';
+  $('#rlCancel').onclick = closeModal;
+  $('#rlGo').onclick = async () => {
+    const err = $('#rlErr'); err.style.display = 'none';
+    try {
+      const d2 = await api('/api/users/' + encodeURIComponent(u.email) + '/reset-link', {method: 'POST'});
+      $('#rlLink').value = d2.reset_link;
+      $('#rlOut').style.display = 'block';
+      $('#rlGo').textContent = 'Regenerate link';
+    } catch (e) { err.textContent = e.message; err.style.display = 'block'; }
+  };
+  $('#rlCopy').onclick = async () => {
+    try { await navigator.clipboard.writeText($('#rlLink').value); $('#rlCopy').textContent = 'Copied ✓'; }
+    catch (e) { $('#rlLink').select(); document.execCommand('copy'); $('#rlCopy').textContent = 'Copied ✓'; }
+    setTimeout(() => { $('#rlCopy').textContent = 'Copy'; }, 2000);
+  };
+}
+function roleOptions(selectedRole) {
+  // only an owner may hand out the owner role (mirrors the server rule)
+  return Object.keys(ROLE_LABEL)
+    .filter(r => r !== 'owner' || myPerms._role === 'owner' || selectedRole === 'owner')
+    .map(r => '<option value="' + r + '"'
+      + (r === selectedRole ? ' selected' : '') + '>' + ROLE_LABEL[r] + '</option>').join('');
 }
 function openRoleDialog(u) {
   $('#modalBody').innerHTML = '<h3 style="margin:0 0 6px">Change role</h3>'
     + '<div style="color:#556;font-size:13.5px;margin-bottom:12px">'
     + esc(getUserDisplayName(u)) + ' · ' + esc(u.email) + '</div>'
     + '<label for="roleSel2">Role</label><select id="roleSel2">'
-    + Object.keys(ROLE_LABEL).map(r => '<option value="' + r + '"'
-        + (r === u.role ? ' selected' : '') + '>' + ROLE_LABEL[r] + '</option>').join('')
+    + roleOptions(u.role)
     + '</select><div class="err" id="roleErr2"></div>'
     + '<div style="display:flex;gap:8px;justify-content:flex-end;margin-top:18px">'
     + '<button class="secondary" id="roleCancel">Cancel</button><button id="roleGo">Save role</button></div>';
@@ -2163,8 +2279,7 @@ $('#memAddBtn').onclick = () => {
     + '<label for="amEmail">Email</label><input type="text" id="amEmail" placeholder="person@company.com">'
     + '<label for="amPw">Temporary password</label><input type="text" id="amPw" placeholder="8+ characters — they should change it">'
     + '<label for="amRole">Role</label><select id="amRole">'
-    + Object.keys(ROLE_LABEL).map(r => '<option value="' + r + '"'
-        + (r === 'engineer' ? ' selected' : '') + '>' + ROLE_LABEL[r] + '</option>').join('')
+    + roleOptions('engineer')
     + '</select><div class="err" id="amErr"></div>'
     + '<div style="display:flex;gap:8px;justify-content:flex-end;margin-top:18px">'
     + '<button class="secondary" id="amCancel">Cancel</button><button id="amGo">Add member</button></div>';
@@ -2274,7 +2389,9 @@ function showFindings(report, filter) {
     + esc(report.target_format || '') + ' · click a row for detail &amp; suggested fix</div>'
     + '<div style="margin-bottom:12px">' + chips
     + (report._jobId ? '<button id="autofixBtn" style="margin:0 0 6px 4px;padding:5px 16px;font-size:12px;'
-       + 'background:linear-gradient(135deg,#1e8449,#2fa866)">⚡ Auto-fix options</button>' : '') + '</div>'
+       + 'background:linear-gradient(135deg,#1e8449,#2fa866)"'
+       + (can('jobs:run') ? '' : ' disabled title="' + esc(permTitle('jobs:run')) + '"')
+       + '>⚡ Auto-fix options</button>' : '') + '</div>'
     + '<div style="max-height:52vh;overflow-y:auto">' + rows + '</div>'
     + '<button class="secondary" id="closeModal" style="margin-top:14px">Close</button>';
   if (report._jobId) $('#autofixBtn').onclick = () => openAutofix(report._jobId);
@@ -2440,7 +2557,7 @@ async function loadDashboard() {
   const manual = withR.reduce((n, x) => n + ((x.r.summary || {}).workload ? x.r.summary.workload.manual_queue || 0 : 0), 0);
   const pipelines = scaffolds.reduce((n, j) => n + ((j.summary || {}).objects_total || 0), 0);
   $('#dashCards').innerHTML =
-    mcard(conns.filter(x => x.status === 'active').length || '--', 'Connected systems', conns.length ? conns.length + ' saved' : 'Connect under Integrations')
+    mcard(conns.filter(x => x.state === 'connected').length || '--', 'Connected systems', conns.length ? conns.length + ' saved' : 'Connect under Integrations')
     + mcard(assets || '--', 'Assets analyzed', withR.length ? 'across ' + withR.length + ' recent runs' : '')
     + mcard(converts.length || '--', 'Modernizations', jobs.filter(j => j.kind === 'convert' && j.status !== 'done').length + ' in flight')
     + mcard(pipelines || '--', 'Pipelines generated', scaffolds.length ? scaffolds.length + ' scaffold runs' : '')
@@ -2703,11 +2820,18 @@ document.querySelectorAll('input[name="tmode"]').forEach(r => r.onchange = () =>
 async function fillModConnList() {
   try {
     if (!allConnections.length) allConnections = (await api('/api/v1/connections')).connections || [];
-    const act = allConnections.filter(x => x.status === 'active');
+    if (!allConnectors.length) allConnectors = (await api('/api/v1/connectors')).connectors || [];
+    // only systems that are started AND whose connector can actually be
+    // introspected — otherwise "Analyze" would hit an unsupported path
+    const canIntrospect = k => {
+      const s = allConnectors.find(c => c.key === k);
+      return !s || !s.supports || s.supports.introspect !== false;
+    };
+    const act = allConnections.filter(x => x.status === 'active' && canIntrospect(x.connector));
     $('#modConnList').innerHTML = act.length
       ? act.map(x => '<button type="button" class="secondary" style="margin:0 6px 6px 0;padding:7px 12px;font-size:12.5px" data-cid="' + x.id + '">' + esc(x.name) + '</button>').join('')
         + '<div style="font-size:11.5px;color:#889;margin-top:2px">Analyzes the connected system and opens Pipeline Studio with its manifest.</div>'
-      : 'No connected systems yet — connect one under Integrations.';
+      : 'No connectable systems yet — connect one that supports live introspection under Integrations.';
     $('#modConnList').querySelectorAll('[data-cid]').forEach(b => b.onclick = async () => {
       b.disabled = true; b.textContent = 'Analyzing…';
       try {
@@ -2730,17 +2854,23 @@ const CAT_NAMES = {cloud_dw:'Cloud data platforms', lakehouse:'Lakehouse', on_pr
 const CAP_LABELS = {pipeline_scaffold:'Pipeline Scaffold', dbt:'dbt', idmc:'IDMC',
   powercenter:'PowerCenter', sql_modernization:'SQL Modernization',
   metadata_analysis:'Metadata Analysis', lineage:'Lineage', bidirectional:'Bidirectional'};
-const STATE_LABELS = {NOT_CONNECTED:'Connect', CONNECTING:'Connecting…', ACTIVE:'Connected',
-  ANALYZING:'Analyzing…', ANALYZED:'Analysis complete', SCAFFOLD_READY:'Scaffold ready',
-  LOADING:'Loading data', ERROR:'Connection issue', DISABLED:'Disabled'};
+// Display states mirror the server's canonical connection_state() — the API
+// is the single source of truth, the console never re-derives connectivity.
+const STATE_LABELS = {NOT_CONNECTED:'Connect', CONNECTED:'Connected',
+  FAILED:'Failed', TESTING:'Testing…', UNCONNECTED:'Unconnected',
+  STOPPED:'Stopped'};
+// dot colour class + accessible wording per state; only genuine failures are
+// styled as errors — unconnected/stopped use a neutral indicator
+const STATE_DOT = {CONNECTED:'', FAILED:'err', TESTING:'warn',
+  UNCONNECTED:'dis', STOPPED:'dis', NOT_CONNECTED:'dis'};
 let allConnections = [];
 let mktFilters = {q:'', cap:'', status:''};
 
+// The server already computed x.state (connected|failed|testing|unconnected|
+// stopped). Uppercase it for the label/dot maps; fall back defensively.
 function connState(x) {
-  if (x.status !== 'active') return 'DISABLED';
-  if (x.last_test && x.last_test.ok === false) return 'ERROR';
-  if (x.last_analysis) return 'ANALYZED';
-  return 'ACTIVE';
+  const s = (x && x.state ? String(x.state) : 'unconnected').toUpperCase();
+  return STATE_LABELS[s] ? s : 'UNCONNECTED';
 }
 function fmtAgo(iso) {
   if (!iso) return '';
@@ -2751,7 +2881,9 @@ function fmtAgo(iso) {
   return Math.round(s/86400) + ' d ago';
 }
 function connectionFor(key) {
-  return allConnections.find(x => x.connector === key && x.status === 'active');
+  const mine = allConnections.filter(x => x.connector === key);
+  // prefer a proven-connected one, else any saved connection for this key
+  return mine.find(x => x.state === 'connected') || mine[0];
 }
 
 async function loadSavedConnections() {
@@ -2769,22 +2901,32 @@ async function loadSavedConnections() {
   el.innerHTML = '<div class="sc-row">' + allConnections.map(x => {
     const st = connState(x);
     const spec = allConnectors.find(k => k.key === x.connector) || {name: x.connector};
+    const sup = (spec.supports) || {};
     const t = x.last_test;
-    const health = st === 'ERROR' ? 'Connection issue — ' + esc((t && t.error) || '')
-      : (t && t.ok ? 'Last tested ' + fmtAgo(t.at) + ' · Connection healthy' : 'Not tested yet');
+    const label = STATE_LABELS[st];
+    const health = st === 'FAILED' ? 'Connection failed — ' + esc((t && t.error) || 'last test did not pass')
+      : st === 'CONNECTED' ? (t && t.ok ? 'Last tested ' + fmtAgo(t.at) + ' · connection healthy' : 'Reachable · analyzed ' + fmtAgo((x.last_analysis||{}).at))
+      : st === 'STOPPED' ? 'Stopped — start it to use this connection'
+      : st === 'TESTING' ? 'Testing connection…'
+      : (t && t.unsupported ? 'Live test not available for this connector' : 'Not tested yet');
     const an = x.last_analysis;
     const anLine = an ? esc((an.database||'') + (an.schema && an.schema !== '(all)' ? '.' + an.schema : ''))
       + ' · ' + an.tables + ' tables · ' + Number(an.total_rows||0).toLocaleString() + ' rows analyzed ' + fmtAgo(an.at) : '';
-    const dotCls = st === 'ERROR' ? 'err' : (st === 'DISABLED' ? 'dis' : '');
-    const stCls = st === 'ERROR' ? 'err' : (st === 'DISABLED' ? 'dis' : '');
-    const primary = st === 'ERROR' ? '<button data-act="fix" data-id="' + x.id + '">Fix connection</button>'
-      : st === 'DISABLED' ? '<button data-act="start" data-id="' + x.id + '">Start</button>'
-      : st === 'ANALYZED' ? '<button data-act="scaffold" data-id="' + x.id + '">Scaffold pipeline</button>'
-      : '<button data-act="analyze" data-id="' + x.id + '">Analyze</button>';
-    return '<div class="sc" role="group" aria-label="Connection ' + esc(x.name) + '">'
+    const dotCls = STATE_DOT[st] || 'dis';
+    const stCls = st === 'FAILED' ? 'err' : (st === 'CONNECTED' ? '' : 'dis');
+    // primary action depends on the real state AND what the connector supports.
+    // A connector with no live driver can't be introspected, so its primary
+    // action opens the modal to generate artifacts rather than a live probe.
+    const canLive = sup.introspect !== false;   // undefined (old cache) => allow
+    const primary = st === 'FAILED' ? '<button data-act="fix" data-id="' + x.id + '">Fix connection</button>'
+      : st === 'STOPPED' ? '<button data-act="start" data-id="' + x.id + '">Start</button>'
+      : (canLive ? '<button data-act="analyze" data-id="' + x.id + '">Analyze</button>'
+                 : '<button data-act="edit" data-id="' + x.id + '">Generate artifacts</button>');
+    const liveActs = canLive && (st === 'CONNECTED' || st === 'UNCONNECTED') && st !== 'STOPPED';
+    return '<div class="sc" role="group" aria-label="Connection ' + esc(x.name) + ', ' + esc(label) + '">'
       + '<div class="hd"><img src="/static/logos/' + esc(x.connector) + '.svg" alt="" onerror="this.style.display=\'none\'">'
-      + '<strong>' + esc(spec.name) + '</strong> <span class="dot ' + dotCls + '" aria-hidden="true"></span>'
-      + '<span class="st ' + stCls + '" role="status">' + STATE_LABELS[st].toUpperCase() + '</span></div>'
+      + '<strong>' + esc(spec.name) + '</strong> <span class="dot ' + dotCls + '" role="img" aria-label="Status: ' + esc(label) + '" title="' + esc(label) + '"></span>'
+      + '<span class="st ' + stCls + '" role="status">' + esc(label) + '</span></div>'
       + '<button class="kebab" data-menu="' + x.id + '" aria-label="More actions for ' + esc(x.name) + '" aria-haspopup="menu">&#8942;</button>'
       + '<div class="menu" id="menu_' + x.id + '" role="menu">'
       +   '<button data-act="' + (x.status === 'active' ? 'stop' : 'start') + '" data-id="' + x.id + '">' + (x.status === 'active' ? 'Stop' : 'Start') + '</button>'
@@ -2796,8 +2938,7 @@ async function loadSavedConnections() {
       + esc([x.params.database, x.params.warehouse].filter(Boolean).join(' · ')) + (anLine ? '<br>' + anLine : '')
       + '<br>' + health + '</div>'
       + '<div class="acts">' + primary
-      + (st === 'ACTIVE' || st === 'ANALYZED' ? ' <button class="secondary" data-act="test" data-id="' + x.id + '">Test</button>'
-        + (st === 'ANALYZED' ? ' <button class="secondary" data-act="analyze" data-id="' + x.id + '">Analyze</button>' : '')
+      + (liveActs && canLive ? ' <button class="secondary" data-act="test" data-id="' + x.id + '">Test</button>'
         + ' <button class="secondary" data-act="load" data-id="' + x.id + '" title="Upload sample data to load — accepts .xlsx, .csv, .tsv or .json">Load data</button>'
         + '<input type="file" id="loadFile_' + x.id + '" accept=".xlsx,.csv,.tsv,.json" style="display:none">' : '')
       + '</div><div id="connOut_' + x.id + '"></div></div>';
@@ -2817,13 +2958,20 @@ async function loadSavedConnections() {
     const id = b.dataset.id, act = b.dataset.act;
     const row = allConnections.find(x => x.id === id);
     const out = $('#connOut_' + id);
+    // role gate mirroring the server: delete needs jobs:delete, every other
+    // mutating action needs jobs:run; "config" is read-only
+    const need = act === 'config' ? '' : act === 'delete' ? 'jobs:delete' : 'jobs:run';
+    if (need && !can(need)) {
+      if (out) out.innerHTML = '<pre style="margin-top:6px;color:#b03a2e">' + esc(permTitle(need)) + '</pre>';
+      return;
+    }
     try {
       if (act === 'delete') {
         if (!confirm('Delete connection "' + row.name + '"?')) return;
         await api('/api/v1/connections/' + id, {method:'DELETE'}); return loadSavedConnections();
       }
       if (act === 'start' || act === 'stop') { await api('/api/v1/connections/' + id + '/' + act, {method:'POST'}); return loadSavedConnections(); }
-      if (act === 'fix' || act === 'edit') { return openConnector(row.connector); }
+      if (act === 'fix' || act === 'edit') { return openConnector(row.connector, row.id); }
       if (act === 'config') {
         out.innerHTML = '<pre style="margin-top:8px">' + esc(JSON.stringify(row.params, null, 2))
           + '\n\ncredentials: ' + (row.has_secrets ? 'password stored on this host (file mode 0600)' : 'password from MB_* environment variable') + '</pre>';
@@ -3033,22 +3181,27 @@ function mktCard(it, installedRec, upd) {
     badges.push(mktBadge((it.dependencies.length) + ' dep' + (it.dependencies.length === 1 ? '' : 's'),
                 '#334', '#eef1f6', (it.dependencies || []).map(d => d.id).join(', ')));
 
+  // installing/updating/removing packages reconfigures the platform —
+  // settings:manage, mirrored from the server route map
+  const mktDisabled = can('settings:manage') ? ''
+    : ' disabled title="' + esc(permTitle('settings:manage')) + '"';
   let actions;
   if (isInstalled) {
     const updAvail = upd && upd.update_available;
     actions = '<span style="color:#1e8449;font-size:12px;font-weight:600">✓ Installed v'
       + esc(installedRec.version) + '</span>'
       + (updAvail ? '<button type="button" class="secondary mkt-update" data-id="' + esc(it.id)
-          + '" data-accept="' + (licAccept ? '1' : '') + '" style="margin:0;padding:3px 10px;font-size:12px">'
+          + '" data-accept="' + (licAccept ? '1' : '') + '" style="margin:0;padding:3px 10px;font-size:12px"'
+          + mktDisabled + '>'
           + 'Update → v' + esc(upd.latest) + '</button>' : '')
       + '<button type="button" class="secondary mkt-uninstall" data-id="' + esc(it.id)
-      + '" style="margin:0;padding:3px 10px;font-size:12px">Uninstall</button>';
+      + '" style="margin:0;padding:3px 10px;font-size:12px"' + mktDisabled + '>Uninstall</button>';
   } else {
     actions = '<button type="button" class="mkt-install" data-id="' + esc(it.id)
       + '" data-name="' + esc(it.name) + '" data-accept="' + (licAccept ? '1' : '')
       + '" data-lic="' + esc(lic) + '" data-url="' + esc((it.license && it.license.url) || '')
       + '" style="margin:0;padding:3px 12px;font-size:12px"'
-      + (it.compatible ? '' : ' disabled title="incompatible with this platform"')
+      + (it.compatible ? mktDisabled : ' disabled title="incompatible with this platform"')
       + '>Install</button>';
   }
   return '<div style="border:1px solid #e2e6ee;border-radius:8px;padding:11px 12px;background:#fff">'
@@ -3129,10 +3282,10 @@ async function loadMarketplace() {
   if (!allConnectors.length) allConnectors = (await api('/api/v1/connectors')).connectors;
   // metrics
   const byCat = k => allConnectors.filter(c => c.category === k).length;
-  const active = allConnections.filter(x => x.status === 'active').length;
+  const connected = allConnections.filter(x => x.state === 'connected').length;
   $('#mktMetrics').innerHTML =
     '<span><b>' + allConnectors.length + '</b> Integrations</span>'
-    + '<span><b>' + active + '</b> Active Connection' + (active === 1 ? '' : 's') + '</span>'
+    + '<span><b>' + connected + '</b> Connected system' + (connected === 1 ? '' : 's') + '</span>'
     + '<span><b>' + (byCat('cloud_dw') + byCat('lakehouse')) + '</b> Cloud Platforms</span>'
     + '<span><b>' + byCat('on_prem_db') + '</b> Legacy / On-Prem Systems</span>'
     + '<span><b>' + byCat('sap') + '</b> SAP Connectors</span>';
@@ -3154,9 +3307,9 @@ function renderMarketplace() {
     if (activeCat && c.category !== activeCat) return false;
     if (mktFilters.cap && !(c.capabilities||[]).includes(mktFilters.cap)) return false;
     const conn = connectionFor(c.key);
-    if (mktFilters.status === 'connected' && !conn) return false;
-    if (mktFilters.status === 'not_connected' && conn) return false;
-    if (mktFilters.status === 'issue' && !(conn && connState(conn) === 'ERROR')) return false;
+    if (mktFilters.status === 'connected' && !(conn && connState(conn) === 'CONNECTED')) return false;
+    if (mktFilters.status === 'not_connected' && conn && connState(conn) === 'CONNECTED') return false;
+    if (mktFilters.status === 'issue' && !(conn && connState(conn) === 'FAILED')) return false;
     if (!q) return true;
     const syn = {on_prem_db: 'legacy on-prem hybrid database sql', cloud_dw: 'cloud warehouse',
                  lakehouse: 'cloud lakehouse spark delta', sap: 'sap erp', app: 'saas business application'};
@@ -3178,7 +3331,7 @@ function renderMarketplace() {
     const shown = capBadges.slice(0, 3);
     const extra = capBadges.length - shown.length;
     const foot = conn
-      ? '<span class="dot ' + (st === 'ERROR' ? 'err' : '') + '" aria-hidden="true"></span> ' + STATE_LABELS[st]
+      ? '<span class="dot ' + (STATE_DOT[st] || 'dis') + '" role="img" aria-label="Status: ' + esc(STATE_LABELS[st]) + '" title="' + esc(STATE_LABELS[st]) + '"></span> ' + esc(STATE_LABELS[st])
         + '<span class="go">Configure &rarr;</span>'
       : '<span class="go" style="margin-left:auto">Connect &rarr;</span>';
     return '<div class="conn" role="listitem" tabindex="0" data-key="' + c.key + '"'
@@ -3190,22 +3343,72 @@ function renderMarketplace() {
       + '</div><div class="foot">' + foot + '</div></div>';
   }).join('');
   $('#connGrid').querySelectorAll('.conn').forEach(el => {
-    el.onclick = () => openConnector(el.dataset.key);
-    el.onkeydown = ev => { if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); openConnector(el.dataset.key); } };
+    // a connected tile ("Configure") edits the existing connection; an
+    // unconnected tile creates a new one
+    const open = () => { const cn = connectionFor(el.dataset.key);
+      openConnector(el.dataset.key, cn && cn.id); };
+    el.onclick = open;
+    el.onkeydown = ev => { if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); open(); } };
   });
 }
 
 $('#mktSearch').oninput = ev => { mktFilters.q = ev.target.value; renderMarketplace(); };
 $('#fltCap').onchange = ev => { mktFilters.cap = ev.target.value; renderMarketplace(); };
 $('#fltStatus').onchange = ev => { mktFilters.status = ev.target.value; renderMarketplace(); };
-$('#newConnBtn').onclick = () => { $('#mktSearch').focus(); window.scrollTo({top: 0, behavior: 'smooth'}); };
+// "New connection" opens a connector picker modal (the intended creation
+// entry point) — it never navigates away or redirects to another page.
+async function openNewConnectionPicker() {
+  if (!allConnectors.length) {
+    try { allConnectors = (await api('/api/v1/connectors')).connectors || []; } catch (e) {}
+  }
+  const render = (q) => {
+    const ql = (q || '').toLowerCase();
+    const list = allConnectors.filter(c => !ql
+      || [c.name, c.vendor, CAT_NAMES[c.category] || c.category,
+          (c.capabilities || []).join(' ')].join(' ').toLowerCase().includes(ql));
+    $('#npList').innerHTML = list.length ? list.map(c =>
+      '<button type="button" class="np-item" data-key="' + esc(c.key) + '" style="display:flex;gap:10px;align-items:center;width:100%;text-align:left;background:#fff;border:1px solid #e2e6ee;border-radius:8px;padding:9px 11px;margin:0 0 6px;cursor:pointer">'
+      + '<img src="/static/logos/' + esc(c.key) + '.svg" alt="" style="width:22px;height:22px" onerror="this.style.display=\'none\'">'
+      + '<span><b style="font-size:13px">' + esc(c.name) + '</b>'
+      + '<span style="display:block;color:#889;font-size:11.5px">' + esc(c.vendor || '') + ' · ' + esc(CAT_NAMES[c.category] || c.category) + '</span></span></button>').join('')
+      : '<div style="color:#889;font-size:13px;padding:8px 0">No integrations match “' + esc(q) + '”.</div>';
+    $('#npList').querySelectorAll('.np-item').forEach(b =>
+      b.onclick = () => { $('#modalBg').style.display = 'none'; openConnector(b.dataset.key); });
+  };
+  $('#modalBody').innerHTML = '<h3 style="margin:0 0 4px">New connection</h3>'
+    + '<div style="color:#667;font-size:13px;margin-bottom:10px">Choose an integration to connect.</div>'
+    + '<input type="search" id="npSearch" placeholder="Search integrations..." style="width:100%;margin-bottom:10px" aria-label="Search integrations">'
+    + '<div id="npList" style="max-height:52vh;overflow-y:auto"></div>'
+    + '<div style="display:flex;justify-content:flex-end;margin-top:12px"><button class="secondary" id="npClose">Close</button></div>';
+  $('#modalBg').style.display = 'flex';
+  $('#npClose').onclick = () => { $('#modalBg').style.display = 'none'; };
+  $('#npSearch').oninput = ev => render(ev.target.value);
+  render('');
+  $('#npSearch').focus();
+}
+$('#newConnBtn').onclick = openNewConnectionPicker;
 
-async function openConnector(key) {
+async function openConnector(key, connId) {
   const c = allConnectors.find(x => x.key === key);
-  const fieldRows = c.fields.map(f =>
-    '<div><label>' + f.label + (f.required?'':' (optional)') + (f.secret?' 🔒':'') + '</label>'
-    + '<input type="' + (f.secret?'password':'text') + '" data-field="' + f.name + '" value="' + (f.default||'') + '"></div>').join('');
-  const existing = connectionFor(key);
+  const sup = c.supports || {};
+  // EDIT mode is entered ONLY with an explicit connId (the saved-connection
+  // card and connected marketplace tiles pass it). Create entry points (the
+  // New Connection picker) pass no id, so they never preload or overwrite an
+  // existing row — they always create a new connection.
+  const editRow = connId ? allConnections.find(x => x.id === connId) : null;
+  const saved = (editRow && editRow.params) || {};
+  const fieldRows = c.fields.map(f => {
+    const req = f.required
+      ? ' <span class="req" title="Required" aria-label="required">*</span>' : ' <span class="opt">(optional)</span>';
+    const val = f.secret ? '' : String(saved[f.name] != null ? saved[f.name] : (f.default || ''));
+    const ph = f.secret && editRow && editRow.has_secrets
+      ? ' placeholder="•••••••• (leave blank to keep stored)"' : '';
+    return '<div><label>' + esc(f.label) + req + (f.secret ? ' 🔒' : '') + '</label>'
+      + '<input type="' + (f.secret ? 'password' : 'text') + '" data-field="' + esc(f.name) + '"'
+      + ' data-required="' + (f.required ? '1' : '') + '" data-secret="' + (f.secret ? '1' : '') + '"'
+      + ' value="' + esc(val) + '"' + ph + '></div>';
+  }).join('');
+  const existing = editRow || connectionFor(key);
   const auth = c.fields.some(f => f.secret) ? 'Username / password'
     : c.fields.some(f => /token/i.test(f.name)) ? 'Token' : 'Configured per platform';
   const capRow = (c.capabilities||[]).map(k => '<span class="tag">' + (CAP_LABELS[k]||k) + '</span>').join('');
@@ -3213,22 +3416,55 @@ async function openConnector(key) {
     + '<img class="logo" src="/static/logos/' + c.key + '.svg" alt="" onerror="this.style.display=\'none\'">'
     + '<div><h2 style="font-size:18px">' + c.name + '</h2>'
     + '<div class="v" style="color:#667;font-size:13px">' + c.vendor + ' · ' + (CAT_NAMES[c.category]||c.category) + ' · ' + c.deployment_model + '</div></div></div>'
-    + (existing ? '<div style="margin-top:10px;font-size:13px;color:#14522d"><span class="dot"></span> ' + STATE_LABELS[connState(existing)] + ' — saved as \u201C' + esc(existing.name) + '\u201D (see Saved connections for Analyze / Scaffold / Load)</div>' : '')
+    + (existing ? '<div style="margin-top:10px;font-size:13px;color:#445"><span class="dot ' + (STATE_DOT[connState(existing)]||'dis') + '" role="img" aria-label="Status"></span> ' + STATE_LABELS[connState(existing)] + ' — saved as \u201C' + esc(existing.name) + '\u201D (see Saved connections for Analyze / Scaffold / Load)</div>' : '')
     + '<div class="drawer-meta">'
     + '<b>Capabilities</b><div class="tags" style="margin:4px 0 8px">' + capRow + '</div>'
     + '<b>Source modes</b> — Full load · Incremental (watermark) · Metadata only<br>'
-    + '<b>Targets</b> — ' + [c.dbt_adapter && 'dbt', c.idmc_type && 'IDMC', c.powercenter_dbtype && 'PowerCenter'].filter(Boolean).join(' · ')
+    + '<b>Targets</b> — ' + ([c.dbt_adapter && 'dbt', c.idmc_type && 'IDMC', c.powercenter_dbtype && 'PowerCenter'].filter(Boolean).join(' · ') || 'source system (extract / analyze)')
     + '<br><b>Authentication</b> — ' + auth
+    + '<br><b>Live actions</b> — ' + (sup.live_test ? 'Test & Analyze supported' : 'declarative only (artifacts & scaffold)')
     + '<br><b>Regions</b> — ' + c.regions.join(', ') + '</div>'
     + (c.notes ? '<div style="font-size:13px;background:#f4f7fb;border-radius:8px;padding:10px 12px;margin-bottom:8px">' + c.notes + '</div>' : '')
-    + '<h3 style="font-size:14px;margin-top:12px">' + (existing ? 'Connection details' : 'Connect') + '</h3>'
+    + '<h3 style="font-size:14px;margin-top:12px">' + (editRow ? 'Connection details' : 'Connect') + '</h3>'
+    + '<div><label>Connection name <span class="opt">(optional)</span></label>'
+    + '<input type="text" id="connName" placeholder="' + esc(c.name) + '" value="' + esc(editRow ? editRow.name : '') + '"></div>'
     + '<div class="row">' + fieldRows + '</div>'
-    + '<button id="genArt">Generate</button> <button class="secondary" id="testConn">Test connection</button> <button class="secondary" id="analyzeDb">Analyze database</button> <button class="secondary" id="saveConn">Save connection</button> <button class="secondary" id="closeModal">Close</button>'
-    + '<label style="display:inline-flex;align-items:center;gap:6px;margin-left:10px;font-size:13px;color:#667"><input type="checkbox" id="savePw"> remember password on this host</label>'
+    + '<div id="connFieldErr" style="display:none;color:#b03a2e;font-size:13px;margin:6px 0"></div>'
+    + (sup.artifacts ? '<button id="genArt">Generate artifacts</button> ' : '')
+    + (sup.live_test ? '<button class="secondary" id="testConn">Test connection</button> ' : '')
+    + (sup.introspect ? '<button class="secondary" id="analyzeDb">Analyze database</button> ' : '')
+    + '<button class="secondary" id="saveConn">' + (editRow ? 'Update connection' : 'Save connection') + '</button> <button class="secondary" id="closeModal">Close</button>'
+    + '<label style="display:inline-flex;align-items:center;gap:6px;margin-left:10px;font-size:13px;color:#667"><input type="checkbox" id="savePw"' + (editRow && editRow.has_secrets ? ' checked' : '') + '> remember password on this host</label>'
+    + (!sup.live_test ? '<div style="font-size:12px;color:#889;margin-top:8px">Live test and introspection are not available for this connector yet — save it, generate connection artifacts, or analyze a table manifest in Pipeline Studio.</div>' : '')
     + '<div id="artOut"></div>';
   $('#modalBg').style.display = 'flex';
+  ['#genArt', '#testConn', '#analyzeDb', '#saveConn'].forEach(sel => {
+    const el = $(sel);
+    if (el && !can('jobs:run')) { el.disabled = true; el.title = permTitle('jobs:run'); }
+  });
+  // client-side required-field check mirroring the server (a secret field is
+  // exempt when editing a connection that already has a stored secret)
+  function validateFields(requireSecrets) {
+    const missing = [];
+    $('#modalBody').querySelectorAll('input[data-field]').forEach(i => {
+      if (i.dataset.required && !i.value.trim()) {
+        // secret fields are exempt from the required check on Save/Generate
+        // (requireSecrets=false) — the server's _missing_required only
+        // demands non-secret fields (secrets resolve from MB_* env vars at
+        // use time). Live probes (Test/Analyze) pass requireSecrets=true and
+        // still demand the actual secret value.
+        if (i.dataset.secret && !requireSecrets) return;
+        missing.push((i.previousElementSibling.textContent || '').replace('*', '').replace('🔒', '').replace('(optional)', '').trim());
+      }
+    });
+    const err = $('#connFieldErr');
+    if (missing.length) { err.textContent = 'Fill required field(s): ' + missing.join(', '); err.style.display = 'block'; return false; }
+    err.style.display = 'none'; return true;
+  }
   $('#closeModal').onclick = () => $('#modalBg').style.display = 'none';
-  $('#testConn').onclick = async () => {
+  const testBtn = $('#testConn');
+  if (testBtn) testBtn.onclick = async () => {
+    if (!validateFields(true)) return;   // live test needs the secret too
     const params = {};
     $('#modalBody').querySelectorAll('input[data-field]').forEach(i => params[i.dataset.field] = i.value);
     $('#artOut').innerHTML = '<div style="padding:8px 0">Connecting…</div>';
@@ -3249,7 +3485,9 @@ async function openConnector(key) {
       }
     } catch (e) { $('#artOut').innerHTML = '<label style="color:#b03a2e">Connection failed</label><pre>' + esc(e.message || e) + '</pre>'; }
   };
-  $('#analyzeDb').onclick = async () => {
+  const analyzeBtn = $('#analyzeDb');
+  if (analyzeBtn) analyzeBtn.onclick = async () => {
+    if (!validateFields(true)) return;
     const params = {};
     $('#modalBody').querySelectorAll('input[data-field]').forEach(i => params[i.dataset.field] = i.value);
     $('#artOut').innerHTML = '<div style="padding:8px 0">Analyzing database (read-only)…</div>';
@@ -3275,21 +3513,32 @@ async function openConnector(key) {
     } catch (e) { $('#artOut').innerHTML = '<label style="color:#b03a2e">Analysis failed</label><pre>' + esc(e.message || e) + '</pre>'; }
   };
   $('#saveConn').onclick = async () => {
+    if (!validateFields(false)) return;   // secret may stay stored on edit
     const params = {};
-    $('#modalBody').querySelectorAll('input[data-field]').forEach(i => params[i.dataset.field] = i.value);
+    $('#modalBody').querySelectorAll('input[data-field]').forEach(i => {
+      // don't overwrite a stored secret with an empty box on edit
+      if (i.dataset.secret && !i.value && editRow && editRow.has_secrets) return;
+      params[i.dataset.field] = i.value;
+    });
+    const payload = {connector: key, params, save_secrets: $('#savePw').checked,
+                     name: ($('#connName').value || '').trim()};
+    if (editRow) payload.id = editRow.id;
     try {
       const d = await api('/api/v1/connections', {method:'POST', headers:{'Content-Type':'application/json'},
-        body: JSON.stringify({connector: key, params, save_secrets: $('#savePw').checked})});
-      $('#artOut').innerHTML = '<label style="color:#1e8449">Saved as \u201C' + esc(d.name) + '\u201D — it stays available under Marketplace \u2192 Saved connections until you stop or delete it'
+        body: JSON.stringify(payload)});
+      $('#artOut').innerHTML = '<label style="color:#1e8449">' + (editRow ? 'Updated \u201C' : 'Saved as \u201C') + esc(d.name) + '\u201D — it stays available under Marketplace \u2192 Saved connections until you stop or delete it'
         + (d.has_secrets ? ' (password stored on this host, file mode 0600).' : ' (password NOT stored — supply MB_* env var or re-enter when asked).') + '</label>';
       loadSavedConnections();
     } catch (e) { $('#artOut').innerHTML = '<label style="color:#b03a2e">Save failed</label><pre>' + esc(e.message||e) + '</pre>'; }
   };
-  $('#genArt').onclick = async () => {
+  const genBtn = $('#genArt');
+  if (genBtn) genBtn.onclick = async () => {
+    if (!validateFields(false)) return;
     const params = {};
     $('#modalBody').querySelectorAll('input[data-field]').forEach(i => params[i.dataset.field] = i.value);
+    const cname = ($('#connName').value || '').trim() || ('conn_' + key);
     const d = await api('/api/v1/connectors/' + key + '/artifacts',
-      {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({params, name: 'conn_' + key})});
+      {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({params, name: cname})});
     $('#artOut').innerHTML =
       '<label>Secrets — set these env vars on the runtime host (values are never stored)</label><pre>' + (d.secret_env_vars.join('\n') || '(none)') + '</pre>'
       + '<label>dbt profiles.yml</label><pre>' + esc(d.dbt_profile) + '</pre>'
@@ -4108,6 +4357,14 @@ $('#scafForm').onsubmit = async ev => {
   $('#scafBanner').style.display = 'none';
   if (!chosen.scafFile) { err.textContent = 'Choose a tables .yml first.'; err.style.display = 'block'; return; }
   const fd = new FormData(ev.target); fd.set('tables', chosen.scafFile);
+  // if a saved connection exists for the chosen source/target connector,
+  // pass its id so generated dbt/IDMC/PowerCenter connection artifacts carry
+  // that system's real connection settings (secrets stay as env-var refs)
+  const connFor = k => { const m = allConnections.filter(x => x.connector === k);
+    return (m.find(x => x.state === 'connected') || m[0] || {}).id; };
+  const sc = connFor($('#scafSource').value), tc = connFor($('#scafTarget').value);
+  if (sc) fd.set('source_conn', sc);
+  if (tc) fd.set('target_conn', tc);
   const btn = ev.target.querySelector('button'); btn.disabled = true; btn.textContent = 'Generating…';
   try {
     const d = await api('/api/scaffold', {method:'POST', body: fd});
@@ -4138,20 +4395,27 @@ $('#scafForm').onsubmit = async ev => {
 async function loadEstate() {
   loadTwin();
   try { allConnections = (await api('/api/v1/connections')).connections || []; } catch (e) { allConnections = []; }
-  const act = allConnections.filter(x => x.status === 'active');
+  if (!allConnectors.length) { try { allConnectors = (await api('/api/v1/connectors')).connectors || []; } catch (e) {} }
+  const connected = allConnections.filter(x => x.state === 'connected');
+  const startable = allConnections.filter(x => x.status === 'active');
   const analyzed = allConnections.filter(x => x.last_analysis);
   const tables = analyzed.reduce((n, x) => n + (x.last_analysis.tables || 0), 0);
   const rows = analyzed.reduce((n, x) => n + (x.last_analysis.total_rows || 0), 0);
   $('#estateCards').innerHTML =
-    mcard(act.length || '--', 'Connected systems', allConnections.length + ' saved')
+    mcard(connected.length || '--', 'Connected systems', allConnections.length + ' saved')
     + mcard(analyzed.length || '--', 'Systems analyzed', '')
     + mcard(tables || '--', 'Tables', analyzed.length ? 'from live metadata analysis' : 'run Analyze on a connection')
     + mcard(rows ? rows.toLocaleString() : '--', 'Rows', '')
     + mcard((gJobsCache || []).filter(j => j.kind === 'convert').length || '--', 'Transformation workloads', 'modernization runs');
+  // only offer systems that can actually be introspected live
+  const introspectable = startable.filter(x => {
+    const s = allConnectors.find(c => c.key === x.connector);
+    return !s || !s.supports || s.supports.introspect !== false;
+  });
   $('#estateSystem').innerHTML = '<option value="">Select a connected system…</option>'
-    + act.map(x => '<option value="' + x.id + '">' + esc(x.name) + '</option>').join('');
-  $('#estateHint').textContent = act.length ? 'Pick a system to explore its live assets (read-only).'
-    : 'No active connections — connect one under Integrations.';
+    + introspectable.map(x => '<option value="' + x.id + '">' + esc(x.name) + '</option>').join('');
+  $('#estateHint').textContent = introspectable.length ? 'Pick a system to explore its live assets (read-only).'
+    : 'No connectable systems — connect one that supports live introspection under Integrations.';
   $('#estateTable').innerHTML = '';
   $('#estateSystem').onchange = async ev => {
     const id = ev.target.value;
@@ -4528,13 +4792,14 @@ async function loadSystem() {
     + '<b>' + (m.produced_by || []).length + '</b> producer(s) → <b>'
     + (m.consumed_by || []).length + '</b> consumer(s)</div></div>').join('');
 
-  // feature flags
+  // feature flags — toggling is a configuration action (settings:manage)
   $('#sysFlags').innerHTML = (d.feature_flags || []).map(f =>
     '<div style="display:flex;align-items:center;gap:10px;padding:5px 0;border-bottom:1px solid #f0f2f6">'
     + '<button type="button" class="sys-flag" data-key="' + esc(f.key) + '" data-on="'
     + (f.enabled ? '1' : '') + '" style="margin:0;padding:2px 10px;font-size:11.5px;'
     + 'background:' + (f.enabled ? '#1e8449' : '#e2e6ee') + ';color:' + (f.enabled ? '#fff' : '#556')
-    + '">' + (f.enabled ? 'ON' : 'OFF') + '</button>'
+    + '"' + (can('settings:manage') ? '' : ' disabled title="' + esc(permTitle('settings:manage')) + '"')
+    + '>' + (f.enabled ? 'ON' : 'OFF') + '</button>'
     + '<span style="font-weight:600;font-size:12px;min-width:170px">' + esc(f.key) + '</span>'
     + '<span style="flex:1;font-size:11.5px;color:#889">' + esc(f.description || '')
     + (f.rollout_pct != null && f.rollout_pct < 100 ? ' · ' + f.rollout_pct + '% rollout' : '')
@@ -4861,27 +5126,11 @@ function renderAgentRun(rep) {
 
   // approval queue for this run
   const pend = (rep.approvals || []).filter(a => a.status === 'pending');
-  const decided = (rep.approvals || []).filter(a => a.status !== 'pending');
   $('#agApprovalsWrap').style.display = (rep.approvals || []).length ? 'block' : 'none';
   $('#agApprovalCount').textContent = pend.length ? '(' + pend.length + ' pending)' : '(all decided)';
-  $('#agApprovals').innerHTML = (rep.approvals || []).map(a => {
-    const done = a.status !== 'pending';
-    const col = a.status === 'approved' ? '#1e8449' : a.status === 'rejected' ? '#c0392b' : '#b9770e';
-    return '<div style="border:1px solid #e2e6ee;border-radius:8px;padding:9px 12px;margin-bottom:6px;display:flex;'
-      + 'align-items:center;gap:10px;flex-wrap:wrap">'
-      + '<span style="font-weight:600;font-size:12.5px">' + esc(a.agent_id.replace(/_/g, ' ')) + '</span>'
-      + '<span style="font-size:11.5px;color:#667">' + esc(a.action_class) + ' · confidence '
-      + Math.round((a.confidence || 0) * 100) + '%</span>'
-      + '<span style="flex:1;min-width:120px;font-size:11.5px;color:#889">' + esc((a.reasons || [])[0] || '') + '</span>'
-      + (done
-        ? '<span style="color:' + col + ';font-weight:600;font-size:12px">' + esc(a.status)
-          + (a.approver ? ' by ' + esc(a.approver) : '') + '</span>'
-        : '<button type="button" class="ag-approve" data-id="' + esc(a.id)
-          + '" style="margin:0;padding:2px 12px;font-size:12px">Approve</button>'
-          + '<button type="button" class="secondary ag-reject" data-id="' + esc(a.id)
-          + '" style="margin:0;padding:2px 12px;font-size:12px">Reject</button>')
-      + '</div>';
-  }).join('');
+  $('#agApprovals').innerHTML =
+    (pend.some(a => a.no_eligible_approver) ? approvalEscalationBanner() : '')
+    + (rep.approvals || []).map(a => approvalRow(a)).join('');
 
   // audit trail
   const av = rep.audit && rep.audit.verification;
@@ -4911,18 +5160,75 @@ async function refreshAgentRun() {
   } catch (e) { /* ignore */ }
 }
 
+// One approval row used by both the run view and Governance → Approval
+// queue. Buttons render ONLY for actions the signed-in user may take
+// (server-computed can_approve / can_reject / can_claim), so segregation of
+// duties is visible up front instead of failing on click.
+function approvalRow(a, withRun) {
+  const done = a.status !== 'pending';
+  const col = a.status === 'approved' ? '#1e8449' : a.status === 'rejected' ? '#c0392b' : '#b9770e';
+  let act;
+  if (done) {
+    act = '<span style="color:' + col + ';font-weight:600;font-size:12px">' + esc(a.status)
+      + (a.approver ? ' by ' + esc(a.approver) : '') + '</span>';
+  } else {
+    const bits = [];
+    if (a.claimed_by) bits.push('<span class="tag" title="An approver marked this as theirs to review">reviewing: ' + esc(a.claimed_by) + '</span>');
+    if (a.can_claim && !a.claimed_by)
+      bits.push('<button type="button" class="secondary ag-claim" data-id="' + esc(a.id)
+        + '" style="margin:0;padding:2px 12px;font-size:12px" title="Mark this request as yours to review">Claim</button>');
+    if (a.can_approve)
+      bits.push('<button type="button" class="ag-approve" data-id="' + esc(a.id)
+        + '" style="margin:0;padding:2px 12px;font-size:12px">Approve</button>');
+    if (a.can_reject)
+      bits.push('<button type="button" class="secondary ag-reject" data-id="' + esc(a.id)
+        + '" style="margin:0;padding:2px 12px;font-size:12px">'
+        + (a.is_requester && !a.can_approve ? 'Withdraw' : 'Reject') + '</button>');
+    if (!bits.length) {
+      const why = a.is_requester
+        ? 'You requested this run — a different approver must decide it'
+        : myUser ? permTitle('agents:approve')
+                 : 'An owner or admin must approve this action';
+      bits.push('<span style="font-size:11.5px;color:#889" title="'
+        + esc(why) + '">awaiting an approver</span>');
+    }
+    act = bits.join('');
+  }
+  return '<div style="border:1px solid #e2e6ee;border-radius:8px;padding:9px 12px;margin-bottom:6px;display:flex;'
+    + 'align-items:center;gap:10px;flex-wrap:wrap">'
+    + '<span style="font-weight:600;font-size:12.5px">' + esc(a.agent_id.replace(/_/g, ' ')) + '</span>'
+    + '<span style="font-size:11.5px;color:#667">' + esc(a.action_class) + ' · confidence '
+    + Math.round((a.confidence || 0) * 100) + '%</span>'
+    + (withRun ? '<span style="font-size:11px;color:#98a0ad">run ' + esc(a.run_id || '') + '</span>' : '')
+    + (a.requested_by ? '<span style="font-size:11px;color:#98a0ad">by ' + esc(a.requested_by) + '</span>' : '')
+    + '<span style="flex:1;min-width:120px;font-size:11.5px;color:#889">' + esc((a.reasons || [])[0] || '') + '</span>'
+    + act + '</div>';
+}
+function approvalEscalationBanner() {
+  return '<div style="background:#fdeeec;border:1px solid #eec5c0;border-radius:8px;padding:9px 12px;'
+    + 'margin-bottom:8px;font-size:12.5px;color:#7c2d24"><b>No eligible approver.</b> '
+    + 'The requester may never approve their own run, and no other member holds approval rights. '
+    + 'Ask an owner to promote another admin in Settings → Members'
+    + (canManageUsers() ? ' — <a data-go="settings" data-sec="members" class="gotoMembers" style="cursor:pointer;font-weight:600;color:#7c2d24;text-decoration:underline">open Members</a>' : '')
+    + '. The requester can still withdraw the request.</div>';
+}
 document.addEventListener('click', async (ev) => {
+  const gm = ev.target.closest('.gotoMembers');
+  if (gm) { document.querySelector('nav a[data-page="settings"]').click(); showSettings('members'); return; }
   const ap = ev.target.closest('.ag-approve');
   const rj = ev.target.closest('.ag-reject');
-  if (!ap && !rj) return;
+  const cl = ev.target.closest('.ag-claim');
+  if (!ap && !rj && !cl) return;
   ev.preventDefault();
-  const btn = ap || rj;
-  const url = ap ? '/api/agents/approvals/approve' : '/api/agents/approvals/reject';
+  const btn = ap || rj || cl;
+  const url = ap ? '/api/agents/approvals/approve'
+    : rj ? '/api/agents/approvals/reject' : '/api/agents/approvals/claim';
   btn.disabled = true;
   try {
     await api(url, {method: 'POST', headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({approval_id: btn.dataset.id})});
     await refreshAgentRun();
+    if (typeof loadApprovalQueue === 'function') loadApprovalQueue();
   } catch (e) {
     alert('Approval error: ' + e.message);
     btn.disabled = false;
@@ -4947,7 +5253,37 @@ async function loadReports() {
 }
 
 /* ---------------- Governance extras ---------------- */
+// The agent approval queue — visible to every signed-in member so an
+// eligible approver (not the requester) can find and decide pending
+// requests; the sidebar badge advertises pending work without opening it.
+async function loadApprovalQueue() {
+  if (!$('#aqList')) return;
+  try {
+    const d = await api('/api/agents/approvals?scope=all');
+    const pend = (d.approvals || []).filter(a => a.status === 'pending');
+    const decided = (d.approvals || []).filter(a => a.status !== 'pending').slice(-8).reverse();
+    $('#aqCount').textContent = pend.length ? '(' + pend.length + ' pending)' : '';
+    $('#aqEscalation').innerHTML = pend.some(a => a.no_eligible_approver) ? approvalEscalationBanner() : '';
+    $('#aqList').innerHTML = pend.map(a => approvalRow(a, true)).join('')
+      || '<div style="color:#889;font-size:13px">No agent actions are waiting for approval.</div>';
+    $('#aqDecided').innerHTML = decided.length
+      ? '<div style="margin:12px 0 6px;font-size:11.5px;letter-spacing:.6px;color:#556;font-weight:600">RECENT DECISIONS</div>'
+        + decided.map(a => approvalRow(a, true)).join('')
+      : '';
+    updateGovBadge(d.pending_count || 0);
+  } catch (e) { /* queue stays empty; server enforces access */ }
+}
+function updateGovBadge(n) {
+  const nav = document.querySelector('nav a[data-page="governance"]');
+  if (!nav) return;
+  let b = nav.querySelector('.navbadge');
+  if (!b) { b = document.createElement('span'); b.className = 'navbadge'; nav.appendChild(b); }
+  b.textContent = n > 0 ? String(n) : '';
+  b.style.display = n > 0 ? 'inline-block' : 'none';
+  b.title = n > 0 ? n + ' agent action(s) awaiting approval' : '';
+}
 async function loadGovernanceExtras() {
+  loadApprovalQueue();
   try {
     const {jobs} = await api('/api/jobs');
     const converts = jobs.filter(j => j.kind === 'convert' && j.status === 'done').slice(0, 10);
@@ -5054,7 +5390,11 @@ function openAiPanel(context) {
   if (el) el.onclick = () => openAiPanel(window._valCtx || (planJob ? {migration_id: planJob.id, project: planJob.project} : null));
 });
 
-loadUser(); loadDashboard(); loadMarketplace(); loadSavedConnections(); fillScaffoldSelects(); fillModConnList();
+// loadUser() first: renderers that gate controls by permission (marketplace
+// install/uninstall, approval queue) must run AFTER myPerms is known, or a
+// fast /api response could paint enabled controls for an unprivileged role.
+loadUser().then(() => { loadApprovalQueue(); loadMarketplace(); });
+loadDashboard(); loadSavedConnections(); fillScaffoldSelects(); fillModConnList();
 </script>
 </body>
 </html>

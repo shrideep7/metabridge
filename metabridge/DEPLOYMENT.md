@@ -64,6 +64,8 @@ WantedBy=multi-user.target
 | `ANTHROPIC_API_KEY` | *(unset)* | Enables Claude features (alternative: configure in console Settings) |
 | `METABRIDGE_AI_PROVIDER` | *(unset)* | Force `anthropic` or `bedrock` (overrides settings.json) |
 | `IDMC_USER` / `IDMC_PASSWORD` | *(unset)* | Credentials for `metabridge deploy --execute` |
+| `METABRIDGE_PUBLIC_URL` | *(request URL)* | Public base URL used when building password-reset links (set it behind a reverse proxy) |
+| `METABRIDGE_SMTP_HOST` | *(unset)* | Enables emailed password-reset links. With it: `METABRIDGE_SMTP_PORT` (587), `METABRIDGE_SMTP_USER`, `METABRIDGE_SMTP_PASSWORD`, `METABRIDGE_SMTP_FROM`, `METABRIDGE_SMTP_STARTTLS` (on by default) |
 
 Connection secrets for generated pipelines (e.g. `MB_SNOWFLAKE_PASSWORD`) are
 **never stored by MetaBridge** — artifacts reference env vars that the customer
@@ -130,6 +132,17 @@ customer runs their own instance, roles govern people inside it.
 - Passwords are salted PBKDF2-SHA256 (390k iterations); sessions are HttpOnly
   cookies backed by server-side tokens (12h TTL). Users/sessions live in
   `users.json` / `sessions.json` under the data dir.
+- **Forgot/reset password.** Reset links are one-time and expire after 60
+  minutes; only their SHA-256 digest is stored, and a successful reset
+  revokes all of the account's sessions. Delivery is deployment-appropriate:
+  - `METABRIDGE_SMTP_HOST` configured → the link is emailed to the account.
+  - No SMTP → "Forgot password?" notifies the workspace admins; an
+    owner/admin generates a one-time link from **Settings → Members →
+    Send reset link** and hands it to the person directly. Only owners may
+    mint links for owner accounts.
+  - Locked-out sole owner → on the server host run
+    `metabridge reset-link <email>` (uses the data dir; prints the link once,
+    never logs it).
 - The console and all job APIs require a session; `METABRIDGE_API_KEY` remains
   available for CI and programmatic access.
 - Corporate SSO: terminate at the reverse proxy as below; MetaBridge accounts

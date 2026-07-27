@@ -1190,6 +1190,41 @@ def validate_live_cmd(
         raise typer.Exit(2)
 
 
+@app.command("reset-link")
+def reset_link_cmd(
+    email: str = typer.Argument(..., help="Email of the account to reset"),
+    data_dir: str = typer.Option("", "--data-dir",
+                                 help="Instance data directory (defaults to "
+                                 "METABRIDGE_DATA_DIR or ~/.metabridge)"),
+    base_url: str = typer.Option("", "--base-url",
+                                 help="Public URL of this instance, e.g. "
+                                 "https://metabridge.example.com (defaults "
+                                 "to METABRIDGE_PUBLIC_URL)"),
+):
+    """Mint a ONE-TIME password-reset link for an account (server operator
+    recovery — e.g. a locked-out sole owner). The link expires in 60
+    minutes; only its hash is stored. Hand it to the account holder
+    directly — it is printed once and never logged."""
+    import os
+    web_dir = Path(__file__).resolve().parent.parent.parent / "web"
+    sys.path.insert(0, str(web_dir.parent))
+    from web.auth import RESET_TOKEN_TTL_SECONDS, AuthStore
+    base = Path(data_dir or os.environ.get("METABRIDGE_DATA_DIR",
+                                           str(Path.home() / ".metabridge")))
+    token = AuthStore(base.expanduser()).create_reset_token(email)
+    if token is None:
+        typer.secho("error: no account with that email in %s" % base,
+                    fg=typer.colors.RED, err=True)
+        raise typer.Exit(1)
+    root = (base_url or os.environ.get("METABRIDGE_PUBLIC_URL", "")
+            ).rstrip("/") or "http://<your-metabridge-host>"
+    typer.secho("One-time reset link (valid %d minutes):"
+                % (RESET_TOKEN_TTL_SECONDS // 60), fg=typer.colors.GREEN)
+    # token in the fragment (#), which browsers never send to the server,
+    # so it stays out of access logs — matches the web mint endpoint
+    typer.echo("  %s/reset-password#token=%s" % (root, token))
+
+
 @app.command()
 def version():
     """Print version."""

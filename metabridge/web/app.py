@@ -48,8 +48,9 @@ except Exception:  # pragma: no cover - control plane extras not installed
     pass
 
 from .auth import (  # noqa: E402
-    API_KEY_PERMISSIONS, COOKIE_NAME, ROLE_DESCRIPTIONS, ROLES,
-    SESSION_TTL_SECONDS, AuthStore, has_permission, permissions_for,
+    API_KEY_PERMISSIONS, COOKIE_NAME, RESET_TOKEN_TTL_SECONDS,
+    ROLE_DESCRIPTIONS, ROLES, SESSION_TTL_SECONDS, AuthStore,
+    has_permission, permissions_for,
 )
 
 DATA_DIR = Path(os.environ.get("METABRIDGE_DATA_DIR",
@@ -78,24 +79,43 @@ def _request_user(request: Request):
     return AUTH.session_user(request.cookies.get(COOKIE_NAME, ""))
 
 
+def _at(path: str, prefix: str) -> bool:
+    """Boundary-safe prefix match: the route itself or a sub-path of it —
+    so a rule for /api/v1/me can never accidentally cover /api/v1/metrics."""
+    return path == prefix or path.startswith(prefix + "/")
+
+
 def _required_permission(path: str, method: str) -> str:
     """Map an API route to the RBAC permission it needs."""
-    if path.startswith("/api/v1/me"):
+    if _at(path, "/api/v1/me"):
         return "jobs:read"   # self-service profile: any authenticated role
-    if path.startswith("/api/users"):
+    if _at(path, "/api/users"):
         return "users:manage"
-    if path.startswith("/api/settings"):
+    if _at(path, "/api/settings"):
         return "jobs:read" if method == "GET" else "settings:manage"
-    # approving/rejecting a governed agent action needs a DISTINCT
-    # permission (segregation of duties) — a run-capable engineer must not
-    # be able to approve their own consequential proposals
-    if path.startswith("/api/agents/approvals/"):
-        return "agents:approve"
+    # approving/claiming a governed agent action needs a DISTINCT permission
+    # (segregation of duties) — a run-capable engineer must not be able to
+    # approve their own consequential proposals. Rejecting is jobs:run at
+    # the gate: the handler additionally requires agents:approve UNLESS the
+    # caller is withdrawing their own request (see agents_reject).
+    if _at(path, "/api/agents/approvals/reject"):
+        return "jobs:run"
+    if _at(path, "/api/agents/approvals"):
+        return "jobs:read" if method == "GET" else "agents:approve"
+    # loading/removing plugin code and installing marketplace packages
+    # reconfigure the platform (plugin load executes third-party code on
+    # the server) — configuration actions, not pipeline runs
+    if _at(path, "/api/plugins/load"):
+        return "settings:manage"
+    if _at(path, "/api/plugins") and method == "DELETE":
+        return "settings:manage"
+    if _at(path, "/api/marketplace") and method in ("POST", "PUT", "DELETE"):
+        return "settings:manage"
     # changing platform feature flags is a configuration action
-    if path.startswith("/api/system/flags") and method == "POST":
+    if _at(path, "/api/system/flags") and method == "POST":
         return "settings:manage"
     # acknowledging one's own notifications is a read-side action
-    if path.startswith("/api/system/notifications/seen"):
+    if _at(path, "/api/system/notifications/seen"):
         return "jobs:read"
     if method in ("POST", "PUT", "PATCH"):
         return "jobs:run"
@@ -153,6 +173,16 @@ def login_page() -> str:
 @app.get("/signup", response_class=HTMLResponse)
 def signup_page() -> str:
     return (_TPL / "signup.html").read_text(encoding="utf-8")
+
+
+@app.get("/forgot-password", response_class=HTMLResponse)
+def forgot_password_page() -> str:
+    return (_TPL / "forgot.html").read_text(encoding="utf-8")
+
+
+@app.get("/reset-password", response_class=HTMLResponse)
+def reset_password_page() -> str:
+    return (_TPL / "reset.html").read_text(encoding="utf-8")
 
 
 @app.get("/console", response_class=HTMLResponse)
@@ -224,6 +254,167 @@ async def auth_logout(request: Request):
     resp = JSONResponse({"ok": True})
     resp.delete_cookie(COOKIE_NAME, path="/")
     return resp
+
+
+# -- forgot / reset password -------------------------------------------------
+# One-time, expiring tokens minted by AuthStore (only their SHA-256 digest is
+# persisted). Delivery is deployment-appropriate for a self-hosted app:
+#   * SMTP configured (METABRIDGE_SMTP_HOST etc.) -> the link is emailed.
+#   * No SMTP -> workspace admins are notified and mint a link from Settings
+#     -> Members (POST /api/users/{email}/reset-link, users:manage), handing
+#     it to the account holder out-of-band. A locked-out sole owner can mint
+#     one on the server host: `metabridge auth reset-link <email>`.
+# The token secret is never logged and never returned by /auth/forgot.
+
+def _smtp_configured() -> bool:
+    return bool(os.environ.get("METABRIDGE_SMTP_HOST"))
+
+
+def _public_base(request: Request, trust_request: bool):
+    """Base URL for building absolute reset links. On an UNAUTHENTICATED
+    path (the emailed link from /auth/forgot) the request Host header is
+    attacker-controlled and must NOT be trusted — a poisoned Host would make
+    the emailed link point at an attacker's server (account takeover), so we
+    require METABRIDGE_PUBLIC_URL and return None if it is unset. On an
+    authenticated path (an admin minting a link in their own browser) the
+    same-origin request URL is a fine fallback."""
+    configured = os.environ.get("METABRIDGE_PUBLIC_URL", "").rstrip("/")
+    if configured:
+        return configured
+    if trust_request:
+        return str(request.base_url).rstrip("/")
+    return None
+
+
+def _reset_link(request: Request, token: str,
+                trust_request: bool = False):
+    base = _public_base(request, trust_request)
+    if base is None:
+        return None
+    from urllib.parse import quote
+    # token goes in the URL FRAGMENT, not the query string: browsers never
+    # send the fragment to the server, so the one-time secret can't land in
+    # access logs / proxy logs. The reset page reads it client-side and
+    # submits it in POST bodies (never as a query parameter).
+    return "%s/reset-password#token=%s" % (base, quote(token))
+
+
+def _send_reset_email(to_addr: str, link: str) -> None:
+    import smtplib
+    from email.message import EmailMessage
+    host = os.environ["METABRIDGE_SMTP_HOST"]
+    port = int(os.environ.get("METABRIDGE_SMTP_PORT", "587"))
+    user = os.environ.get("METABRIDGE_SMTP_USER", "")
+    password = os.environ.get("METABRIDGE_SMTP_PASSWORD", "")
+    sender = os.environ.get("METABRIDGE_SMTP_FROM",
+                            user or "metabridge@localhost")
+    msg = EmailMessage()
+    msg["Subject"] = "Reset your MetaBridge password"
+    msg["From"] = sender
+    msg["To"] = to_addr
+    msg.set_content(
+        "A password reset was requested for your MetaBridge account.\n\n"
+        "Choose a new password here (the link works once and expires in "
+        "60 minutes):\n\n  %s\n\nIf you did not request this, you can "
+        "ignore this message — your password is unchanged." % link)
+    starttls = os.environ.get("METABRIDGE_SMTP_STARTTLS", "1").lower() \
+        not in ("0", "false", "no")
+    with smtplib.SMTP(host, port, timeout=15) as s:
+        if starttls:
+            s.starttls()
+        if user:
+            s.login(user, password)
+        s.send_message(msg)
+
+
+def _mask_email(email: str) -> str:
+    local, _, domain = email.partition("@")
+    if len(local) <= 2:
+        return local[:1] + "•••@" + domain
+    return local[0] + "•••" + local[-1] + "@" + domain
+
+
+def _notify_admins_of_reset_request(email: str) -> None:
+    """Surface the request in the workspace notification feed (no secret is
+    included — an admin mints the actual link from Settings -> Members).
+    Deduped: one unseen notice per account at a time."""
+    try:
+        nc = _os().notifications
+        title = "Password reset requested for %s" % email
+        if any(n.get("title") == title
+               for n in nc.recent(limit=100, topic="auth",
+                                  unseen_only=True)):
+            return
+        nc.notify("auth", title,
+                  body="Generate a one-time reset link from Settings -> "
+                       "Members and share it with the account holder.",
+                  severity="warning")
+    except Exception:                    # noqa: BLE001 - notify best-effort
+        pass
+
+
+@app.post("/auth/forgot")
+async def auth_forgot(request: Request):
+    """Start a password reset. Answers identically whether or not the email
+    has an account, so the endpoint can't be used to enumerate accounts."""
+    body = await _json_object(request)
+    email = str(body.get("email", "")).strip().lower()
+    if not email or "@" not in email:
+        raise HTTPException(422, "Enter the email address of your account")
+    # Email delivery needs a trustworthy absolute base URL. Because this is
+    # an UNAUTHENTICATED request, we never build the link from the (spoofable)
+    # Host header — if METABRIDGE_PUBLIC_URL is unset we fall through to the
+    # admin-notification path rather than email an attacker-controlled link.
+    can_email = _smtp_configured() and _public_base(request, False) is not None
+    if can_email:
+        token = AUTH.create_reset_token(email)   # None when no such account
+        if token:
+            # deliver off-request so response timing is identical whether
+            # or not the account exists (no enumeration via latency)
+            link = _reset_link(request, token, trust_request=False)
+            import threading
+
+            def _deliver():
+                try:
+                    _send_reset_email(email, link)
+                except Exception:        # noqa: BLE001 - never leak details
+                    pass                 # (and never confirm/deny delivery)
+            threading.Thread(target=_deliver, daemon=True).start()
+        return {"ok": True, "delivery": "email",
+                "detail": "If that email has an account here, a reset link "
+                          "is on its way. It works once and expires in 60 "
+                          "minutes."}
+    if AUTH.user_exists(email):
+        _notify_admins_of_reset_request(email)
+    return {"ok": True, "delivery": "admin",
+            "detail": "If that email has an account here, the workspace "
+                      "admins have been notified. An admin will send you a "
+                      "one-time reset link — you can also ask them "
+                      "directly."}
+
+
+@app.post("/auth/reset/validate")
+async def auth_reset_validate(request: Request):
+    """Whether a reset token is live (renders the reset form). POST so the
+    one-time secret travels in the body, never a logged query string. Only
+    a masked account hint is returned — never the token or full address."""
+    body = await _json_object(request)
+    email = AUTH.peek_reset_token(str(body.get("token", "")))
+    if email is None:
+        return {"valid": False}
+    return {"valid": True, "account": _mask_email(email)}
+
+
+@app.post("/auth/reset")
+async def auth_reset(request: Request):
+    body = await _json_object(request)
+    try:
+        AUTH.reset_password(str(body.get("token", "")),
+                            str(body.get("password", "")))
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+    return {"ok": True, "detail": "Password updated — sign in with your "
+                                  "new password."}
 
 
 @app.get("/api/v1/me")
@@ -462,15 +653,35 @@ def list_users():
         {"role": r, "description": ROLE_DESCRIPTIONS[r]} for r in ROLES]}
 
 
+def _caller_is_owner(request: Request) -> bool:
+    user = _request_user(request)
+    if user is None:
+        return not AUTH.has_users()      # open mode (fresh instance)
+    return user.get("role") == "owner"
+
+
+def _require_owner_for_owner_role(request: Request, detail: str):
+    """Least privilege: only an owner may hand out or take away the owner
+    role (or remove an owner). Otherwise any admin could mint themselves a
+    path to full control."""
+    if not _caller_is_owner(request):
+        raise HTTPException(403, detail)
+
+
 @app.post("/api/users")
 async def create_user(request: Request):
-    body = await request.json()
+    body = await _json_object(request)
+    from .auth import normalize_role
+    role = str(body.get("role", "engineer"))
+    if AUTH.has_users() and normalize_role(role) == "owner":
+        _require_owner_for_owner_role(
+            request, "Only an owner can create another owner account")
     try:
         user = AUTH.create_user(str(body.get("email", "")),
                                 str(body.get("password", "")),
                                 str(body.get("name", "")),
                                 str(body.get("company", "")),
-                                role=str(body.get("role", "engineer")))
+                                role=role)
     except ValueError as e:
         raise HTTPException(422, str(e))
     return user
@@ -478,27 +689,69 @@ async def create_user(request: Request):
 
 @app.patch("/api/users/{email}")
 async def change_role(email: str, request: Request):
-    body = await request.json()
+    body = await _json_object(request)
+    from .auth import normalize_role
+    email_norm = email.strip().lower()
+    new_role = normalize_role(str(body.get("role", "")))
     me_user = _request_user(request)
-    if me_user and me_user["email"] == email.lower() and \
-            str(body.get("role")) != me_user["role"]:
+    if me_user and me_user["email"] == email_norm and \
+            new_role != me_user["role"]:
         raise HTTPException(422, "You cannot change your own role")
+    target = next((u for u in AUTH.list_users()
+                   if u["email"] == email_norm), None)
+    if target is None:
+        raise HTTPException(422, "No such user")
+    if new_role == "owner" or target["role"] == "owner":
+        _require_owner_for_owner_role(
+            request, "Only an owner can grant or revoke the owner role")
     try:
-        return AUTH.set_role(email, str(body.get("role", "")))
+        return AUTH.set_role(email, new_role)
     except ValueError as e:
         raise HTTPException(422, str(e))
 
 
 @app.delete("/api/users/{email}")
 async def delete_user(email: str, request: Request):
+    email_norm = email.strip().lower()
     me_user = _request_user(request)
-    if me_user and me_user["email"] == email.lower():
+    if me_user and me_user["email"] == email_norm:
         raise HTTPException(422, "You cannot remove yourself")
+    target = next((u for u in AUTH.list_users()
+                   if u["email"] == email_norm), None)
+    if target is not None and target["role"] == "owner":
+        _require_owner_for_owner_role(
+            request, "Only an owner can remove an owner account")
     try:
         AUTH.remove_user(email)
     except ValueError as e:
         raise HTTPException(422, str(e))
     return {"removed": email}
+
+
+@app.post("/api/users/{email}/reset-link")
+async def mint_reset_link(email: str, request: Request):
+    """Mint a one-time password-reset link for a member (users:manage via
+    the access middleware). This is the no-SMTP delivery path: the admin
+    hands the link to the account holder out-of-band. The link works once
+    and expires after 60 minutes; minting again replaces it."""
+    target = next((u for u in AUTH.list_users()
+                   if u["email"] == email.strip().lower()), None)
+    if target is not None and target["role"] == "owner":
+        # an admin who could reset an owner's password could take over the
+        # owner account — same boundary as granting/revoking the owner role.
+        # (A locked-out sole owner uses `metabridge reset-link` on the host.)
+        _require_owner_for_owner_role(
+            request, "Only an owner can mint a reset link for an owner "
+                     "account")
+    token = AUTH.create_reset_token(email)
+    if token is None:
+        raise HTTPException(404, "No account with that email")
+    # authenticated admin, minting in their own browser: the same-origin
+    # request URL is a fine base when METABRIDGE_PUBLIC_URL isn't configured
+    return {"email": email.strip().lower(),
+            "reset_link": _reset_link(request, token, trust_request=True),
+            "expires_in_minutes": RESET_TOKEN_TTL_SECONDS // 60,
+            "one_time": True}
 
 
 @app.get("/api/settings/ai")
@@ -1944,6 +2197,10 @@ async def agents_run(request: Request):
             requested_by=user.get("email", "") or "operator",
             created_at=_today())
         _finish_job(job_dir, run_id=report["run_id"])
+        _announce_pending_approvals(report["run_id"],
+                                    user.get("email", "") or "operator")
+        report["approvals"] = [_approval_view(a, user) for a in
+                               report.get("approvals", [])]
         return report
     except HTTPException:
         _finish_job(job_dir, status="failed", error="request rejected")
@@ -1958,22 +2215,93 @@ def agents_runs():
     return {"runs": _agents_orch().list_runs()}
 
 
+def _eligible_approvers(requested_by: str = "") -> list:
+    """Workspace members whose role grants agents:approve, excluding the
+    requester (who may never approve their own run's actions)."""
+    return [u["email"] for u in AUTH.list_users()
+            if has_permission(u, "agents:approve")
+            and u["email"] != (requested_by or "").strip().lower()]
+
+
+def _approval_view(rec: dict, user: Optional[dict]) -> dict:
+    """One approval record enriched with what the CURRENT viewer may do
+    with it (drives the UI) and its escalation state."""
+    out = dict(rec)
+    requester = rec.get("requested_by", "")
+    pending = rec.get("status") == "pending"
+    out["no_eligible_approver"] = pending and not _eligible_approvers(
+        requester)
+    if user is not None:
+        email = user.get("email", "")
+        is_approver = has_permission(user, "agents:approve")
+        is_requester = bool(email) and email == requester
+        out["is_requester"] = is_requester
+        # segregation of duties: approving/claiming needs the distinct
+        # permission AND a different person than the requester; the
+        # requester may always withdraw (reject) their own request
+        out["can_approve"] = pending and is_approver and not is_requester
+        out["can_claim"] = out["can_approve"]
+        out["can_reject"] = pending and (is_approver or is_requester)
+    return out
+
+
+def _notify_approvals(title: str, body: str, severity: str) -> None:
+    try:
+        _os().notifications.notify("approvals", title, body=body,
+                                   severity=severity)
+    except Exception:                    # noqa: BLE001 - notify best-effort
+        pass
+
+
+def _announce_pending_approvals(run_id: str, requester: str) -> None:
+    """Tell the workspace a run is waiting on sign-off — this is how
+    approvers other than the requester learn there is work for them."""
+    pending = [a for a in _agents_queue().for_run(run_id)
+               if a.get("status") == "pending"]
+    if not pending:
+        return
+    eligible = _eligible_approvers(requester)
+    if eligible:
+        _notify_approvals(
+            "%d agent action(s) await approval" % len(pending),
+            "Run %s by %s needs sign-off from a different approver. "
+            "Review it under Governance → Approval queue." % (run_id,
+                                                              requester),
+            "warning")
+    else:
+        _notify_approvals(
+            "Approvals blocked — no eligible approver",
+            "Run %s by %s has %d pending action(s), but no other member "
+            "holds approval rights. Promote another admin or owner in "
+            "Settings → Members so requests don't stay stuck." % (
+                run_id, requester, len(pending)),
+            "critical")
+
+
 @app.get("/api/agents/runs/{run_id}")
-def agents_run_get(run_id: str):
+def agents_run_get(run_id: str, request: Request):
     r = _agents_orch().get_run(run_id)
     if r is None:
         raise HTTPException(404, "Unknown agent run: %s" % run_id)
     # overlay the LIVE approval status (the persisted report captured the
     # approvals as of run time; they may have since been approved/rejected)
-    r["approvals"] = _agents_queue().for_run(run_id)
+    user = _request_user(request)
+    r["approvals"] = [_approval_view(a, user)
+                      for a in _agents_queue().for_run(run_id)]
     return r
 
 
 @app.get("/api/agents/approvals")
-def agents_approvals(scope: str = "pending"):
+def agents_approvals(request: Request, scope: str = "pending"):
     q = _agents_queue()
     items = q.all() if scope == "all" else q.pending()
-    return {"scope": scope, "approvals": items}
+    user = _request_user(request)
+    views = [_approval_view(r, user) for r in items]
+    pending = [v for v in views if v.get("status") == "pending"]
+    return {"scope": scope, "approvals": views,
+            "pending_count": len(pending),
+            "escalated": [v["id"] for v in pending
+                          if v.get("no_eligible_approver")]}
 
 
 @app.post("/api/agents/approvals/approve")
@@ -1992,11 +2320,35 @@ async def agents_approve(request: Request):
     except ApprovalError as e:
         raise HTTPException(422, str(e))
     _audit_decision(rec, "approved", approver)
-    return rec
+    _notify_approvals("%s approved" % rec.get("agent_id", aid),
+                      "Run %s: approved by %s." % (rec.get("run_id", ""),
+                                                   approver), "success")
+    return _approval_view(rec, user)
+
+
+@app.post("/api/agents/approvals/claim")
+async def agents_claim(request: Request):
+    """An eligible approver marks a pending request as theirs to review —
+    a soft lock so two approvers don't duplicate work."""
+    from metabridge.agents import ApprovalError
+    body = await _json_object(request)
+    user = _require_account(request)
+    aid = str(body.get("approval_id", ""))
+    if not aid:
+        raise HTTPException(422, "approval_id is required")
+    try:
+        rec = _agents_queue().claim(aid, user.get("email", "") or "operator")
+    except ApprovalError as e:
+        raise HTTPException(422, str(e))
+    return _approval_view(rec, user)
 
 
 @app.post("/api/agents/approvals/reject")
 async def agents_reject(request: Request):
+    """Reject a pending request. Allowed for holders of agents:approve —
+    and for the requester themselves (withdrawing your own request is not
+    a segregation-of-duties concern, and keeps a request from lingering
+    when no approver exists)."""
     from metabridge.agents import ApprovalError
     body = await _json_object(request)
     user = _require_account(request)
@@ -2004,6 +2356,14 @@ async def agents_reject(request: Request):
     if not aid:
         raise HTTPException(422, "approval_id is required")
     approver = user.get("email", "") or "operator"
+    rec0 = _agents_queue().get(aid)
+    if rec0 is None:
+        raise HTTPException(422, "unknown approval: %s" % aid)
+    if not (has_permission(user, "agents:approve")
+            or rec0.get("requested_by") == approver):
+        raise HTTPException(403, "Your role does not allow deciding this "
+                                 "request — only its requester may withdraw "
+                                 "it.")
     try:
         rec = _agents_queue().reject(
             aid, approver=approver,
@@ -2011,7 +2371,10 @@ async def agents_reject(request: Request):
     except ApprovalError as e:
         raise HTTPException(422, str(e))
     _audit_decision(rec, "rejected", approver)
-    return rec
+    _notify_approvals("%s rejected" % rec.get("agent_id", aid),
+                      "Run %s: rejected by %s." % (rec.get("run_id", ""),
+                                                   approver), "info")
+    return _approval_view(rec, user)
 
 
 def _audit_decision(rec: dict, decision: str, approver: str) -> None:
@@ -3290,6 +3653,20 @@ async def api_govern(
 # Scaffold
 # ---------------------------------------------------------------------------
 
+def _scaffold_conn_params(conn_id: str, connector: str):
+    """Non-secret params of a saved connection, when it matches the chosen
+    connector — so generated dbt/IDMC/PowerCenter connection artifacts carry
+    that system's real connection settings (host/account/database/…).
+    Secrets stay as env-var references; they are never resolved here."""
+    if not conn_id:
+        return None
+    from metabridge.connections_store import get_connection
+    row = get_connection(conn_id)
+    if row is None or row.get("connector") != connector:
+        return None
+    return dict(row.get("params") or {})
+
+
 @app.post("/api/scaffold")
 async def api_scaffold(
     tables: UploadFile = File(...),
@@ -3298,6 +3675,8 @@ async def api_scaffold(
     project: str = Form(""),
     source_region: str = Form(""),
     target_region: str = Form(""),
+    source_conn: str = Form(""),
+    target_conn: str = Form(""),
 ):
     from metabridge.scaffold import scaffold as run_scaffold
     job_dir = _new_job("scaffold")
@@ -3306,6 +3685,10 @@ async def api_scaffold(
     try:
         report = run_scaffold(source, target, str(manifest),
                               str(job_dir / "output"), project,
+                              source_params=_scaffold_conn_params(source_conn,
+                                                                  source),
+                              target_params=_scaffold_conn_params(target_conn,
+                                                                  target),
                               source_region=source_region,
                               target_region=target_region)
     except (ValueError, FileNotFoundError) as e:
@@ -3340,12 +3723,29 @@ async def api_scaffold(
 # Marketplace
 # ---------------------------------------------------------------------------
 
+def _connector_dict(spec) -> dict:
+    """A connector's public shape, enriched with `supports` — the concrete
+    flows this connector can actually be driven through in THIS build. The
+    console uses it to offer only working actions, so a connector is never
+    shown as live-integrated when it only has the declarative flows."""
+    from metabridge.livecheck import live_support
+    d = spec.to_dict()
+    sup = dict(live_support(spec.key))
+    sup["artifacts"] = bool(spec.dbt_adapter or spec.idmc_type
+                            or spec.powercenter_dbtype)
+    sup["scaffold_source"] = True
+    sup["scaffold_target"] = bool(spec.dbt_adapter
+                                  or spec.category in ("cloud_dw", "lakehouse"))
+    d["supports"] = sup
+    return d
+
+
 @app.get("/api/v1/connectors")
 def v1_connectors(category: str = ""):
     from metabridge.connectors.base import get_registry
     reg = get_registry()
     specs = reg.by_category(category) if category else reg.all()
-    return {"connectors": [s.to_dict() for s in specs]}
+    return {"connectors": [_connector_dict(s) for s in specs]}
 
 
 @app.get("/api/v1/connectors/{key}")
@@ -3354,7 +3754,7 @@ def v1_connector(key: str):
     spec = get_registry().get(key)
     if spec is None:
         raise HTTPException(404, "Unknown connector: %s" % key)
-    return spec.to_dict()
+    return _connector_dict(spec)
 
 
 @app.post("/api/v1/connectors/{key}/artifacts")
@@ -3469,16 +3869,29 @@ def v1_connections_list():
 @app.post("/api/v1/connections")
 async def v1_connections_save(request: Request):
     """Save a connection: non-secret params always; the password only
-    when save_secrets=true (stored 0600 on this host, never echoed)."""
-    from metabridge.connections_store import save_connection
+    when save_secrets=true (stored 0600 on this host, never echoed). Pass
+    an `id` to update an existing connection in place (edit)."""
+    from metabridge.connections_store import (_missing_required,
+                                              save_connection)
     body = await request.json()
+    connector = str(body.get("connector", ""))
+    params = dict(body.get("params") or {})
+    # required-field validation at the API boundary — the console form runs
+    # the same check, so UI and API reject the same incomplete inputs
+    missing = _missing_required(connector, params)
+    if missing:
+        raise HTTPException(422, "Missing required field%s: %s"
+                            % ("" if len(missing) == 1 else "s",
+                               ", ".join(missing)))
     try:
         return save_connection(
-            str(body.get("connector", "")),
-            dict(body.get("params") or {}),
+            connector, params,
             name=str(body.get("name", "") or ""),
             save_secrets=bool(body.get("save_secrets", False)),
-            last_test=body.get("last_test"))
+            last_test=body.get("last_test"),
+            conn_id=str(body.get("id", "") or ""))
+    except KeyError:
+        raise HTTPException(404, "Unknown connection")
     except ValueError as e:
         raise HTTPException(422, str(e))
 
@@ -3511,8 +3924,8 @@ def v1_connection_delete(conn_id: str):
 
 @app.post("/api/v1/connections/{conn_id}/test")
 def v1_connection_test(conn_id: str):
-    from metabridge.connections_store import (get_connection, record_test,
-                                              resolve_params)
+    from metabridge.connections_store import (get_connection, mark_testing,
+                                              record_test, resolve_params)
     from metabridge.livecheck import test_connection
     row = get_connection(conn_id)
     if row is None:
@@ -3521,9 +3934,10 @@ def v1_connection_test(conn_id: str):
         params = resolve_params(conn_id)
     except PermissionError as e:
         raise HTTPException(409, str(e))
-    report = test_connection(row["connector"], params)
+    mark_testing(conn_id)              # visible TESTING state for concurrent readers
+    report = test_connection(row["connector"], params)   # never raises
     report.pop("password", None)
-    record_test(conn_id, report)
+    record_test(conn_id, report)       # always clears the TESTING flag
     return report
 
 

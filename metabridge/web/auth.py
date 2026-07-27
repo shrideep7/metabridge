@@ -13,6 +13,7 @@ Behavior:
 """
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import hmac
 import json
@@ -23,7 +24,10 @@ from typing import Dict, Optional
 
 _PBKDF2_ITERATIONS = 390_000
 SESSION_TTL_SECONDS = 12 * 3600
+RESET_TOKEN_TTL_SECONDS = 3600          # one hour to use a reset link
 COOKIE_NAME = "mb_session"
+MAX_NAME_LENGTH = 80
+MIN_PASSWORD_LENGTH = 8
 
 # ---------------------------------------------------------------------------
 # RBAC — single-tenant instances (one deployment per customer), roles govern
@@ -75,9 +79,27 @@ class AuthStore:
     def __init__(self, data_dir: Path):
         self.users_file = data_dir / "users.json"
         self.sessions_file = data_dir / "sessions.json"
+        self.reset_file = data_dir / "reset_tokens.json"
+        self._lock_file = data_dir / "auth.lock"
         data_dir.mkdir(parents=True, exist_ok=True)
 
     # -- persistence ------------------------------------------------------
+    @contextlib.contextmanager
+    def _locked(self):
+        """Serialize load->mutate->save cycles across concurrent requests so
+        two simultaneous writes (e.g. profile saves) can't lose records —
+        same best-effort flock pattern as agents.ApprovalQueue."""
+        fh = open(self._lock_file, "w")
+        try:
+            try:
+                import fcntl
+                fcntl.flock(fh, fcntl.LOCK_EX)
+            except (ImportError, OSError):
+                pass                     # best-effort on platforms w/o flock
+            yield
+        finally:
+            fh.close()
+
     def _load(self, f: Path) -> dict:
         if f.exists():
             try:
@@ -89,32 +111,43 @@ class AuthStore:
     def _save(self, f: Path, doc: dict) -> None:
         tmp = f.with_suffix(".tmp")
         tmp.write_text(json.dumps(doc, indent=2))
+        try:
+            import os
+            os.chmod(tmp, 0o600)         # sessions/reset files carry tokens
+        except OSError:                  # pragma: no cover - platform quirk
+            pass
         tmp.replace(f)
 
     # -- users ------------------------------------------------------------
     def has_users(self) -> bool:
         return bool(self._load(self.users_file))
 
+    def user_exists(self, email: str) -> bool:
+        return email.strip().lower() in self._load(self.users_file)
+
     def create_user(self, email: str, password: str, name: str = "",
                     company: str = "", role: str = "") -> dict:
         email = email.strip().lower()
         if not email or "@" not in email:
             raise ValueError("A valid email address is required")
-        if len(password) < 8:
-            raise ValueError("Password must be at least 8 characters")
-        users = self._load(self.users_file)
-        if email in users:
-            raise ValueError("An account with this email already exists")
-        salt = secrets.token_hex(16)
-        users[email] = {
-            "email": email, "name": name.strip() or email.split("@")[0],
-            "company": company.strip(),
-            "role": "owner" if not users else normalize_role(role or "engineer"),
-            "salt": salt, "hash": self._hash(password, salt),
-            "created": time.strftime("%Y-%m-%dT%H:%M:%S"),
-        }
-        self._save(self.users_file, users)
-        return self._public(users[email])
+        if len(password) < MIN_PASSWORD_LENGTH:
+            raise ValueError("Password must be at least %d characters"
+                             % MIN_PASSWORD_LENGTH)
+        with self._locked():
+            users = self._load(self.users_file)
+            if email in users:
+                raise ValueError("An account with this email already exists")
+            salt = secrets.token_hex(16)
+            users[email] = {
+                "email": email, "name": name.strip() or email.split("@")[0],
+                "company": company.strip(),
+                "role": "owner" if not users
+                        else normalize_role(role or "engineer"),
+                "salt": salt, "hash": self._hash(password, salt),
+                "created": time.strftime("%Y-%m-%dT%H:%M:%S"),
+            }
+            self._save(self.users_file, users)
+            return self._public(users[email])
 
     @staticmethod
     def _public(u: dict) -> dict:
@@ -137,38 +170,45 @@ class AuthStore:
                    filename: str = "") -> tuple:
         """Returns (public_user, detached_filename). The caller owns
         deleting the detached file from media storage."""
-        users = self._load(self.users_file)
-        u = users.get(email.strip().lower())
-        if not u:
-            raise ValueError("No such user")
-        detached = u.get("avatar_file", "")
-        u["avatar_type"] = avatar_type
-        if avatar_type == "PRESET":
-            u["avatar_preset"] = preset
-        else:
-            u.pop("avatar_preset", None)
-        if avatar_type == "PHOTO":
-            u["avatar_file"] = filename
-            if detached == filename:
-                detached = ""          # replaced in place — nothing to drop
-        else:
-            u.pop("avatar_file", None)
-        u["avatar_updated"] = int(time.time())
-        self._save(self.users_file, users)
-        return self._public(u), detached
+        with self._locked():
+            users = self._load(self.users_file)
+            u = users.get(email.strip().lower())
+            if not u:
+                raise ValueError("No such user")
+            detached = u.get("avatar_file", "")
+            u["avatar_type"] = avatar_type
+            if avatar_type == "PRESET":
+                u["avatar_preset"] = preset
+            else:
+                u.pop("avatar_preset", None)
+            if avatar_type == "PHOTO":
+                u["avatar_file"] = filename
+                if detached == filename:
+                    detached = ""      # replaced in place — nothing to drop
+            else:
+                u.pop("avatar_file", None)
+            u["avatar_updated"] = int(time.time())
+            self._save(self.users_file, users)
+            return self._public(u), detached
 
     def set_name(self, email: str, name: str) -> dict:
-        """Self-service display-name update (profile settings)."""
+        """Self-service display-name update (profile settings). Stores the
+        name exactly as typed (whitespace collapsed) — what the user saves
+        is what every later load returns."""
         name = " ".join(name.split())
         if not name:
             raise ValueError("Display name cannot be empty")
-        users = self._load(self.users_file)
-        u = users.get(email.strip().lower())
-        if not u:
-            raise ValueError("No such user")
-        u["name"] = name
-        self._save(self.users_file, users)
-        return self._public(u)
+        if len(name) > MAX_NAME_LENGTH:
+            raise ValueError("Display name must be %d characters or fewer"
+                             % MAX_NAME_LENGTH)
+        with self._locked():
+            users = self._load(self.users_file)
+            u = users.get(email.strip().lower())
+            if not u:
+                raise ValueError("No such user")
+            u["name"] = name
+            self._save(self.users_file, users)
+            return self._public(u)
 
     def avatar_file(self, email: str) -> str:
         u = self._load(self.users_file).get(email.strip().lower()) or {}
@@ -186,34 +226,33 @@ class AuthStore:
 
     def set_role(self, email: str, role: str) -> dict:
         role = normalize_role(role)
-        users = self._load(self.users_file)
-        u = users.get(email.strip().lower())
-        if not u:
-            raise ValueError("No such user")
-        if normalize_role(u.get("role", "")) == "owner" and role != "owner" \
-                and self._owner_count(users) <= 1:
-            raise ValueError("Cannot demote the last owner — promote someone "
-                             "else to owner first")
-        u["role"] = role
-        self._save(self.users_file, users)
-        return self._public(u)
+        with self._locked():
+            users = self._load(self.users_file)
+            u = users.get(email.strip().lower())
+            if not u:
+                raise ValueError("No such user")
+            if normalize_role(u.get("role", "")) == "owner" \
+                    and role != "owner" and self._owner_count(users) <= 1:
+                raise ValueError("Cannot demote the last owner — promote "
+                                 "someone else to owner first")
+            u["role"] = role
+            self._save(self.users_file, users)
+            return self._public(u)
 
     def remove_user(self, email: str) -> None:
         email = email.strip().lower()
-        users = self._load(self.users_file)
-        u = users.get(email)
-        if not u:
-            raise ValueError("No such user")
-        if normalize_role(u.get("role", "")) == "owner" \
-                and self._owner_count(users) <= 1:
-            raise ValueError("Cannot remove the last owner")
-        del users[email]
-        self._save(self.users_file, users)
+        with self._locked():
+            users = self._load(self.users_file)
+            u = users.get(email)
+            if not u:
+                raise ValueError("No such user")
+            if normalize_role(u.get("role", "")) == "owner" \
+                    and self._owner_count(users) <= 1:
+                raise ValueError("Cannot remove the last owner")
+            del users[email]
+            self._save(self.users_file, users)
         # kill their sessions immediately
-        sessions = self._load(self.sessions_file)
-        alive = {t: s for t, s in sessions.items() if s.get("email") != email}
-        if len(alive) != len(sessions):
-            self._save(self.sessions_file, alive)
+        self.revoke_sessions(email)
 
     def verify_user(self, email: str, password: str) -> Optional[dict]:
         users = self._load(self.users_file)
@@ -234,11 +273,13 @@ class AuthStore:
 
     # -- sessions -----------------------------------------------------------
     def create_session(self, email: str) -> str:
-        sessions = self._prune(self._load(self.sessions_file))
-        token = secrets.token_urlsafe(32)
-        sessions[token] = {"email": email, "expires": time.time() + SESSION_TTL_SECONDS}
-        self._save(self.sessions_file, sessions)
-        return token
+        with self._locked():
+            sessions = self._prune(self._load(self.sessions_file))
+            token = secrets.token_urlsafe(32)
+            sessions[token] = {"email": email,
+                               "expires": time.time() + SESSION_TTL_SECONDS}
+            self._save(self.sessions_file, sessions)
+            return token
 
     def session_user(self, token: str) -> Optional[dict]:
         if not token:
@@ -254,12 +295,100 @@ class AuthStore:
         return self._public(u)
 
     def destroy_session(self, token: str) -> None:
-        sessions = self._load(self.sessions_file)
-        if token in sessions:
-            del sessions[token]
-            self._save(self.sessions_file, sessions)
+        with self._locked():
+            sessions = self._load(self.sessions_file)
+            if token in sessions:
+                del sessions[token]
+                self._save(self.sessions_file, sessions)
+
+    def revoke_sessions(self, email: str) -> None:
+        """Kill every live session for one account (user removed, or their
+        password was just reset)."""
+        email = email.strip().lower()
+        with self._locked():
+            sessions = self._load(self.sessions_file)
+            alive = {t: s for t, s in sessions.items()
+                     if s.get("email") != email}
+            if len(alive) != len(sessions):
+                self._save(self.sessions_file, alive)
 
     @staticmethod
     def _prune(sessions: Dict[str, dict]) -> Dict[str, dict]:
         now = time.time()
         return {t: s for t, s in sessions.items() if s.get("expires", 0) > now}
+
+    # -- password reset -------------------------------------------------------
+    # One-time, expiring tokens. Only the SHA-256 digest of a token is ever
+    # persisted, so neither reset_tokens.json nor a backup of it can be used
+    # to take over an account; the URL-safe secret exists only in the reset
+    # link handed to the account holder. A fresh request replaces any earlier
+    # outstanding token for the same account (one live link per account), and
+    # a successful reset burns every token for that account and revokes all
+    # of its sessions.
+
+    @staticmethod
+    def _token_digest(token: str) -> str:
+        return hashlib.sha256(token.encode()).hexdigest()
+
+    @staticmethod
+    def _prune_resets(doc: Dict[str, dict]) -> Dict[str, dict]:
+        now = time.time()
+        return {d: r for d, r in doc.items() if r.get("expires", 0) > now}
+
+    def create_reset_token(self, email: str) -> Optional[str]:
+        """Mint a one-time password-reset token for an existing account.
+        Returns the secret (for the reset link), or None when no such
+        account exists — callers must answer identically either way so the
+        endpoint can't be used to enumerate accounts."""
+        email = email.strip().lower()
+        with self._locked():
+            users = self._load(self.users_file)
+            if email not in users:
+                return None
+            token = secrets.token_urlsafe(32)
+            doc = self._prune_resets(self._load(self.reset_file))
+            doc = {d: r for d, r in doc.items() if r.get("email") != email}
+            doc[self._token_digest(token)] = {
+                "email": email,
+                "expires": time.time() + RESET_TOKEN_TTL_SECONDS,
+                "created": time.strftime("%Y-%m-%dT%H:%M:%S"),
+            }
+            self._save(self.reset_file, doc)
+            return token
+
+    def peek_reset_token(self, token: str) -> Optional[str]:
+        """The account email for a live token — without consuming it (used
+        to render the reset form). None for unknown/expired/used tokens."""
+        if not token:
+            return None
+        rec = self._load(self.reset_file).get(self._token_digest(token))
+        if not rec or rec.get("expires", 0) < time.time():
+            return None
+        email = rec.get("email", "")
+        if email not in self._load(self.users_file):
+            return None                  # account removed since minting
+        return email
+
+    def reset_password(self, token: str, new_password: str) -> dict:
+        """Consume a one-time token and set a new password. Invalidates
+        every outstanding token for the account and revokes its sessions."""
+        if len(new_password) < MIN_PASSWORD_LENGTH:
+            raise ValueError("Password must be at least %d characters"
+                             % MIN_PASSWORD_LENGTH)
+        with self._locked():
+            doc = self._prune_resets(self._load(self.reset_file))
+            rec = doc.get(self._token_digest(token or ""))
+            email = (rec or {}).get("email", "")
+            users = self._load(self.users_file)
+            if rec is None or email not in users:
+                raise ValueError("This reset link is invalid, expired, or "
+                                 "already used — request a new one")
+            u = users[email]
+            salt = secrets.token_hex(16)
+            u["salt"] = salt
+            u["hash"] = self._hash(new_password, salt)
+            self._save(self.users_file, users)
+            doc = {d: r for d, r in doc.items() if r.get("email") != email}
+            self._save(self.reset_file, doc)
+        self.revoke_sessions(email)
+        return self._public(u)

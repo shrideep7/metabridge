@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Sign in — MetaBridge AI</title>
+<title>Reset your password — MetaBridge AI</title>
 <style>
   :root { --line:rgba(140,170,220,.16); --blue:#4da3ff; --teal:#3ddad0; --mist:#8ea4c8; }
   * { box-sizing:border-box; margin:0; padding:0; }
@@ -32,18 +32,15 @@
   .card h1 { font-size:26px; font-weight:800; letter-spacing:-.4px; }
   .card .sub { color:var(--mist); font-size:14px; margin:8px 0 30px; }
   label { display:block; font-size:12px; font-weight:700; letter-spacing:.6px; text-transform:uppercase; color:#9db2d4; margin:18px 0 7px; }
-  .field { position:relative; }
   input { width:100%; padding:13px 14px; border-radius:10px; border:1px solid rgba(140,170,220,.28); background:rgba(16,28,50,.7); color:#fff; font-size:15px; outline:none; transition:.15s; }
   input:focus { border-color:var(--blue); box-shadow:0 0 0 3px rgba(77,163,255,.18); }
-  .toggle { position:absolute; right:12px; top:50%; transform:translateY(-50%); background:none; border:none; color:#7d92b5; cursor:pointer; font-size:12.5px; font-weight:700; }
   .btn { width:100%; margin-top:28px; padding:14px; border:none; border-radius:11px; font-size:15.5px; font-weight:700; color:#fff; cursor:pointer; background:linear-gradient(135deg,#2f7bbd,#4da3ff); box-shadow:0 10px 26px rgba(45,120,200,.35); transition:.18s; }
   .btn:hover { transform:translateY(-1px); }
   .btn:disabled { opacity:.6; cursor:wait; transform:none; }
   .err { display:none; margin-top:16px; background:rgba(192,57,43,.16); border:1px solid rgba(192,57,43,.4); color:#f5a8a0; border-radius:9px; padding:11px 14px; font-size:13.5px; }
+  .ok { display:none; margin-top:16px; background:rgba(30,132,73,.16); border:1px solid rgba(30,132,73,.45); color:#9fdcb6; border-radius:9px; padding:11px 14px; font-size:13.5px; line-height:1.5; }
   .alt { margin-top:26px; text-align:center; font-size:14px; color:var(--mist); }
   .alt a { color:var(--blue); font-weight:650; text-decoration:none; }
-  .forgot { display:block; margin-top:12px; text-align:right; font-size:13px; color:#7d92b5; text-decoration:none; }
-  .forgot:hover { color:var(--blue); }
   .back { display:inline-block; margin-bottom:34px; color:#7d92b5; font-size:13.5px; text-decoration:none; }
   .back:hover { color:#fff; }
 </style>
@@ -53,51 +50,47 @@
   <div class="orb o1"></div><div class="orb o2"></div>
   <div class="brand">Meta<b>Bridge</b></div>
   <div class="pitch">
-    <h2>Welcome back to your<br><span>modernization factory.</span></h2>
+    <h2>Locked out?<br><span>Let's get you back in.</span></h2>
     <ul>
-      <li>Convert dbt ⇄ Informatica with a certified audit trail</li>
-      <li>Ship SAP into Snowflake, BigQuery or Databricks</li>
-      <li>GDPR &amp; CCPA governance on every single pipeline</li>
+      <li>Reset links are one-time and expire after 60 minutes</li>
+      <li>Your password is never sent by email or shown to anyone</li>
+      <li>All existing sessions are signed out after a reset</li>
     </ul>
   </div>
-  <div class="quote">Every conversion produces a coverage score and an exception queue with
-    stable rule codes — the numbers a migration proposal is built on.
-    <b>Rules first · LLM-assist flagged · nothing silently guessed</b></div>
+  <div class="quote">Self-hosted means your credentials never leave your servers —
+    resets are handled inside your own deployment.
+    <b>One-time links · hashed at rest · sessions revoked on reset</b></div>
 </div>
 <div class="pane"><div class="card">
-  <a class="back" href="/">← metabridge.io</a>
-  <h1>Sign in</h1>
-  <div class="sub">Access your workspace and job history.</div>
+  <a class="back" href="/login">← Back to sign in</a>
+  <h1>Reset your password</h1>
+  <div class="sub" id="subtitle">Enter your account email and we&rsquo;ll start a secure reset.</div>
   <form id="f">
     <label>Email</label>
     <input type="email" name="email" placeholder="you@company.com" required autofocus>
-    <label>Password</label>
-    <div class="field">
-      <input type="password" name="password" id="pw" placeholder="••••••••" required>
-      <button type="button" class="toggle" id="tg">SHOW</button>
-    </div>
-    <a class="forgot" href="/forgot-password">Forgot password?</a>
-    <button class="btn" type="submit">Sign in →</button>
+    <button class="btn" type="submit">Send reset instructions →</button>
     <div class="err" id="err"></div>
+    <div class="ok" id="ok"></div>
   </form>
-  <div class="alt">New to MetaBridge AI? <a href="/signup">Create the workspace</a></div>
+  <div class="alt">Remembered it? <a href="/login">Sign in</a></div>
 </div></div>
 <script>
-const tg = document.getElementById('tg'), pw = document.getElementById('pw');
-tg.onclick = () => { pw.type = pw.type === 'password' ? 'text' : 'password'; tg.textContent = pw.type === 'password' ? 'SHOW' : 'HIDE'; };
 document.getElementById('f').onsubmit = async ev => {
   ev.preventDefault();
-  const err = document.getElementById('err'); err.style.display = 'none';
-  const btn = ev.target.querySelector('.btn'); btn.disabled = true; btn.textContent = 'Signing in…';
+  const err = document.getElementById('err'), ok = document.getElementById('ok');
+  err.style.display = 'none'; ok.style.display = 'none';
+  const btn = ev.target.querySelector('.btn'); btn.disabled = true; btn.textContent = 'Sending…';
   const fd = new FormData(ev.target);
   try {
-    const r = await fetch('/auth/login', { method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({ email: fd.get('email'), password: fd.get('password') }) });
+    const r = await fetch('/auth/forgot', { method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ email: fd.get('email') }) });
     const d = await r.json();
-    if (!r.ok) throw new Error(d.detail || 'Sign-in failed');
-    window.location.href = d.redirect || '/console';
+    if (!r.ok) throw new Error(d.detail || 'Could not start the reset');
+    ok.textContent = d.detail;
+    ok.style.display = 'block';
+    btn.textContent = 'Instructions sent';
   } catch (e) { err.textContent = e.message; err.style.display = 'block';
-    btn.disabled = false; btn.textContent = 'Sign in →'; }
+    btn.disabled = false; btn.textContent = 'Send reset instructions →'; }
 };
 </script>
 </body>
