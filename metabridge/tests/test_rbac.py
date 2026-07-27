@@ -241,6 +241,16 @@ def test_self_role_change_still_blocked_for_admins(workspace):
     assert "own role" in r.json()["detail"]
 
 
+def test_self_guard_not_bypassable_via_whitespace_or_case(workspace):
+    # the self-modification guard normalizes the {email} path segment, so a
+    # trailing space or different case can't slip past it
+    adm = workspace["admin"]
+    r = adm.patch("/api/users/%20ADM@x.com%20", json={"role": "engineer"})
+    assert r.status_code == 422 and "own role" in r.json()["detail"]
+    r = adm.delete("/api/users/%20adm@x.com")
+    assert r.status_code == 422 and "yourself" in r.json()["detail"]
+
+
 # ---------------------------------------------------------------------------
 # Console UI mirrors the server rules
 # ---------------------------------------------------------------------------

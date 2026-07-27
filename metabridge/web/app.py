@@ -270,11 +270,33 @@ def _smtp_configured() -> bool:
     return bool(os.environ.get("METABRIDGE_SMTP_HOST"))
 
 
-def _reset_link(request: Request, token: str) -> str:
-    base = os.environ.get("METABRIDGE_PUBLIC_URL", "").rstrip("/") or \
-        str(request.base_url).rstrip("/")
+def _public_base(request: Request, trust_request: bool):
+    """Base URL for building absolute reset links. On an UNAUTHENTICATED
+    path (the emailed link from /auth/forgot) the request Host header is
+    attacker-controlled and must NOT be trusted — a poisoned Host would make
+    the emailed link point at an attacker's server (account takeover), so we
+    require METABRIDGE_PUBLIC_URL and return None if it is unset. On an
+    authenticated path (an admin minting a link in their own browser) the
+    same-origin request URL is a fine fallback."""
+    configured = os.environ.get("METABRIDGE_PUBLIC_URL", "").rstrip("/")
+    if configured:
+        return configured
+    if trust_request:
+        return str(request.base_url).rstrip("/")
+    return None
+
+
+def _reset_link(request: Request, token: str,
+                trust_request: bool = False):
+    base = _public_base(request, trust_request)
+    if base is None:
+        return None
     from urllib.parse import quote
-    return "%s/reset-password?token=%s" % (base, quote(token))
+    # token goes in the URL FRAGMENT, not the query string: browsers never
+    # send the fragment to the server, so the one-time secret can't land in
+    # access logs / proxy logs. The reset page reads it client-side and
+    # submits it in POST bodies (never as a query parameter).
+    return "%s/reset-password#token=%s" % (base, quote(token))
 
 
 def _send_reset_email(to_addr: str, link: str) -> None:
@@ -335,16 +357,21 @@ def _notify_admins_of_reset_request(email: str) -> None:
 async def auth_forgot(request: Request):
     """Start a password reset. Answers identically whether or not the email
     has an account, so the endpoint can't be used to enumerate accounts."""
-    body = await request.json()
+    body = await _json_object(request)
     email = str(body.get("email", "")).strip().lower()
     if not email or "@" not in email:
         raise HTTPException(422, "Enter the email address of your account")
-    if _smtp_configured():
+    # Email delivery needs a trustworthy absolute base URL. Because this is
+    # an UNAUTHENTICATED request, we never build the link from the (spoofable)
+    # Host header — if METABRIDGE_PUBLIC_URL is unset we fall through to the
+    # admin-notification path rather than email an attacker-controlled link.
+    can_email = _smtp_configured() and _public_base(request, False) is not None
+    if can_email:
         token = AUTH.create_reset_token(email)   # None when no such account
         if token:
             # deliver off-request so response timing is identical whether
             # or not the account exists (no enumeration via latency)
-            link = _reset_link(request, token)
+            link = _reset_link(request, token, trust_request=False)
             import threading
 
             def _deliver():
@@ -366,11 +393,13 @@ async def auth_forgot(request: Request):
                       "directly."}
 
 
-@app.get("/auth/reset/validate")
-def auth_reset_validate(token: str = ""):
-    """Whether a reset token is live (renders the reset form). Only a masked
-    account hint is returned — never the token or the full address."""
-    email = AUTH.peek_reset_token(token)
+@app.post("/auth/reset/validate")
+async def auth_reset_validate(request: Request):
+    """Whether a reset token is live (renders the reset form). POST so the
+    one-time secret travels in the body, never a logged query string. Only
+    a masked account hint is returned — never the token or full address."""
+    body = await _json_object(request)
+    email = AUTH.peek_reset_token(str(body.get("token", "")))
     if email is None:
         return {"valid": False}
     return {"valid": True, "account": _mask_email(email)}
@@ -378,7 +407,7 @@ def auth_reset_validate(token: str = ""):
 
 @app.post("/auth/reset")
 async def auth_reset(request: Request):
-    body = await request.json()
+    body = await _json_object(request)
     try:
         AUTH.reset_password(str(body.get("token", "")),
                             str(body.get("password", "")))
@@ -641,7 +670,7 @@ def _require_owner_for_owner_role(request: Request, detail: str):
 
 @app.post("/api/users")
 async def create_user(request: Request):
-    body = await request.json()
+    body = await _json_object(request)
     from .auth import normalize_role
     role = str(body.get("role", "engineer"))
     if AUTH.has_users() and normalize_role(role) == "owner":
@@ -660,15 +689,16 @@ async def create_user(request: Request):
 
 @app.patch("/api/users/{email}")
 async def change_role(email: str, request: Request):
-    body = await request.json()
+    body = await _json_object(request)
     from .auth import normalize_role
+    email_norm = email.strip().lower()
     new_role = normalize_role(str(body.get("role", "")))
     me_user = _request_user(request)
-    if me_user and me_user["email"] == email.lower() and \
+    if me_user and me_user["email"] == email_norm and \
             new_role != me_user["role"]:
         raise HTTPException(422, "You cannot change your own role")
     target = next((u for u in AUTH.list_users()
-                   if u["email"] == email.strip().lower()), None)
+                   if u["email"] == email_norm), None)
     if target is None:
         raise HTTPException(422, "No such user")
     if new_role == "owner" or target["role"] == "owner":
@@ -682,11 +712,12 @@ async def change_role(email: str, request: Request):
 
 @app.delete("/api/users/{email}")
 async def delete_user(email: str, request: Request):
+    email_norm = email.strip().lower()
     me_user = _request_user(request)
-    if me_user and me_user["email"] == email.lower():
+    if me_user and me_user["email"] == email_norm:
         raise HTTPException(422, "You cannot remove yourself")
     target = next((u for u in AUTH.list_users()
-                   if u["email"] == email.strip().lower()), None)
+                   if u["email"] == email_norm), None)
     if target is not None and target["role"] == "owner":
         _require_owner_for_owner_role(
             request, "Only an owner can remove an owner account")
@@ -715,8 +746,10 @@ async def mint_reset_link(email: str, request: Request):
     token = AUTH.create_reset_token(email)
     if token is None:
         raise HTTPException(404, "No account with that email")
+    # authenticated admin, minting in their own browser: the same-origin
+    # request URL is a fine base when METABRIDGE_PUBLIC_URL isn't configured
     return {"email": email.strip().lower(),
-            "reset_link": _reset_link(request, token),
+            "reset_link": _reset_link(request, token, trust_request=True),
             "expires_in_minutes": RESET_TOKEN_TTL_SECONDS // 60,
             "one_time": True}
 

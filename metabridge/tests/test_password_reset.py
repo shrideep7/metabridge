@@ -144,7 +144,7 @@ def test_admin_mints_link_and_member_resets(client):
     assert body["one_time"] and body["expires_in_minutes"] == 60
     token = body["reset_link"].split("token=")[1]
 
-    v = client.get("/auth/reset/validate", params={"token": token}).json()
+    v = client.post("/auth/reset/validate", json={"token": token}).json()
     assert v["valid"] and "@example.com" in v["account"]
     assert "dev@example.com" not in v["account"]     # masked
 
@@ -160,8 +160,8 @@ def test_admin_mints_link_and_member_resets(client):
     _, new = _login(webapp, "dev@example.com", "freshpass456")
     assert new.status_code == 200
     # burned
-    assert client.get("/auth/reset/validate",
-                      params={"token": token}).json() == {"valid": False}
+    assert client.post("/auth/reset/validate",
+                       json={"token": token}).json() == {"valid": False}
     assert client.post("/auth/reset",
                        json={"token": token,
                              "password": "yetanother7"}).status_code == 422
@@ -201,8 +201,8 @@ def test_reset_weak_password_and_bad_token(client):
                                          "password": "longenough1"})
     assert r.status_code == 422
     # the real token survives the failed attempts
-    assert client.get("/auth/reset/validate",
-                      params={"token": token}).json()["valid"]
+    assert client.post("/auth/reset/validate",
+                       json={"token": token}).json()["valid"]
 
 
 # -- SMTP delivery ------------------------------------------------------------
@@ -251,12 +251,82 @@ def test_forgot_with_smtp_emails_a_working_link(client, monkeypatch):
     msg = _FakeSMTP.sent[0]
     assert msg["To"] == "dev@example.com"
     link = [ln for ln in msg.get_content().splitlines()
-            if "reset-password?token=" in ln][0].strip()
-    assert link.startswith("https://mb.example.com/reset-password?token=")
+            if "reset-password#token=" in ln][0].strip()
+    assert link.startswith("https://mb.example.com/reset-password#token=")
     token = link.split("token=")[1]
     assert client.post("/auth/reset",
                        json={"token": token,
                              "password": "mailedpass1"}).status_code == 200
+
+
+def test_reset_endpoints_reject_malformed_json(client):
+    # public endpoints must 422 on garbage, never 500
+    for path in ("/auth/forgot", "/auth/reset", "/auth/reset/validate"):
+        r = client.post(path, content=b"{not json",
+                        headers={"Content-Type": "application/json"})
+        assert r.status_code == 422, (path, r.status_code)
+        r = client.post(path, json=["not", "an", "object"])
+        assert r.status_code == 422, (path, r.status_code)
+
+
+def test_validate_is_post_so_token_never_hits_a_query_string(client):
+    _add_member(client, "dev@example.com", "engineer")
+    link = client.post("/api/users/dev@example.com/reset-link") \
+        .json()["reset_link"]
+    # the reset link carries the token in the FRAGMENT, not the query
+    assert "/reset-password#token=" in link and "?token=" not in link
+    token = link.split("token=")[1]
+    # validation happens over POST with the token in the body
+    assert client.post("/auth/reset/validate",
+                       json={"token": token}).json()["valid"]
+    # the old GET-with-query form is gone (would have logged the secret)
+    assert client.get("/auth/reset/validate",
+                      params={"token": token}).status_code == 405
+
+
+class _NoSendSMTP(_FakeSMTP):
+    pass
+
+
+def test_forgot_never_builds_email_link_from_host_header(client, monkeypatch):
+    """Host-header poisoning guard: an unauthenticated /auth/forgot must not
+    email a link whose host comes from the (spoofable) Host header."""
+    import smtplib
+    monkeypatch.setenv("METABRIDGE_SMTP_HOST", "mail.example.com")
+    monkeypatch.delenv("METABRIDGE_PUBLIC_URL", raising=False)
+    monkeypatch.setattr(smtplib, "SMTP", _FakeSMTP)
+    _FakeSMTP.sent = []
+    _add_member(client, "dev@example.com", "engineer")
+
+    # attacker spoofs the Host header
+    r = client.post("/auth/forgot", json={"email": "dev@example.com"},
+                    headers={"Host": "evil.attacker.example"})
+    assert r.status_code == 200
+    # with no configured public URL we refuse to email a Host-derived link
+    # and fall back to admin-notification delivery instead
+    assert r.json()["delivery"] == "admin"
+    time.sleep(0.3)
+    assert _FakeSMTP.sent == []          # nothing emailed to a spoofed host
+
+
+def test_forgot_email_link_uses_configured_public_url_not_host(client,
+                                                               monkeypatch):
+    import smtplib
+    monkeypatch.setenv("METABRIDGE_SMTP_HOST", "mail.example.com")
+    monkeypatch.setenv("METABRIDGE_PUBLIC_URL", "https://mb.example.com")
+    monkeypatch.setattr(smtplib, "SMTP", _FakeSMTP)
+    _FakeSMTP.sent = []
+    _add_member(client, "dev@example.com", "engineer")
+
+    r = client.post("/auth/forgot", json={"email": "dev@example.com"},
+                    headers={"Host": "evil.attacker.example"})
+    assert r.status_code == 200 and r.json()["delivery"] == "email"
+    deadline = time.time() + 5
+    while not _FakeSMTP.sent and time.time() < deadline:
+        time.sleep(0.05)
+    body = _FakeSMTP.sent[0].get_content()
+    assert "https://mb.example.com/reset-password" in body
+    assert "evil.attacker.example" not in body
 
 
 def test_cli_reset_link_mints_usable_token(client):
@@ -267,10 +337,10 @@ def test_cli_reset_link_mints_usable_token(client):
                                        "--base-url", "http://mb.local"])
     assert res.exit_code == 0
     link = [ln for ln in res.output.splitlines()
-            if "reset-password?token=" in ln][0].strip()
+            if "reset-password#token=" in ln][0].strip()
     token = link.split("token=")[1]
-    assert client.get("/auth/reset/validate",
-                      params={"token": token}).json()["valid"]
+    assert client.post("/auth/reset/validate",
+                       json={"token": token}).json()["valid"]
     res = CliRunner().invoke(cli.app, ["reset-link", "ghost@example.com",
                                        "--data-dir", str(client._data_dir)])
     assert res.exit_code == 1

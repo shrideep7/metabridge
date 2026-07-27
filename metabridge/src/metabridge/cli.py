@@ -1220,7 +1220,9 @@ def reset_link_cmd(
             ).rstrip("/") or "http://<your-metabridge-host>"
     typer.secho("One-time reset link (valid %d minutes):"
                 % (RESET_TOKEN_TTL_SECONDS // 60), fg=typer.colors.GREEN)
-    typer.echo("  %s/reset-password?token=%s" % (root, token))
+    # token in the fragment (#), which browsers never send to the server,
+    # so it stays out of access logs — matches the web mint endpoint
+    typer.echo("  %s/reset-password#token=%s" % (root, token))
 
 
 @app.command()

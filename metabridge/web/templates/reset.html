@@ -91,14 +91,30 @@
   <div class="alt">Remembered it? <a href="/login">Sign in</a></div>
 </div></div>
 <script>
-const token = new URLSearchParams(window.location.search).get('token') || '';
+// Token arrives in the URL FRAGMENT (#token=…), which the browser never
+// sends to the server — so the one-time secret stays out of access logs.
+// (A legacy ?token= query is still honored for any link already mailed.)
+function readToken() {
+  const h = (window.location.hash || '').replace(/^#/, '');
+  const fromHash = new URLSearchParams(h).get('token');
+  if (fromHash) return fromHash;
+  return new URLSearchParams(window.location.search).get('token') || '';
+}
+const token = readToken();
+// drop the secret from the address bar so it isn't shoulder-surfed or kept
+// in history once we've read it
+if (window.history && window.location.hash) {
+  history.replaceState(null, '', window.location.pathname);
+}
 const form = document.getElementById('f'), sub = document.getElementById('subtitle');
 const linkErr = document.getElementById('linkErr');
 
 async function validate() {
   if (!token) { sub.style.display = 'none'; linkErr.style.display = 'block'; return; }
   try {
-    const r = await fetch('/auth/reset/validate?token=' + encodeURIComponent(token));
+    const r = await fetch('/auth/reset/validate', {method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({token: token})});
     const d = await r.json();
     if (!d.valid) throw new Error('invalid');
     sub.textContent = 'Resetting the password for ' + (d.account || 'your account') + '.';
