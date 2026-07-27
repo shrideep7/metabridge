@@ -1979,7 +1979,7 @@ function aiDirtyCheck() {
   $('#aiSave').disabled = !dirty; $('#aiDirty').hidden = !dirty;
   // clear a lingering "✓ Saved" note once the user starts editing again
   const err = $('#aiErr');
-  if (dirty && err.style.color === 'rgb(30, 132, 73)') err.style.display = 'none';
+  if (dirty && err.dataset.ok) { err.style.display = 'none'; delete err.dataset.ok; }
 }
 function aiSelectProv(p) {
   document.querySelectorAll('.prov').forEach(b =>
@@ -2090,11 +2090,13 @@ $('#aiSave').onclick = async () => {
     delete btn.dataset.saving; btn.textContent = label;
     aiSnapshot = aiState(); aiDirtyCheck();  // now not dirty -> button disabled = "saved"
     renderAiStatus();
-    err.style.color = '#1e8449'; err.textContent = '✓ Configuration saved.'; err.style.display = 'block';
+    err.style.color = '#1e8449'; err.dataset.ok = '1';
+    err.textContent = '✓ Configuration saved.'; err.style.display = 'block';
   } catch (e) {
     // validation (422) or API/network error — keep the edits, allow retry
     delete btn.dataset.saving; btn.textContent = label;
-    err.style.color = ''; err.textContent = e.message; err.style.display = 'block';
+    err.style.color = ''; delete err.dataset.ok;
+    err.textContent = e.message; err.style.display = 'block';
     aiDirtyCheck();                          // still dirty -> Save re-enabled
   }
 };

@@ -3839,12 +3839,20 @@ async def autofix_apply(job_id: str, request: Request):
         raise HTTPException(500, "Auto-fix failed: %s — %s. Your existing "
                             "output is unchanged."
                             % (type(e).__name__, str(e)[:300]))
-    # atomic swap: rename old aside, move new into place, drop the old
+    # atomic swap: rename old aside, move new into place, drop the old. If the
+    # move fails, restore the old output so the job is never left with none.
     backup = job_dir / "output.prev"
     shutil.rmtree(backup, ignore_errors=True)
     if out_dir.exists():
         out_dir.rename(backup)
-    work.rename(out_dir)
+    try:
+        work.rename(out_dir)
+    except OSError:
+        if backup.exists() and not out_dir.exists():
+            backup.rename(out_dir)          # roll back to the prior output
+        shutil.rmtree(work, ignore_errors=True)
+        raise HTTPException(500, "Auto-fix could not be finalized; your "
+                            "existing output was restored.")
     shutil.rmtree(backup, ignore_errors=True)
 
     af = new_report.get("autofix") or {}
