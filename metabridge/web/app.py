@@ -38,14 +38,85 @@ app = FastAPI(
 _STATIC = Path(__file__).parent / "static"
 app.mount("/static", StaticFiles(directory=str(_STATIC)), name="static")
 
-# Commercial control-plane admin (separate plane; own key auth; fails closed
-# when CONTROLPLANE_ADMIN_KEY is unset). Mounted here so a single deployable
-# serves both, but it shares no auth/state with the product data plane.
-try:
-    from .commercial_app import commercial_app as _commercial_app
-    app.mount("/commercial", _commercial_app)
-except Exception:  # pragma: no cover - control plane extras not installed
-    pass
+# Commercial control-plane admin — a SEPARATE plane with its OWN key auth and
+# its OWN datastore (CONTROLPLANE_DATABASE_URL, default controlplane.db); it
+# shares no auth or state with the product data plane. Mounting is EXPLICIT and
+# every outcome is observable — disabled, misconfigured, or ready — instead of
+# a broad import failure being silently swallowed (which left /commercial
+# simply absent with no way to tell why).
+_COMMERCIAL_STATUS = {"enabled": False, "ready": False,
+                      "detail": "Commercial Admin is not enabled."}
+
+
+def _commercial_enabled() -> bool:
+    return os.environ.get("METABRIDGE_COMMERCIAL_ADMIN", "").strip().lower() \
+        in ("1", "true", "yes", "on", "enabled")
+
+
+def _stub_commercial(status_code: int, payload: dict):
+    """A tiny stand-in mounted at /commercial when the real admin can't run,
+    so callers get a clear, actionable response (and a /health) instead of a
+    bare 404 from an absent mount."""
+    from fastapi import FastAPI as _F
+    from fastapi.responses import JSONResponse as _J
+    stub = _F(title="MetaBridge Commercial Admin (unavailable)")
+
+    @stub.get("/health")
+    def _health():  # health is always reachable, even when disabled
+        return payload
+
+    @stub.api_route("/{rest:path}",
+                    methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
+    def _all(rest: str):
+        return _J(payload, status_code=status_code)
+
+    return stub
+
+
+def _mount_commercial() -> None:
+    global _COMMERCIAL_STATUS
+    if not _commercial_enabled():
+        _COMMERCIAL_STATUS = {
+            "enabled": False, "ready": False,
+            "detail": "Commercial Admin is not enabled. Set "
+                      "METABRIDGE_COMMERCIAL_ADMIN=1 to enable it."}
+        app.mount("/commercial", _stub_commercial(
+            404, {"error": "commercial_admin_disabled", **_COMMERCIAL_STATUS}))
+        return
+    try:
+        from .commercial_app import commercial_app as _capp
+    except Exception as e:  # missing 'commercial' extra / import error
+        _COMMERCIAL_STATUS = {
+            "enabled": True, "ready": False,
+            "detail": "Commercial Admin is enabled but its dependencies are "
+                      "not installed (%s: %s). Install the commercial extra: "
+                      "pip install 'metabridge[commercial]'."
+                      % (type(e).__name__, str(e)[:200])}
+        app.mount("/commercial", _stub_commercial(
+            503, {"error": "commercial_admin_unavailable",
+                  **_COMMERCIAL_STATUS}))
+        return
+    # Apply the control-plane migrations (idempotent) so an enabled instance is
+    # ready out of the box; a DB/migration problem is surfaced, not hidden.
+    try:
+        from metabridge_control import db as _cpdb
+        from metabridge_control.migrations import runner as _cpmig
+        _cpmig.migrate(_cpdb.get_engine())
+    except Exception as e:
+        _COMMERCIAL_STATUS = {
+            "enabled": True, "ready": False,
+            "detail": "Commercial Admin is enabled but its database/migrations "
+                      "are not ready (%s: %s). Check CONTROLPLANE_DATABASE_URL "
+                      "and re-run migrations." % (type(e).__name__, str(e)[:200])}
+        app.mount("/commercial", _stub_commercial(
+            503, {"error": "commercial_admin_unavailable",
+                  **_COMMERCIAL_STATUS}))
+        return
+    _COMMERCIAL_STATUS = {"enabled": True, "ready": True, "detail": "ready"}
+    app.mount("/commercial", _capp)
+
+
+_mount_commercial()
 
 from .auth import (  # noqa: E402
     API_KEY_PERMISSIONS, COOKIE_NAME, RESET_TOKEN_TTL_SECONDS,
@@ -2621,6 +2692,15 @@ def system_manifest():
 @app.get("/api/system/health")
 def system_health():
     return _os().health()
+
+
+@app.get("/api/system/commercial")
+def system_commercial_status():
+    """Product-side view of whether Commercial Admin is enabled and reachable —
+    used to decide whether to surface its console navigation entry. Reports
+    status only; it never bridges the product session into the commercial
+    plane (which keeps its own key auth)."""
+    return {**_COMMERCIAL_STATUS, "url": "/commercial/"}
 
 
 @app.get("/api/system/flags")
