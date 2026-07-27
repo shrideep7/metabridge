@@ -93,6 +93,8 @@ def build_report(pipeline: Pipeline, target_format: str) -> dict:
         "tool": "MetaBridge AI",
         "generated_at": datetime.datetime.now().isoformat(timespec="seconds"),
         "project": pipeline.name,
+        "migration_id": pipeline.metadata.get("migration_id", ""),
+        "source_snapshot": pipeline.metadata.get("source_snapshot", ""),
         "source_format": pipeline.source_format,
         "target_format": target_format,
         "summary": {

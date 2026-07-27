@@ -1,7 +1,9 @@
 """Conversion engine: detect format, parse to IR, generate target, write report."""
 from __future__ import annotations
 
+import hashlib
 import json
+import uuid
 from pathlib import Path
 from typing import Optional
 
@@ -342,6 +344,11 @@ def convert(input_path: str, output_dir: str, source_format: str = "",
     pipeline.metadata["target_platform"] = target_format
     if detection is not None:
         pipeline.metadata["source_detection"] = detection
+    # Traceability: bind every report to THIS job and an immutable fingerprint
+    # of the exact input it was generated from — so a report can never be
+    # confused with (or silently reuse) another project's run.
+    pipeline.metadata["migration_id"] = migration_id or uuid.uuid4().hex[:12]
+    pipeline.metadata["source_snapshot"] = _input_snapshot(input_path, pipeline)
     if models or overrides:
         apply_plan(pipeline, models, overrides)
 
@@ -441,6 +448,27 @@ def analyze(input_path: str, source_format: str = "", dialect: str = "") -> dict
     pipeline = parse_input(input_path, source_format, dialect)
     from .report.reporter import build_report
     return build_report(pipeline, target_format="(analysis only)")
+
+
+def _input_snapshot(input_path: str, pipeline: Pipeline) -> str:
+    """Immutable fingerprint of the conversion input: a content hash over the
+    input file names+sizes plus IR counts. Embedded in reports so each report
+    is provably tied to the exact project/version it was generated from."""
+    h = hashlib.sha256()
+    p = Path(input_path)
+    files = 0
+    items = sorted(p.rglob("*")) if p.is_dir() else [p]
+    for f in items:
+        if f.is_file():
+            try:
+                h.update(f.name.encode("utf-8", "ignore"))
+                h.update(str(f.stat().st_size).encode())
+                files += 1
+            except OSError:
+                continue
+    return "sha256:%s (%d file(s), %d pipeline(s), %d source table(s))" % (
+        h.hexdigest()[:12], files, len(pipeline.mappings),
+        len(pipeline.sources))
 
 
 def _safe(name: str) -> str:

@@ -322,6 +322,8 @@ def build_migration_report(pipeline: Pipeline, output_dir: str,
         "generated_at": datetime.datetime.now().isoformat(
             timespec="seconds"),
         "project": pipeline.name,
+        "migration_id": pipeline.metadata.get("migration_id", ""),
+        "source_snapshot": pipeline.metadata.get("source_snapshot", ""),
         "sections_order": list(SECTIONS),
         "sections": {
             "executive_summary": executive,
