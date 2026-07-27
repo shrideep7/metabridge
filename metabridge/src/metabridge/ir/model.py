@@ -81,10 +81,11 @@ class Port:
     # that computes this port. Empty string = pass-through.
     expression: str = ""
     direction: str = "INPUT_OUTPUT"  # INPUT | OUTPUT | INPUT_OUTPUT | VARIABLE
-    # Whether `datatype` came from a KNOWN, explicitly-declared source type
-    # (vs. the "string" fallback used when a type is missing/unknown). The
-    # fallback stays usable for processing, but assessment must record it as
-    # a data-quality penalty rather than treat it as a genuine string column.
+    # Whether a source type was actually DECLARED for this column (any
+    # non-empty type, even one outside the canonical map like VARIANT/UUID),
+    # vs. the "string" fallback used when the type is missing/undefined. The
+    # fallback stays usable for processing, but assessment records a missing
+    # type as a data-quality penalty rather than a genuine string column.
     type_declared: bool = True
 
 
@@ -254,12 +255,3 @@ _SQL_TO_CANONICAL = {
 def canonical_type(sql_type: str) -> str:
     base = sql_type.strip().lower().split("(")[0].strip()
     return _SQL_TO_CANONICAL.get(base, "string")
-
-
-def is_known_type(sql_type: str) -> bool:
-    """True when `sql_type` is a non-empty type we can map to a canonical
-    type. False for a missing/blank type or one that only survives via the
-    "string" fallback — the signal assessment uses to penalize untyped
-    schemas instead of silently crediting them as string columns."""
-    base = (sql_type or "").strip().lower().split("(")[0].strip()
-    return bool(base) and base in _SQL_TO_CANONICAL

@@ -25,7 +25,7 @@ import yaml
 
 from ..ir.model import (
     IssueSeverity, Link, LoadStrategy, Mapping, Pipeline, Port, SourceTable,
-    Transformation, TransformationType, canonical_type, is_known_type,
+    Transformation, TransformationType, canonical_type,
 )
 from ..sqlx.decompose import decompose_model
 
@@ -187,7 +187,7 @@ def _parse_yaml_docs(root: Path, project: dict
             for tbl in src.get("tables", []) or []:
                 cols = [Port(name=c["name"],
                              datatype=canonical_type(str(c.get("data_type", "string"))),
-                             type_declared=is_known_type(str(c.get("data_type", ""))))
+                             type_declared=bool(str(c.get("data_type", "")).strip()))
                         for c in tbl.get("columns", []) or []]
                 st = SourceTable(name=tbl.get("identifier", tbl["name"]),
                                  schema=schema, database=src.get("database", ""),
@@ -200,7 +200,7 @@ def _parse_yaml_docs(root: Path, project: dict
             for c in mdl.get("columns", []) or []:
                 cols.append(Port(name=c["name"],
                                  datatype=canonical_type(str(c.get("data_type", "string"))),
-                                 type_declared=is_known_type(str(c.get("data_type", "")))))
+                                 type_declared=bool(str(c.get("data_type", "")).strip())))
                 for t in c.get("tests", []) or c.get("data_tests", []) or []:
                     tname = t if isinstance(t, str) else list(t.keys())[0]
                     tests.setdefault(mdl["name"], []).append("%s(%s)" % (tname, c["name"]))

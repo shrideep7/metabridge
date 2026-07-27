@@ -79,9 +79,13 @@ def _sev_counts(pipeline: Pipeline) -> Dict[str, int]:
 UNASSIGNED_GROUP = "Unassigned"
 _GROUP_META_KEYS = ("application", "app", "module", "subject_area",
                     "project", "domain")
-# a valid group identifier: starts alphanumeric; only word chars, space,
-# dot and hyphen after that — no ':', no quotes, no comment/SQL punctuation
-_VALID_GROUP_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 ._-]*$")
+# a valid group identifier. The real guard against comment/SQL fragments is
+# the structural blacklist + comment-lead check below; this allowlist is kept
+# permissive so legitimate names survive — Unicode word chars (café, マート),
+# and common punctuation (R&D, Sales+Marketing, Finance, EU, team@core,
+# _staging, 50% Load). Structural chars (':' / \\ | quotes etc.) are still
+# rejected by the blacklist, never reaching this pattern.
+_VALID_GROUP_RE = re.compile(r"^[\w&+%-][\w &+,@.%-]*$", re.UNICODE)
 _COMMENT_LEAD = ("--", "#", "/*", "*", "//")
 
 

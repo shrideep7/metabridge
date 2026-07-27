@@ -1458,6 +1458,10 @@ async def ai_readiness_run(request: Request):
             except PermissionError as e:
                 raise HTTPException(409, str(e))
             result = introspect(row["connector"], params)
+            if not result.get("ok"):
+                raise HTTPException(422, "Could not introspect the "
+                                    "connection: %s"
+                                    % (result.get("error") or "unknown"))
             root = job_dir / "input"
             root.mkdir(parents=True, exist_ok=True)
             (root / "tables.yml").write_text(
