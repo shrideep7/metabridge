@@ -838,6 +838,92 @@ def _job_dir(job_id: str) -> Path:
     return d
 
 
+def _safe_name(name: str) -> str:
+    """Filename-safe slug (used for download filenames)."""
+    slug = "".join(c if c.isalnum() or c in "-_" else "_"
+                   for c in (name or "").strip())
+    return slug.strip("_")[:48]
+
+
+# Report artifacts a job can expose for in-browser VIEWING, in the order we
+# prefer when resolving the single "View report" link. Anything present in a
+# job's output beyond these is still downloadable as an artifact.
+_REPORT_HTML = (
+    ("migration_report.html", "Migration report"),
+    ("conversion_report.html", "Conversion report"),
+    ("governance_report.html", "Governance report"),
+    ("pipeline_documentation.html", "Pipeline documentation"),
+)
+_REPORT_OTHER = (
+    ("migration_report.json", "Migration report (JSON)"),
+    ("conversion_report.json", "Conversion report (JSON)"),
+    ("governance_report.json", "Governance report (JSON)"),
+    ("assessment.json", "Assessment (JSON)"),
+    ("ai_readiness.json", "AI-readiness (JSON)"),
+    ("orchestration_intelligence.json", "Orchestration intelligence (JSON)"),
+)
+_MEDIA_BY_SUFFIX = {
+    ".html": "text/html; charset=utf-8", ".json": "application/json",
+    ".md": "text/markdown; charset=utf-8", ".pdf": "application/pdf",
+    ".csv": "text/csv", ".xml": "application/xml", ".txt": "text/plain",
+    ".sql": "text/plain; charset=utf-8", ".yml": "text/yaml",
+    ".yaml": "text/yaml", ".sh": "text/x-shellscript",
+    ".docx": "application/vnd.openxmlformats-officedocument."
+             "wordprocessingml.document",
+    ".xlsx": "application/vnd.openxmlformats-officedocument."
+             "spreadsheetml.sheet",
+    ".pptx": "application/vnd.openxmlformats-officedocument."
+             "presentationml.presentation",
+}
+
+
+def _job_artifacts(job_id: str, job_dir: Path) -> list:
+    """Every file in THIS job's output, as job-scoped download links. Never
+    reaches outside the job's own output directory."""
+    out = job_dir / "output"
+    from urllib.parse import quote
+    arts = []
+    if out.exists():
+        for f in sorted(out.rglob("*")):
+            if f.is_file():
+                rel = f.relative_to(out).as_posix()
+                try:
+                    size = f.stat().st_size
+                except OSError:
+                    size = 0
+                arts.append({
+                    "path": rel, "size": size,
+                    "url": "/api/jobs/%s/artifact?path=%s"
+                           % (job_id, quote(rel))})
+    return arts
+
+
+def _job_reports(job_id: str, job_dir: Path) -> list:
+    """Viewable/downloadable report links that ACTUALLY exist for this job."""
+    out = job_dir / "output"
+    reports = []
+    for name, label in _REPORT_HTML:
+        if (out / name).exists():
+            reports.append({"label": label, "format": "html",
+                            "url": "/api/jobs/%s/artifact?path=%s&inline=1"
+                                   % (job_id, name)})
+    for name, label in _REPORT_OTHER:
+        if (out / name).exists():
+            reports.append({"label": label,
+                            "format": name.rsplit(".", 1)[-1],
+                            "url": "/api/jobs/%s/artifact?path=%s"
+                                   % (job_id, name)})
+    return reports
+
+
+def _primary_report_url(job_id: str, job_dir: Path) -> str:
+    out = job_dir / "output"
+    for name, _label in _REPORT_HTML:
+        if (out / name).exists():
+            return "/api/jobs/%s/report" % job_id
+    return ""
+
+
 @app.get("/api/jobs")
 def list_jobs():
     jobs = []
@@ -852,12 +938,35 @@ def list_jobs():
 
 @app.get("/api/jobs/{job_id}")
 def get_job(job_id: str):
-    """Current job state — used by the console's refresh button."""
-    meta = json.loads((_job_dir(job_id) / "meta.json").read_text())
-    if meta.get("status") == "done":
-        meta["report_url"] = "/api/jobs/%s/report" % job_id
-        meta["download_url"] = "/api/jobs/%s/download" % job_id
+    """Current job state + job-scoped artifacts and report links — powers the
+    console refresh button AND the job-detail view."""
+    job_dir = _job_dir(job_id)
+    meta = json.loads((job_dir / "meta.json").read_text())
+    meta["artifacts"] = _job_artifacts(job_id, job_dir)
+    meta["reports"] = _job_reports(job_id, job_dir)
+    meta["download_url"] = "/api/jobs/%s/download" % job_id
+    meta["report_url"] = _primary_report_url(job_id, job_dir)
     return meta
+
+
+@app.get("/api/jobs/{job_id}/artifact")
+def job_artifact(job_id: str, path: str, inline: bool = False):
+    """Serve ONE file from this job's output with the correct content type.
+    The path is resolved strictly inside the job's own output directory, so it
+    can neither traverse out (../) nor reach another job's artifacts."""
+    from fastapi.responses import FileResponse
+    out = (_job_dir(job_id) / "output").resolve()
+    target = (out / path).resolve()
+    if os.path.commonpath([str(out), str(target)]) != str(out) \
+            or not target.is_file():
+        raise HTTPException(404, "Artifact not found in this job")
+    media = _MEDIA_BY_SUFFIX.get(target.suffix.lower(),
+                                 "application/octet-stream")
+    disp = "inline" if inline else "attachment"
+    return FileResponse(
+        str(target), media_type=media,
+        headers={"Content-Disposition": '%s; filename="%s"'
+                 % (disp, target.name)})
 
 
 @app.delete("/api/jobs/{job_id}")
@@ -3497,13 +3606,45 @@ def get_migration_report(migration_id: str, format: str = "json"):
     return json.loads(f.read_text())
 
 
+def _report_not_ready_html(job_id: str, meta: dict) -> str:
+    """A clear, human-readable 'no report' page — never a blank page or a raw
+    JSON error — with the job's own download link so the user isn't stranded."""
+    import html as _html
+    kind = _html.escape(str(meta.get("kind", "job")))
+    project = _html.escape(str(meta.get("project", "") or job_id))
+    status = _html.escape(str(meta.get("status", "")))
+    return (
+        "<!doctype html><html><head><meta charset='utf-8'>"
+        "<title>No viewable report</title><style>"
+        "body{font:15px/1.55 -apple-system,Segoe UI,Roboto,sans-serif;"
+        "color:#1e2330;max-width:640px;margin:64px auto;padding:0 20px}"
+        "h1{font-size:19px}.b{background:#f4f6fb;border:1px solid #e3e8f0;"
+        "border-radius:10px;padding:16px 18px;color:#445}"
+        "a{color:#2f7bbd}</style></head><body>"
+        "<h1>No viewable report for this %s job</h1>"
+        "<div class='b'><p>Project <b>%s</b> · status <b>%s</b>.</p>"
+        "<p>This job did not produce an HTML report to display. Its generated "
+        "artifacts (if any) are still available:</p>"
+        "<p><a href='/api/jobs/%s/download'>Download all artifacts (.zip)</a>"
+        "</p></div></body></html>"
+        % (kind, project, status, _html.escape(job_id)))
+
+
 @app.get("/api/jobs/{job_id}/report", response_class=HTMLResponse)
-def job_report(job_id: str) -> str:
-    for name in ("conversion_report.html", "governance_report.html"):
-        f = _job_dir(job_id) / "output" / name
+def job_report(job_id: str):
+    job_dir = _job_dir(job_id)
+    out = job_dir / "output"
+    for name, _label in _REPORT_HTML:
+        f = out / name
         if f.exists():
-            return f.read_text()
-    raise HTTPException(404, "Report not found")
+            return HTMLResponse(f.read_text())
+    # No HTML report for this job kind — a clear 'not generated' state
+    # (styled HTML), never a raw 404/blank page.
+    try:
+        meta = json.loads((job_dir / "meta.json").read_text())
+    except (ValueError, OSError):
+        meta = {}
+    return HTMLResponse(_report_not_ready_html(job_id, meta), status_code=200)
 
 
 @app.get("/api/jobs/{job_id}/report.json")
@@ -3534,11 +3675,22 @@ def job_govreport(job_id: str) -> str:
 
 @app.get("/api/jobs/{job_id}/download")
 def job_download(job_id: str):
-    out_dir = _job_dir(job_id) / "output"
+    # Built fresh from THIS job's own output directory on every request — no
+    # static archive, no reuse of another job's path. Scoped by job_id, which
+    # _job_dir validates (isalnum) so it cannot traverse or reach another job.
+    job_dir = _job_dir(job_id)
+    out_dir = job_dir / "output"
+    slug = "job"
+    try:
+        meta = json.loads((job_dir / "meta.json").read_text())
+        slug = _safe_name(str(meta.get("project", "") or meta.get("kind", ""))) \
+            or "job"
+    except (ValueError, OSError):
+        pass
+    fname = "metabridge_%s_%s.zip" % (slug, job_id)
     return StreamingResponse(
         _zip_dir(out_dir), media_type="application/zip",
-        headers={"Content-Disposition":
-                 'attachment; filename="metabridge_%s.zip"' % job_id})
+        headers={"Content-Disposition": 'attachment; filename="%s"' % fname})
 
 
 # ---------------------------------------------------------------------------

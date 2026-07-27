@@ -2446,6 +2446,73 @@ async function openJobFindings(jobId, filter) {
   showFindings(report, filter || null);
 }
 
+function fmtBytes(n) {
+  n = +n || 0;
+  if (n < 1024) return n + ' B';
+  if (n < 1048576) return (n / 1024).toFixed(1) + ' KB';
+  return (n / 1048576).toFixed(1) + ' MB';
+}
+
+// Job-detail view — an overlay, so the underlying reports/jobs list (and its
+// pagination/filter) is preserved. Shows status, metadata, generated
+// artifacts (each a job-scoped download link), report links and actions.
+async function openJobDetail(jobId) {
+  $('#modalBody').innerHTML = '<div style="color:#667;font-size:13px">Loading job…</div>';
+  $('#modalBg').style.display = 'flex';
+  let j;
+  try { j = await api('/api/jobs/' + jobId); }
+  catch (e) {
+    $('#modalBody').innerHTML = '<h3 style="margin:0 0 8px">Job</h3>'
+      + '<div class="err" style="display:block">' + esc(e.message) + '</div>'
+      + '<button class="secondary" style="margin-top:14px" onclick="closeModal()">Close</button>';
+    return;
+  }
+  const st = j.status === 'done' ? badge('done', '#1e8449')
+    : j.status === 'failed' ? badge('failed', '#c0392b')
+    : badge(j.status || 'running', '#c77d0a');
+  const rows = [];
+  const add = (k, v) => { if (v !== undefined && v !== '' && v != null) rows.push(
+    '<tr><td style="color:#889;padding:2px 14px 2px 0;white-space:nowrap;vertical-align:top">'
+    + esc(k) + '</td><td>' + v + '</td></tr>'); };
+  add('Job ID', '<code>' + esc(j.id) + '</code>');
+  add('Type', esc(REPORT_KINDS[j.kind] || j.kind));
+  add('Project', esc(j.project || '—'));
+  add('Status', st + (j.autofix ? ' ' + badge('⚡ fixed', '#2f7bbd') : ''));
+  add('Created', esc((j.created || '').replace('T', ' ')));
+  add('Finished', esc((j.finished || '').replace('T', ' ')));
+  add('Source format', j.source_format ? esc(j.source_format) : '');
+  add('Target format', j.target_format ? esc(j.target_format) : '');
+  const s = j.summary || {};
+  if (s.objects_total != null) add('Objects', s.objects_total);
+  if (j.error) add('Error', '<span style="color:var(--red)">' + esc(j.error) + '</span>');
+  const reports = (j.reports || []).length
+    ? (j.reports || []).map(r => '<a href="' + withKey(r.url) + '" target="_blank" style="color:var(--accent)">'
+        + esc(r.label) + '</a>').join(' &middot; ')
+    : '<span style="color:#889">No report artifacts were generated for this job.</span>';
+  const arts = (j.artifacts || []).length
+    ? (j.artifacts || []).map(a => '<tr><td style="padding:2px 0"><a href="' + withKey(a.url)
+        + '" style="color:var(--accent);font-family:monospace;font-size:12.5px">' + esc(a.path) + '</a></td>'
+        + '<td style="color:#889;text-align:right;white-space:nowrap">' + fmtBytes(a.size) + '</td></tr>').join('')
+    : '<tr><td colspan=2 style="color:#889">No artifacts generated.</td></tr>';
+  let actions = '<a class="linkbtn" href="' + withKey('/api/jobs/' + j.id + '/download')
+    + '" style="display:inline-block;margin:0 10px 0 0;color:var(--accent);font-weight:600">Download all (.zip)</a>';
+  if (j.report_url) actions += '<a class="linkbtn" href="' + withKey(j.report_url)
+    + '" target="_blank" style="display:inline-block;margin:0 10px 0 0;color:var(--accent);font-weight:600">View report</a>';
+  $('#modalBody').innerHTML =
+    '<h3 style="margin:0 0 10px;font-size:17px">Job detail</h3>'
+    + '<table style="border-collapse:collapse;font-size:13.5px;margin-bottom:14px">' + rows.join('') + '</table>'
+    + '<div style="font-size:11.5px;letter-spacing:.5px;color:#889;font-weight:600;margin-bottom:4px">REPORTS</div>'
+    + '<div style="font-size:13.5px;margin-bottom:14px">' + reports + '</div>'
+    + '<div style="font-size:11.5px;letter-spacing:.5px;color:#889;font-weight:600;margin-bottom:4px">GENERATED ARTIFACTS</div>'
+    + '<table style="border-collapse:collapse;width:100%;font-size:13px;margin-bottom:14px">' + arts + '</table>'
+    + '<div style="font-size:11.5px;letter-spacing:.5px;color:#889;font-weight:600;margin-bottom:6px">ACTIONS</div>'
+    + '<div style="margin-bottom:16px">' + actions
+    + (j.kind === 'convert' ? '<a class="jfd" style="color:var(--accent);cursor:pointer;font-weight:600">Findings</a>' : '')
+    + '</div><button class="secondary" onclick="closeModal()">Close</button>';
+  const jf = $('.jfd');
+  if (jf) jf.onclick = () => openJobFindings(j.id).catch(e => alert(e.message));
+}
+
 /* ---------------- auto-fix: approve & apply ---------------- */
 async function openAutofix(jobId) {
   $('#modalBody').innerHTML = '<h2 style="font-size:17px">Auto-fix</h2><div style="color:#667;font-size:13px;margin-top:8px">Scanning the manual queue for automatic fixes…</div>';
@@ -2621,13 +2688,17 @@ async function loadDashboard() {
       + (j.autofix ? ' ' + badge('⚡ fixed','#2f7bbd') : '');
     const links = j.status === 'done'
       ? '<a class="jf" data-id="' + j.id + '" style="color:var(--accent);cursor:pointer">findings</a> · '
-        + '<a href="' + withKey('/api/jobs/'+j.id+'/report') + '" target="_blank" style="color:var(--accent)">report</a> · '
+        + '<a class="jd" data-id="' + j.id + '" style="color:var(--accent);cursor:pointer">detail</a> · '
         + '<a href="' + withKey('/api/jobs/'+j.id+'/download') + '" style="color:var(--accent)">zip</a>' : '';
-    return '<tr><td>' + (j.created||'').replace('T',' ') + '</td><td>' + j.kind + '</td><td><b>' + (j.project||'—') + '</b></td><td>' + st + '</td><td>' + figures + '</td><td>' + links + '</td></tr>';
+    return '<tr><td>' + (j.created||'').replace('T',' ') + '</td><td>' + j.kind
+      + '</td><td><a class="jd" data-id="' + esc(j.id) + '" title="Open job detail" style="color:var(--accent);cursor:pointer;font-weight:600">'
+      + esc(j.project||'—') + '</a></td><td>' + st + '</td><td>' + figures + '</td><td>' + links + '</td></tr>';
   }).join('');
   $('#jobTable').innerHTML = '<tr><th>When</th><th>Type</th><th>Project</th><th>Status</th><th>Key figures</th><th></th></tr>' + (rows || '<tr><td colspan=6 style="color:#889">No jobs yet — run a conversion, scan, or scaffold.</td></tr>');
   $('#jobTable').querySelectorAll('.jf').forEach(a =>
     a.onclick = () => openJobFindings(a.dataset.id).catch(e => alert(e.message)));
+  $('#jobTable').querySelectorAll('.jd').forEach(a =>
+    a.onclick = () => openJobDetail(a.dataset.id));
 }
 
 /* ---------------- analyze + per-model plan ---------------- */
@@ -5353,14 +5424,22 @@ async function loadReports() {
   gJobsCache = jobs;
   const rows = jobs.filter(j => j.kind !== 'upload').map(j =>
     '<tr><td><b>' + esc(REPORT_KINDS[j.kind] || j.kind) + '</b></td>'
-    + '<td>' + esc(j.project || '—') + '</td><td>' + esc(j.kind) + '</td>'
+    + '<td>' + esc(j.project || '—') + '</td>'
+    + '<td><a class="joblink" data-id="' + esc(j.id) + '" role="link" tabindex="0" '
+      + 'title="Open job detail" style="color:var(--accent);cursor:pointer;font-family:monospace;font-size:12px">'
+      + esc(j.id) + '</a></td>'
     + '<td>' + esc((j.created || '').replace('T', ' ')) + '</td>'
     + '<td>' + statChip(j.status === 'done' ? 'GENERATED' : j.status === 'failed' ? 'FAILED' : 'MODERNIZING') + '</td>'
     + '<td>' + (j.status === 'done'
-      ? '<a href="' + withKey('/api/jobs/' + j.id + '/report') + '" target="_blank" style="color:var(--accent)">View</a> · '
+      ? '<a class="jobopen" data-id="' + esc(j.id) + '" style="color:var(--accent);cursor:pointer">View</a> · '
         + '<a href="' + withKey('/api/jobs/' + j.id + '/download') + '" style="color:var(--accent)">Export</a>' : '') + '</td></tr>').join('');
-  $('#reportsTable').innerHTML = '<tr><th>Report</th><th>Project</th><th>Type</th><th>Generated</th><th>Status</th><th></th></tr>'
+  $('#reportsTable').innerHTML = '<tr><th>Report</th><th>Project</th><th>Job ID</th><th>Generated</th><th>Status</th><th></th></tr>'
     + (rows || '<tr><td colspan=6><div class="empty" style="border:none"><b>No reports yet</b>Reports appear here after analysis, modernization, scaffold and governance runs.</div></td></tr>');
+  // Job IDs and "View" both open the job-detail overlay (list state preserved)
+  $('#reportsTable').querySelectorAll('.joblink, .jobopen').forEach(a => {
+    a.onclick = () => openJobDetail(a.dataset.id);
+    a.onkeydown = ev => { if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); openJobDetail(a.dataset.id); } };
+  });
 }
 
 /* ---------------- Governance extras ---------------- */
