@@ -145,8 +145,15 @@ def apply_fixes(input_path: str, output_dir: str, meta: dict,
                 overrides[fix["model"]] = spec
                 key_info.append("%s -> %s" % (fix["model"], ", ".join(keys)))
 
+    from ..llm.assist import llm_available
+    ai = llm_available()
+
+    # key_fix is deterministic and NEVER depends on LLM availability. When it
+    # detected no key it applied nothing — that's a known no-op up front.
     if "llm_expression" in accepted_groups:
-        use_llm = True
+        use_llm = True   # drive the assist; a missing provider simply resolves nothing
+
+    prior_expr = _count_code(prior_report or {}, "EXPRESSION_UNCONVERTED")
 
     report = run_convert(
         input_path, output_dir,
@@ -154,16 +161,45 @@ def apply_fixes(input_path: str, output_dir: str, meta: dict,
         str(options.get("dialect", "") or ""), llm_assist=use_llm,
         models=options.get("models"), overrides=overrides or None)
 
+    # drafting goes through LLMDrafter, which honours a real provider OR a
+    # test stub — so we never pre-gate on llm_available(); a no-op is detected
+    # from whether drafts were actually written.
     drafts = []
     if "llm_statement" in accepted_groups and stmt_items:
         drafts = _write_drafts(stmt_items[:max_drafts], meta, output_dir)
+
+    new_expr = _count_code(report, "EXPRESSION_UNCONVERTED")
+    expr_resolved = max(0, prior_expr - new_expr) if "llm_expression" in accepted_groups else 0
+
+    # A change was genuinely applied iff a merge key was set, an expression was
+    # actually resolved, or a reviewable draft was written — measured from the
+    # real result, not a pre-check. Anything approved that produced nothing is
+    # reported as a skipped no-op, never as a success.
+    changed = bool(key_info) or expr_resolved > 0 or len(drafts) > 0
+    no_ai = " No AI provider is configured — set one under Settings → AI Runtime." \
+        if not ai else ""
+    skipped: List[dict] = []
+    if "key_fix" in accepted_groups and not key_info:
+        skipped.append({"group": "key_fix",
+                        "reason": "No mergeable key could be detected for the "
+                                  "selected model(s). Set a unique key manually "
+                                  "in the plan, then re-convert."})
+    if "llm_expression" in accepted_groups and expr_resolved == 0:
+        skipped.append({"group": "llm_expression",
+                        "reason": "No unconverted expressions were translated." + no_ai})
+    if "llm_statement" in accepted_groups and not drafts:
+        skipped.append({"group": "llm_statement",
+                        "reason": "No target-code drafts were produced." + no_ai})
 
     report["autofix"] = {
         "applied_groups": accepted_groups,
         "key_overrides": key_info,
         "llm_assist_used": use_llm,
+        "expressions_resolved": expr_resolved,
         "drafts_written": len(drafts),
         "draft_files": drafts[:50],
+        "changed": changed,
+        "skipped": skipped,
         "note": "LLM output is flagged for review — check resolved_by_llm "
                 "findings and every file under manual_drafts/.",
     }
@@ -171,6 +207,18 @@ def apply_fixes(input_path: str, output_dir: str, meta: dict,
     (Path(output_dir) / "conversion_report.json").write_text(
         json.dumps(report, indent=2))
     return report
+
+
+def _count_code(report: dict, code: str) -> int:
+    n = 0
+    for i in report.get("project_issues", []) or []:
+        if i.get("code") == code:
+            n += 1
+    for m in report.get("mappings", []) or []:
+        for i in m.get("issues", []) or []:
+            if i.get("code") == code:
+                n += 1
+    return n
 
 
 def _write_drafts(stmt_items: List[dict], meta: dict, output_dir: str) -> List[str]:

@@ -1975,7 +1975,11 @@ function aiState() {
 function aiDirtyCheck() {
   const dirty = canManageSettings()
     && (aiState() !== aiSnapshot || !!$('#aiKey').value || !!$('#aiToken').value);
+  if ($('#aiSave').dataset.saving) return;   // mid-save: leave button as-is
   $('#aiSave').disabled = !dirty; $('#aiDirty').hidden = !dirty;
+  // clear a lingering "✓ Saved" note once the user starts editing again
+  const err = $('#aiErr');
+  if (dirty && err.style.color === 'rgb(30, 132, 73)') err.style.display = 'none';
 }
 function aiSelectProv(p) {
   document.querySelectorAll('.prov').forEach(b =>
@@ -2065,7 +2069,11 @@ $('#aiModel').oninput = () => {
 };
 ['#aiRegion', '#aiKey', '#aiToken'].forEach(x => { $(x).oninput = aiDirtyCheck; });
 $('#aiSave').onclick = async () => {
-  const err = $('#aiErr'); err.style.display = 'none';
+  const err = $('#aiErr'); err.style.display = 'none'; err.style.color = '';
+  const btn = $('#aiSave');
+  if (btn.dataset.saving) return;            // guard against double-submit
+  const label = btn.textContent;
+  btn.dataset.saving = '1'; btn.disabled = true; btn.textContent = 'Saving…';
   try {
     const d = await api('/api/settings/ai', {method: 'PUT',
       headers: {'Content-Type': 'application/json'},
@@ -2079,9 +2087,16 @@ $('#aiSave').onclick = async () => {
     $('#aiToken').placeholder = d.bedrock_token_set ? 'Saved — leave blank to keep' : '';
     $('#aiModel').value = d.model || '';
     aiModelOptions(d.provider || '', d.model || '');
-    aiSnapshot = aiState(); aiDirtyCheck();
+    delete btn.dataset.saving; btn.textContent = label;
+    aiSnapshot = aiState(); aiDirtyCheck();  // now not dirty -> button disabled = "saved"
     renderAiStatus();
-  } catch (e) { err.textContent = e.message; err.style.display = 'block'; }
+    err.style.color = '#1e8449'; err.textContent = '✓ Configuration saved.'; err.style.display = 'block';
+  } catch (e) {
+    // validation (422) or API/network error — keep the edits, allow retry
+    delete btn.dataset.saving; btn.textContent = label;
+    err.style.color = ''; err.textContent = e.message; err.style.display = 'block';
+    aiDirtyCheck();                          // still dirty -> Save re-enabled
+  }
 };
 function classifyAiFailure(detail) {
   const d = (detail || '').toLowerCase();
@@ -2590,12 +2605,27 @@ async function openAutofix(jobId) {
       const d = await api('/api/jobs/' + jobId + '/autofix',
         {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({groups})});
       const af = d.autofix || {};
+      const skipped = (af.skipped || []).map(s => '<div style="color:#c77d0a">• ' + esc(s.reason) + '</div>').join('');
+      if (af.changed === false) {
+        // A genuine no-op — never claim success. Explain why and offer retry.
+        $('#modalBody').innerHTML = '<h2 style="font-size:17px">No changes applied</h2>'
+          + '<div style="margin:12px 0;font-size:14px;color:#445">The approved option(s) did not produce any change to this job:</div>'
+          + '<div style="margin:8px 0;font-size:13.5px">' + (skipped || '<div style="color:#889">Nothing was applicable.</div>') + '</div>'
+          + '<div style="display:flex;gap:10px;margin-top:14px">'
+          + '<button id="retryFix">Back to options</button>'
+          + '<button class="secondary" id="closeModal3">Close</button></div>';
+        $('#retryFix').onclick = () => openAutofix(jobId);
+        $('#closeModal3').onclick = () => $('#modalBg').style.display = 'none';
+        return;
+      }
       $('#modalBody').innerHTML = '<h2 style="font-size:17px">✓ Fixes applied</h2>'
         + '<div style="margin:12px 0;font-size:14px">'
         + (af.key_overrides || []).map(k => '<div>Merge key set: <b style="font-family:monospace">' + esc(k) + '</b></div>').join('')
-        + (af.llm_assist_used ? '<div>LLM expression translation enabled for the re-run.</div>' : '')
+        + (af.expressions_resolved ? '<div>' + af.expressions_resolved + ' expression(s) translated by Claude (flagged for review).</div>' : '')
         + (af.drafts_written ? '<div>' + af.drafts_written + ' Claude drafts written to <b>manual_drafts/</b> (review required).</div>' : '')
-        + '</div><div class="links">'
+        + '</div>'
+        + (skipped ? '<div style="margin:4px 0 8px;font-size:13px"><b>Not applied:</b>' + skipped + '</div>' : '')
+        + '<div class="links">'
         + '<a href="' + withKey(d.report_url) + '" target="_blank">Open updated report</a>'
         + '<a href="' + withKey(d.download_url) + '">Download updated output</a></div>'
         + '<button class="secondary" id="closeModal3" style="margin-top:16px">Close</button>';
