@@ -839,8 +839,10 @@ def _job_dir(job_id: str) -> Path:
 
 
 def _safe_name(name: str) -> str:
-    """Filename-safe slug (used for download filenames)."""
-    slug = "".join(c if c.isalnum() or c in "-_" else "_"
+    """ASCII filename-safe slug for Content-Disposition (Starlette encodes
+    header values as latin-1, so non-ASCII letters must be dropped — str
+    .isalnum() is Unicode-aware and would keep e.g. CJK/emoji)."""
+    slug = "".join(c if ((c.isascii() and c.isalnum()) or c in "-_") else "_"
                    for c in (name or "").strip())
     return slug.strip("_")[:48]
 
@@ -955,18 +957,28 @@ def job_artifact(job_id: str, path: str, inline: bool = False):
     The path is resolved strictly inside the job's own output directory, so it
     can neither traverse out (../) nor reach another job's artifacts."""
     from fastapi.responses import FileResponse
+    from urllib.parse import quote
     out = (_job_dir(job_id) / "output").resolve()
-    target = (out / path).resolve()
-    if os.path.commonpath([str(out), str(target)]) != str(out) \
-            or not target.is_file():
+    # A malformed path (NUL byte, over-long, bad drive) must be a clean 404,
+    # never a 500 — resolve/containment/is_file can all raise on bad input.
+    try:
+        target = (out / path).resolve()
+        contained = os.path.commonpath([str(out), str(target)]) == str(out)
+        is_file = target.is_file()
+    except (ValueError, OSError):
+        raise HTTPException(404, "Artifact not found in this job")
+    if not contained or not is_file:
         raise HTTPException(404, "Artifact not found in this job")
     media = _MEDIA_BY_SUFFIX.get(target.suffix.lower(),
                                  "application/octet-stream")
     disp = "inline" if inline else "attachment"
-    return FileResponse(
-        str(target), media_type=media,
-        headers={"Content-Disposition": '%s; filename="%s"'
-                 % (disp, target.name)})
+    # latin-1-safe filename plus an RFC 5987 UTF-8 variant, so a non-ASCII
+    # artifact name can never make the header raise UnicodeEncodeError.
+    ascii_name = target.name.encode("ascii", "ignore").decode() or "artifact"
+    cd = '%s; filename="%s"; filename*=UTF-8\'\'%s' % (
+        disp, ascii_name, quote(target.name))
+    return FileResponse(str(target), media_type=media,
+                        headers={"Content-Disposition": cd})
 
 
 @app.delete("/api/jobs/{job_id}")
