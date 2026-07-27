@@ -4577,6 +4577,7 @@ async function estateSelect(id) {
   let stats = null;
   try { stats = await api('/api/estate/stats?system=' + encodeURIComponent(id)); }
   catch (e) { stats = null; }
+  if (estateSystem !== id) return;   // a newer selection superseded this one
   renderEstateCards(stats);
   const table = $('#estateTable');
   $('#estatePager').style.display = 'none';

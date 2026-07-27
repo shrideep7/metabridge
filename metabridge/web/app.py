@@ -4175,8 +4175,9 @@ def estate_stats(system: str = ""):
 
 def _job_kind_is(meta_file: Path, kind: str) -> bool:
     try:
-        return json.loads(meta_file.read_text()).get("kind") == kind
-    except (ValueError, OSError):
+        data = json.loads(meta_file.read_text())
+        return isinstance(data, dict) and data.get("kind") == kind
+    except Exception:  # noqa: BLE001 — a corrupt/partial meta must never 500 the scan
         return False
 
 
