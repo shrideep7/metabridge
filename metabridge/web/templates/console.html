@@ -28,6 +28,8 @@
                 align-items:center; justify-content:center; font-size:12.5px; font-weight:700; flex-shrink:0; }
   nav .pname { font-size:13px; font-weight:600; color:#e6eefb; line-height:1.25; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:130px; }
   nav .prole { font-size:11px; color:#8fa4c6; text-transform:capitalize; }
+  nav .navbadge { margin-left:auto; background:#c77d0a; color:#fff; border-radius:9px; font-size:10.5px; font-weight:700; padding:1px 7px; display:none; }
+  body.nav-min nav .navbadge { display:none !important; }
   nav .pmenu-btn { margin-left:auto; background:none; color:#8fa4c6; padding:2px 7px; font-size:16px; border-radius:7px; margin-top:0; }
   nav .pmenu { position:absolute; bottom:46px; right:6px; background:#fff; color:#123; border-radius:10px;
                box-shadow:0 10px 30px rgba(5,12,28,.35); min-width:180px; display:none; padding:6px; z-index:60; }
@@ -1086,6 +1088,15 @@
     <div class="sub">Approvals, AI recommendations, migration risks, policy compliance and audit trail.</div></div>
     <button class="secondary" id="askAiGov" style="margin-top:0">Ask MetaBridge AI</button>
   </div>
+  <div class="panel" id="agentApprovalsPanel">
+    <h3 style="margin-bottom:4px">Agent approvals <span id="aqCount" style="color:#889;font-size:12px"></span></h3>
+    <div style="color:#667;font-size:13px;margin-bottom:8px">Consequential agent actions are held here until a
+    <b>different</b>, permissioned approver signs off — the person who ran the swarm can never approve their own
+    actions (they may withdraw them). Owners and admins can approve or reject.</div>
+    <div id="aqEscalation"></div>
+    <div id="aqList"></div>
+    <div id="aqDecided"></div>
+  </div>
   <div class="panel">
     <h3 style="margin-bottom:4px">Approval queue &amp; AI recommendations</h3>
     <div style="color:#667;font-size:13px;margin-bottom:8px">AI-proposed corrections are never applied automatically —
@@ -1271,6 +1282,7 @@
         <div class="facts">
           <button type="submit" id="pnSave" disabled>Save changes</button>
           <span class="dirty" id="pnDirty" hidden>Unsaved changes</span>
+          <span id="pnOk" hidden style="color:#1e8449;font-size:12.5px;font-weight:600">✓ Saved</span>
         </div>
         <div class="err" id="pnErr"></div>
       </form>
@@ -1400,25 +1412,19 @@ async function api(url, opts = {}) {
   return data;
 }
 
-// One normalized display-name source for every render site (sidebar, header
-// menu, avatars, team table). Resolution: display_name > full_name > name >
-// composed parts > email local-part. Collapses accidental adjacent duplicate
-// tokens (bad signup/autofill data) and un-shouts ALL-CAPS tokens while
-// leaving mixed-case names (McDonald, van der Berg) as typed.
+// One display-name source for every render site (sidebar, header menu,
+// avatars, team table). Resolution: display_name > full_name > name >
+// composed parts > email local-part. The stored name is shown EXACTLY as
+// the user saved it — no case or token rewriting, otherwise a saved profile
+// edit appears not to persist (the form and header would silently show a
+// different string than the one on the server).
 function getUserDisplayName(user) {
   if (!user) return 'User';
   const raw = String(user.display_name || user.full_name || user.name
     || [user.first_name, user.middle_name, user.last_name]
        .filter(Boolean).join(' ')).trim();
   if (!raw) return (user.email || '').split('@')[0] || 'User';
-  const toks = [];
-  for (const t of raw.split(/\s+/).filter(Boolean)) {
-    if (toks.length && toks[toks.length - 1].toLowerCase() === t.toLowerCase()) continue;
-    toks.push(t);
-  }
-  return toks.map(t =>
-    (t.length > 1 && t === t.toUpperCase() && /[A-Z]/.test(t))
-      ? t[0] + t.slice(1).toLowerCase() : t).join(' ');
+  return raw.split(/\s+/).filter(Boolean).join(' ');
 }
 function getUserInitials(displayName) {
   const t = String(displayName || '').trim().split(/\s+/).filter(Boolean);
@@ -1475,6 +1481,7 @@ async function loadUser() {
       $('#topMenuEmail').textContent = 'authentication disabled';
       $('#profilePanel').style.display = 'none';
     }
+    applyRbacUi();
   } catch (e) { /* open mode */ }
 }
 const acctBtn = $('#topAvatarBtn'), acctMenu = $('#topMenu');
@@ -1771,6 +1778,43 @@ $('#setNavSel').onchange = ev => showSettings(ev.target.value);
 
 function canManageSettings() { return myPerms.includes('*') || myPerms.includes('settings:manage'); }
 function canManageUsers() { return myPerms.includes('*') || myPerms.includes('users:manage'); }
+// open mode (no accounts configured) leaves every action available; once a
+// session exists the server-issued permission list is the single source
+function can(p) {
+  if (!myUser) return true;              // open mode / server still enforces
+  return myPerms.includes('*') || myPerms.includes(p);
+}
+function permTitle(p) {
+  return 'Your role (' + (myPerms._role || 'viewer') + ') does not allow this — needs ' + p + '. Ask a workspace admin.';
+}
+// Static run/config controls, disabled for roles that lack the permission
+// the API will demand — the same map the server enforces (see web/app.py
+// _required_permission). Dynamic renderers gate inline at render time.
+const RBAC_UI = [
+  // pipeline / analysis runs -> jobs:run
+  ['#analyzeBtn', 'jobs:run'], ['#convertSelected', 'jobs:run'],
+  ['#convForm button[type=submit]', 'jobs:run'], ['#autofixBtn', 'jobs:run'],
+  ['#govForm button[type=submit]', 'jobs:run'],
+  ['#scafForm button[type=submit]', 'jobs:run'],
+  ['#assessRun', 'jobs:run'], ['#airRun', 'jobs:run'], ['#debtRun', 'jobs:run'],
+  ['#finRun', 'jobs:run'], ['#secRun', 'jobs:run'], ['#docsRun', 'jobs:run'],
+  ['#evtAnalyze', 'jobs:run'], ['#evtIntel', 'jobs:run'], ['#evtGenerate', 'jobs:run'],
+  ['#orchAnalyze', 'jobs:run'], ['#orchGenerate', 'jobs:run'], ['#orchDepAdd', 'jobs:run'],
+  ['#twinBuild', 'jobs:run'], ['#twinSimulate', 'jobs:run'],
+  ['#agRun', 'jobs:run'], ['#plugScaffold', 'jobs:run'],
+  // platform configuration -> settings:manage
+  ['#aiTest', 'settings:manage'], ['#mktKeypair', 'settings:manage'],
+];
+function applyRbacUi() {
+  RBAC_UI.forEach(([sel, perm]) => {
+    document.querySelectorAll(sel).forEach(el => {
+      const allowed = can(perm);
+      el.disabled = !allowed;
+      if (!allowed) el.title = permTitle(perm);
+      else if (el.title && el.title.startsWith('Your role')) el.title = '';
+    });
+  });
+}
 
 /* ---- workspace ---- */
 let wsSnapshot = '';
@@ -1825,19 +1869,24 @@ function pnDirtyCheck() {
 }
 function loadProfileSec() {
   if (!myUser) return;
-  $('#pnName').value = getUserDisplayName(myUser);
+  // the form edits the RAW stored name (myUser.name), never a prettified
+  // rendering of it — what you save is exactly what reloads
+  $('#pnName').value = myUser.name || getUserDisplayName(myUser);
   $('#pnEmail').textContent = myUser.email;
   pnSnapshot = $('#pnName').value.trim(); pnDirtyCheck();
 }
 $('#pnName').oninput = pnDirtyCheck;
 $('#pnForm').onsubmit = async ev => {
   ev.preventDefault();
-  const err = $('#pnErr'); err.style.display = 'none';
+  const err = $('#pnErr'), okEl = $('#pnOk');
+  err.style.display = 'none'; okEl.hidden = true;
   try {
     await api('/api/v1/me', {method: 'PATCH', headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({name: $('#pnName').value})});
     await loadUser();               // header + dropdown update immediately
     loadProfileSec();
+    okEl.hidden = false;            // explicit success feedback
+    setTimeout(() => { okEl.hidden = true; }, 2500);
   } catch (e) { err.textContent = e.message; err.style.display = 'block'; }
 };
 
@@ -2079,6 +2128,10 @@ async function loadMembers() {
     + d.users.map(u => {
         const isMe = u.email === myEmail;
         const soleOwner = u.role === 'owner' && owners <= 1;
+        // mirrors the server rules: only owners may change/remove/reset
+        // owner accounts; the sole owner can never be demoted or removed
+        const canMutate = !soleOwner && (u.role !== 'owner' || myPerms._role === 'owner');
+        const canReset = canResetFor(u);
         return '<tr data-email="' + esc(u.email) + '">'
           + '<td><div class="mem-cell"><span class="avatar" data-avatar></span>'
           + '<span><b>' + esc(getUserDisplayName(u)) + '</b>'
@@ -2087,11 +2140,14 @@ async function loadMembers() {
           + '<td>' + badge(ROLE_LABEL[u.role] || u.role, roleColor[u.role] || '#667') + '</td>'
           + '<td style="color:#889">' + esc((u.created || '').slice(0, 10)) + '</td>'
           + '<td><span class="stat"><i style="background:#1e8449"></i>Active</span></td>'
-          + '<td style="text-align:right">' + (isMe || soleOwner ? ''
+          + '<td style="text-align:right">' + (isMe || !(canMutate || canReset) ? ''
               : '<div class="rowmenu"><button class="kebab" style="position:static" '
                 + 'aria-haspopup="menu" aria-label="Member actions">&#8942;</button>'
-                + '<div class="menu" role="menu"><button data-act="role" role="menuitem">Change role…</button>'
-                + '<button data-act="rm" class="signout" role="menuitem">Remove from workspace</button></div></div>')
+                + '<div class="menu" role="menu">'
+                + (canMutate ? '<button data-act="role" role="menuitem">Change role…</button>' : '')
+                + (canReset ? '<button data-act="reset" role="menuitem">Send reset link…</button>' : '')
+                + (canMutate ? '<button data-act="rm" class="signout" role="menuitem">Remove from workspace</button>' : '')
+                + '</div></div>')
           + '</td></tr>';
       }).join('') + '</table></div>';
   d.users.forEach(u => {
@@ -2111,16 +2167,61 @@ async function loadMembers() {
     const email = b.closest('tr').dataset.email;
     const u = d.users.find(x => x.email === email);
     if (b.dataset.act === 'role') openRoleDialog(u);
+    else if (b.dataset.act === 'reset') openResetLinkDialog(u);
     else openRemoveMemberDialog(u);
   });
+}
+// resetting an owner's password would hand over the owner account, so only
+// an owner may mint reset links for owner accounts (mirrors the server rule)
+function canResetFor(u) {
+  return u.role !== 'owner' || myPerms._role === 'owner';
+}
+function openResetLinkDialog(u) {
+  $('#modalBody').innerHTML = '<h3 style="margin:0 0 6px">Send a password reset link</h3>'
+    + '<div style="color:#556;font-size:13.5px;margin-bottom:12px">'
+    + esc(getUserDisplayName(u)) + ' · ' + esc(u.email) + '</div>'
+    + '<div style="color:#556;font-size:13px">Generates a <b>one-time</b> link (expires in 60 minutes) '
+    + 'that lets them choose a new password. Share it with them directly — it is shown only once '
+    + 'and never emailed or logged by MetaBridge.</div>'
+    + '<div id="rlOut" style="display:none;margin-top:12px">'
+    +   '<label>One-time reset link</label>'
+    +   '<div style="display:flex;gap:8px;align-items:center">'
+    +   '<input type="text" id="rlLink" readonly style="flex:1;font-size:12px">'
+    +   '<button type="button" id="rlCopy" class="secondary" style="margin:0;white-space:nowrap">Copy</button></div>'
+    +   '<div class="fhint">Minting a new link invalidates this one.</div></div>'
+    + '<div class="err" id="rlErr"></div>'
+    + '<div style="display:flex;gap:8px;justify-content:flex-end;margin-top:18px">'
+    + '<button class="secondary" id="rlCancel">Close</button><button id="rlGo">Generate link</button></div>';
+  $('#modalBg').style.display = 'flex';
+  $('#rlCancel').onclick = closeModal;
+  $('#rlGo').onclick = async () => {
+    const err = $('#rlErr'); err.style.display = 'none';
+    try {
+      const d2 = await api('/api/users/' + encodeURIComponent(u.email) + '/reset-link', {method: 'POST'});
+      $('#rlLink').value = d2.reset_link;
+      $('#rlOut').style.display = 'block';
+      $('#rlGo').textContent = 'Regenerate link';
+    } catch (e) { err.textContent = e.message; err.style.display = 'block'; }
+  };
+  $('#rlCopy').onclick = async () => {
+    try { await navigator.clipboard.writeText($('#rlLink').value); $('#rlCopy').textContent = 'Copied ✓'; }
+    catch (e) { $('#rlLink').select(); document.execCommand('copy'); $('#rlCopy').textContent = 'Copied ✓'; }
+    setTimeout(() => { $('#rlCopy').textContent = 'Copy'; }, 2000);
+  };
+}
+function roleOptions(selectedRole) {
+  // only an owner may hand out the owner role (mirrors the server rule)
+  return Object.keys(ROLE_LABEL)
+    .filter(r => r !== 'owner' || myPerms._role === 'owner' || selectedRole === 'owner')
+    .map(r => '<option value="' + r + '"'
+      + (r === selectedRole ? ' selected' : '') + '>' + ROLE_LABEL[r] + '</option>').join('');
 }
 function openRoleDialog(u) {
   $('#modalBody').innerHTML = '<h3 style="margin:0 0 6px">Change role</h3>'
     + '<div style="color:#556;font-size:13.5px;margin-bottom:12px">'
     + esc(getUserDisplayName(u)) + ' · ' + esc(u.email) + '</div>'
     + '<label for="roleSel2">Role</label><select id="roleSel2">'
-    + Object.keys(ROLE_LABEL).map(r => '<option value="' + r + '"'
-        + (r === u.role ? ' selected' : '') + '>' + ROLE_LABEL[r] + '</option>').join('')
+    + roleOptions(u.role)
     + '</select><div class="err" id="roleErr2"></div>'
     + '<div style="display:flex;gap:8px;justify-content:flex-end;margin-top:18px">'
     + '<button class="secondary" id="roleCancel">Cancel</button><button id="roleGo">Save role</button></div>';
@@ -2163,8 +2264,7 @@ $('#memAddBtn').onclick = () => {
     + '<label for="amEmail">Email</label><input type="text" id="amEmail" placeholder="person@company.com">'
     + '<label for="amPw">Temporary password</label><input type="text" id="amPw" placeholder="8+ characters — they should change it">'
     + '<label for="amRole">Role</label><select id="amRole">'
-    + Object.keys(ROLE_LABEL).map(r => '<option value="' + r + '"'
-        + (r === 'engineer' ? ' selected' : '') + '>' + ROLE_LABEL[r] + '</option>').join('')
+    + roleOptions('engineer')
     + '</select><div class="err" id="amErr"></div>'
     + '<div style="display:flex;gap:8px;justify-content:flex-end;margin-top:18px">'
     + '<button class="secondary" id="amCancel">Cancel</button><button id="amGo">Add member</button></div>';
@@ -2817,6 +2917,13 @@ async function loadSavedConnections() {
     const id = b.dataset.id, act = b.dataset.act;
     const row = allConnections.find(x => x.id === id);
     const out = $('#connOut_' + id);
+    // role gate mirroring the server: delete needs jobs:delete, every other
+    // mutating action needs jobs:run; "config" is read-only
+    const need = act === 'config' ? '' : act === 'delete' ? 'jobs:delete' : 'jobs:run';
+    if (need && !can(need)) {
+      if (out) out.innerHTML = '<pre style="margin-top:6px;color:#b03a2e">' + esc(permTitle(need)) + '</pre>';
+      return;
+    }
     try {
       if (act === 'delete') {
         if (!confirm('Delete connection "' + row.name + '"?')) return;
@@ -3033,22 +3140,27 @@ function mktCard(it, installedRec, upd) {
     badges.push(mktBadge((it.dependencies.length) + ' dep' + (it.dependencies.length === 1 ? '' : 's'),
                 '#334', '#eef1f6', (it.dependencies || []).map(d => d.id).join(', ')));
 
+  // installing/updating/removing packages reconfigures the platform —
+  // settings:manage, mirrored from the server route map
+  const mktDisabled = can('settings:manage') ? ''
+    : ' disabled title="' + esc(permTitle('settings:manage')) + '"';
   let actions;
   if (isInstalled) {
     const updAvail = upd && upd.update_available;
     actions = '<span style="color:#1e8449;font-size:12px;font-weight:600">✓ Installed v'
       + esc(installedRec.version) + '</span>'
       + (updAvail ? '<button type="button" class="secondary mkt-update" data-id="' + esc(it.id)
-          + '" data-accept="' + (licAccept ? '1' : '') + '" style="margin:0;padding:3px 10px;font-size:12px">'
+          + '" data-accept="' + (licAccept ? '1' : '') + '" style="margin:0;padding:3px 10px;font-size:12px"'
+          + mktDisabled + '>'
           + 'Update → v' + esc(upd.latest) + '</button>' : '')
       + '<button type="button" class="secondary mkt-uninstall" data-id="' + esc(it.id)
-      + '" style="margin:0;padding:3px 10px;font-size:12px">Uninstall</button>';
+      + '" style="margin:0;padding:3px 10px;font-size:12px"' + mktDisabled + '>Uninstall</button>';
   } else {
     actions = '<button type="button" class="mkt-install" data-id="' + esc(it.id)
       + '" data-name="' + esc(it.name) + '" data-accept="' + (licAccept ? '1' : '')
       + '" data-lic="' + esc(lic) + '" data-url="' + esc((it.license && it.license.url) || '')
       + '" style="margin:0;padding:3px 12px;font-size:12px"'
-      + (it.compatible ? '' : ' disabled title="incompatible with this platform"')
+      + (it.compatible ? mktDisabled : ' disabled title="incompatible with this platform"')
       + '>Install</button>';
   }
   return '<div style="border:1px solid #e2e6ee;border-radius:8px;padding:11px 12px;background:#fff">'
@@ -3227,6 +3339,9 @@ async function openConnector(key) {
     + '<label style="display:inline-flex;align-items:center;gap:6px;margin-left:10px;font-size:13px;color:#667"><input type="checkbox" id="savePw"> remember password on this host</label>'
     + '<div id="artOut"></div>';
   $('#modalBg').style.display = 'flex';
+  ['#genArt', '#testConn', '#analyzeDb', '#saveConn'].forEach(sel => {
+    if (!can('jobs:run')) { $(sel).disabled = true; $(sel).title = permTitle('jobs:run'); }
+  });
   $('#closeModal').onclick = () => $('#modalBg').style.display = 'none';
   $('#testConn').onclick = async () => {
     const params = {};
@@ -4528,13 +4643,14 @@ async function loadSystem() {
     + '<b>' + (m.produced_by || []).length + '</b> producer(s) → <b>'
     + (m.consumed_by || []).length + '</b> consumer(s)</div></div>').join('');
 
-  // feature flags
+  // feature flags — toggling is a configuration action (settings:manage)
   $('#sysFlags').innerHTML = (d.feature_flags || []).map(f =>
     '<div style="display:flex;align-items:center;gap:10px;padding:5px 0;border-bottom:1px solid #f0f2f6">'
     + '<button type="button" class="sys-flag" data-key="' + esc(f.key) + '" data-on="'
     + (f.enabled ? '1' : '') + '" style="margin:0;padding:2px 10px;font-size:11.5px;'
     + 'background:' + (f.enabled ? '#1e8449' : '#e2e6ee') + ';color:' + (f.enabled ? '#fff' : '#556')
-    + '">' + (f.enabled ? 'ON' : 'OFF') + '</button>'
+    + '"' + (can('settings:manage') ? '' : ' disabled title="' + esc(permTitle('settings:manage')) + '"')
+    + '>' + (f.enabled ? 'ON' : 'OFF') + '</button>'
     + '<span style="font-weight:600;font-size:12px;min-width:170px">' + esc(f.key) + '</span>'
     + '<span style="flex:1;font-size:11.5px;color:#889">' + esc(f.description || '')
     + (f.rollout_pct != null && f.rollout_pct < 100 ? ' · ' + f.rollout_pct + '% rollout' : '')
@@ -4861,27 +4977,11 @@ function renderAgentRun(rep) {
 
   // approval queue for this run
   const pend = (rep.approvals || []).filter(a => a.status === 'pending');
-  const decided = (rep.approvals || []).filter(a => a.status !== 'pending');
   $('#agApprovalsWrap').style.display = (rep.approvals || []).length ? 'block' : 'none';
   $('#agApprovalCount').textContent = pend.length ? '(' + pend.length + ' pending)' : '(all decided)';
-  $('#agApprovals').innerHTML = (rep.approvals || []).map(a => {
-    const done = a.status !== 'pending';
-    const col = a.status === 'approved' ? '#1e8449' : a.status === 'rejected' ? '#c0392b' : '#b9770e';
-    return '<div style="border:1px solid #e2e6ee;border-radius:8px;padding:9px 12px;margin-bottom:6px;display:flex;'
-      + 'align-items:center;gap:10px;flex-wrap:wrap">'
-      + '<span style="font-weight:600;font-size:12.5px">' + esc(a.agent_id.replace(/_/g, ' ')) + '</span>'
-      + '<span style="font-size:11.5px;color:#667">' + esc(a.action_class) + ' · confidence '
-      + Math.round((a.confidence || 0) * 100) + '%</span>'
-      + '<span style="flex:1;min-width:120px;font-size:11.5px;color:#889">' + esc((a.reasons || [])[0] || '') + '</span>'
-      + (done
-        ? '<span style="color:' + col + ';font-weight:600;font-size:12px">' + esc(a.status)
-          + (a.approver ? ' by ' + esc(a.approver) : '') + '</span>'
-        : '<button type="button" class="ag-approve" data-id="' + esc(a.id)
-          + '" style="margin:0;padding:2px 12px;font-size:12px">Approve</button>'
-          + '<button type="button" class="secondary ag-reject" data-id="' + esc(a.id)
-          + '" style="margin:0;padding:2px 12px;font-size:12px">Reject</button>')
-      + '</div>';
-  }).join('');
+  $('#agApprovals').innerHTML =
+    (pend.some(a => a.no_eligible_approver) ? approvalEscalationBanner() : '')
+    + (rep.approvals || []).map(a => approvalRow(a)).join('');
 
   // audit trail
   const av = rep.audit && rep.audit.verification;
@@ -4911,18 +5011,71 @@ async function refreshAgentRun() {
   } catch (e) { /* ignore */ }
 }
 
+// One approval row used by both the run view and Governance → Approval
+// queue. Buttons render ONLY for actions the signed-in user may take
+// (server-computed can_approve / can_reject / can_claim), so segregation of
+// duties is visible up front instead of failing on click.
+function approvalRow(a, withRun) {
+  const done = a.status !== 'pending';
+  const col = a.status === 'approved' ? '#1e8449' : a.status === 'rejected' ? '#c0392b' : '#b9770e';
+  let act;
+  if (done) {
+    act = '<span style="color:' + col + ';font-weight:600;font-size:12px">' + esc(a.status)
+      + (a.approver ? ' by ' + esc(a.approver) : '') + '</span>';
+  } else {
+    const bits = [];
+    if (a.claimed_by) bits.push('<span class="tag" title="An approver marked this as theirs to review">reviewing: ' + esc(a.claimed_by) + '</span>');
+    if (a.can_claim && !a.claimed_by)
+      bits.push('<button type="button" class="secondary ag-claim" data-id="' + esc(a.id)
+        + '" style="margin:0;padding:2px 12px;font-size:12px" title="Mark this request as yours to review">Claim</button>');
+    if (a.can_approve)
+      bits.push('<button type="button" class="ag-approve" data-id="' + esc(a.id)
+        + '" style="margin:0;padding:2px 12px;font-size:12px">Approve</button>');
+    if (a.can_reject)
+      bits.push('<button type="button" class="secondary ag-reject" data-id="' + esc(a.id)
+        + '" style="margin:0;padding:2px 12px;font-size:12px">'
+        + (a.is_requester && !a.can_approve ? 'Withdraw' : 'Reject') + '</button>');
+    if (!bits.length)
+      bits.push('<span style="font-size:11.5px;color:#889" title="'
+        + esc(a.is_requester ? 'You requested this run — a different approver must decide it'
+                             : permTitle('agents:approve')) + '">awaiting an approver</span>');
+    act = bits.join('');
+  }
+  return '<div style="border:1px solid #e2e6ee;border-radius:8px;padding:9px 12px;margin-bottom:6px;display:flex;'
+    + 'align-items:center;gap:10px;flex-wrap:wrap">'
+    + '<span style="font-weight:600;font-size:12.5px">' + esc(a.agent_id.replace(/_/g, ' ')) + '</span>'
+    + '<span style="font-size:11.5px;color:#667">' + esc(a.action_class) + ' · confidence '
+    + Math.round((a.confidence || 0) * 100) + '%</span>'
+    + (withRun ? '<span style="font-size:11px;color:#98a0ad">run ' + esc(a.run_id || '') + '</span>' : '')
+    + (a.requested_by ? '<span style="font-size:11px;color:#98a0ad">by ' + esc(a.requested_by) + '</span>' : '')
+    + '<span style="flex:1;min-width:120px;font-size:11.5px;color:#889">' + esc((a.reasons || [])[0] || '') + '</span>'
+    + act + '</div>';
+}
+function approvalEscalationBanner() {
+  return '<div style="background:#fdeeec;border:1px solid #eec5c0;border-radius:8px;padding:9px 12px;'
+    + 'margin-bottom:8px;font-size:12.5px;color:#7c2d24"><b>No eligible approver.</b> '
+    + 'The requester may never approve their own run, and no other member holds approval rights. '
+    + 'Ask an owner to promote another admin in Settings → Members'
+    + (canManageUsers() ? ' — <a data-go="settings" data-sec="members" class="gotoMembers" style="cursor:pointer;font-weight:600;color:#7c2d24;text-decoration:underline">open Members</a>' : '')
+    + '. The requester can still withdraw the request.</div>';
+}
 document.addEventListener('click', async (ev) => {
+  const gm = ev.target.closest('.gotoMembers');
+  if (gm) { document.querySelector('nav a[data-page="settings"]').click(); showSettings('members'); return; }
   const ap = ev.target.closest('.ag-approve');
   const rj = ev.target.closest('.ag-reject');
-  if (!ap && !rj) return;
+  const cl = ev.target.closest('.ag-claim');
+  if (!ap && !rj && !cl) return;
   ev.preventDefault();
-  const btn = ap || rj;
-  const url = ap ? '/api/agents/approvals/approve' : '/api/agents/approvals/reject';
+  const btn = ap || rj || cl;
+  const url = ap ? '/api/agents/approvals/approve'
+    : rj ? '/api/agents/approvals/reject' : '/api/agents/approvals/claim';
   btn.disabled = true;
   try {
     await api(url, {method: 'POST', headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({approval_id: btn.dataset.id})});
     await refreshAgentRun();
+    if (typeof loadApprovalQueue === 'function') loadApprovalQueue();
   } catch (e) {
     alert('Approval error: ' + e.message);
     btn.disabled = false;
@@ -4947,7 +5100,37 @@ async function loadReports() {
 }
 
 /* ---------------- Governance extras ---------------- */
+// The agent approval queue — visible to every signed-in member so an
+// eligible approver (not the requester) can find and decide pending
+// requests; the sidebar badge advertises pending work without opening it.
+async function loadApprovalQueue() {
+  if (!$('#aqList')) return;
+  try {
+    const d = await api('/api/agents/approvals?scope=all');
+    const pend = (d.approvals || []).filter(a => a.status === 'pending');
+    const decided = (d.approvals || []).filter(a => a.status !== 'pending').slice(-8).reverse();
+    $('#aqCount').textContent = pend.length ? '(' + pend.length + ' pending)' : '';
+    $('#aqEscalation').innerHTML = pend.some(a => a.no_eligible_approver) ? approvalEscalationBanner() : '';
+    $('#aqList').innerHTML = pend.map(a => approvalRow(a, true)).join('')
+      || '<div style="color:#889;font-size:13px">No agent actions are waiting for approval.</div>';
+    $('#aqDecided').innerHTML = decided.length
+      ? '<div style="margin:12px 0 6px;font-size:11.5px;letter-spacing:.6px;color:#556;font-weight:600">RECENT DECISIONS</div>'
+        + decided.map(a => approvalRow(a, true)).join('')
+      : '';
+    updateGovBadge(d.pending_count || 0);
+  } catch (e) { /* queue stays empty; server enforces access */ }
+}
+function updateGovBadge(n) {
+  const nav = document.querySelector('nav a[data-page="governance"]');
+  if (!nav) return;
+  let b = nav.querySelector('.navbadge');
+  if (!b) { b = document.createElement('span'); b.className = 'navbadge'; nav.appendChild(b); }
+  b.textContent = n > 0 ? String(n) : '';
+  b.style.display = n > 0 ? 'inline-block' : 'none';
+  b.title = n > 0 ? n + ' agent action(s) awaiting approval' : '';
+}
 async function loadGovernanceExtras() {
+  loadApprovalQueue();
   try {
     const {jobs} = await api('/api/jobs');
     const converts = jobs.filter(j => j.kind === 'convert' && j.status === 'done').slice(0, 10);
@@ -5054,7 +5237,7 @@ function openAiPanel(context) {
   if (el) el.onclick = () => openAiPanel(window._valCtx || (planJob ? {migration_id: planJob.id, project: planJob.project} : null));
 });
 
-loadUser(); loadDashboard(); loadMarketplace(); loadSavedConnections(); fillScaffoldSelects(); fillModConnList();
+loadUser().then(loadApprovalQueue); loadDashboard(); loadMarketplace(); loadSavedConnections(); fillScaffoldSelects(); fillModConnList();
 </script>
 </body>
 </html>

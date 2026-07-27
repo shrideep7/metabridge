@@ -132,6 +132,29 @@ class ApprovalQueue:
             self._save(state)
             return rec
 
+    def claim(self, approval_id: str, claimer: str) -> dict:
+        """Soft-lock a pending request so two approvers don't work the same
+        item. Claiming is advisory — approve/reject stay atomic — and the
+        requester may not claim their own request (segregation of duties)."""
+        if not claimer:
+            raise ApprovalError("claimer is required")
+        with self._locked():
+            state = self._load()
+            rec = state.get(approval_id)
+            if rec is None:
+                raise ApprovalError("unknown approval: %s" % approval_id)
+            if rec["status"] != "pending":
+                raise ApprovalError("%s already %s" % (approval_id,
+                                                       rec["status"]))
+            if rec.get("requested_by") and claimer == rec["requested_by"]:
+                raise ApprovalError(
+                    "%s cannot claim their own run's action — a different "
+                    "approver is required" % claimer)
+            rec["claimed_by"] = claimer
+            rec["claimed_ts"] = self._now()
+            self._save(state)
+            return rec
+
     def approve(self, approval_id: str, approver: str,
                 note: str = "", decided_at: str = "") -> dict:
         if not approver:

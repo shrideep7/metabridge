@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Sign in — MetaBridge AI</title>
+<title>Choose a new password — MetaBridge AI</title>
 <style>
   :root { --line:rgba(140,170,220,.16); --blue:#4da3ff; --teal:#3ddad0; --mist:#8ea4c8; }
   * { box-sizing:border-box; margin:0; padding:0; }
@@ -36,14 +36,16 @@
   input { width:100%; padding:13px 14px; border-radius:10px; border:1px solid rgba(140,170,220,.28); background:rgba(16,28,50,.7); color:#fff; font-size:15px; outline:none; transition:.15s; }
   input:focus { border-color:var(--blue); box-shadow:0 0 0 3px rgba(77,163,255,.18); }
   .toggle { position:absolute; right:12px; top:50%; transform:translateY(-50%); background:none; border:none; color:#7d92b5; cursor:pointer; font-size:12.5px; font-weight:700; }
+  .meter { height:5px; border-radius:4px; background:rgba(60,80,120,.4); margin-top:8px; overflow:hidden; }
+  .meter i { display:block; height:100%; width:0; border-radius:4px; background:#f87171; transition:.25s; }
+  .hint { font-size:12px; color:#7d92b5; margin-top:5px; }
   .btn { width:100%; margin-top:28px; padding:14px; border:none; border-radius:11px; font-size:15.5px; font-weight:700; color:#fff; cursor:pointer; background:linear-gradient(135deg,#2f7bbd,#4da3ff); box-shadow:0 10px 26px rgba(45,120,200,.35); transition:.18s; }
   .btn:hover { transform:translateY(-1px); }
   .btn:disabled { opacity:.6; cursor:wait; transform:none; }
   .err { display:none; margin-top:16px; background:rgba(192,57,43,.16); border:1px solid rgba(192,57,43,.4); color:#f5a8a0; border-radius:9px; padding:11px 14px; font-size:13.5px; }
+  .ok { display:none; margin-top:16px; background:rgba(30,132,73,.16); border:1px solid rgba(30,132,73,.45); color:#9fdcb6; border-radius:9px; padding:11px 14px; font-size:13.5px; line-height:1.5; }
   .alt { margin-top:26px; text-align:center; font-size:14px; color:var(--mist); }
   .alt a { color:var(--blue); font-weight:650; text-decoration:none; }
-  .forgot { display:block; margin-top:12px; text-align:right; font-size:13px; color:#7d92b5; text-decoration:none; }
-  .forgot:hover { color:var(--blue); }
   .back { display:inline-block; margin-bottom:34px; color:#7d92b5; font-size:13.5px; text-decoration:none; }
   .back:hover { color:#fff; }
 </style>
@@ -53,51 +55,90 @@
   <div class="orb o1"></div><div class="orb o2"></div>
   <div class="brand">Meta<b>Bridge</b></div>
   <div class="pitch">
-    <h2>Welcome back to your<br><span>modernization factory.</span></h2>
+    <h2>Choose a new password<br><span>and you're back in.</span></h2>
     <ul>
-      <li>Convert dbt ⇄ Informatica with a certified audit trail</li>
-      <li>Ship SAP into Snowflake, BigQuery or Databricks</li>
-      <li>GDPR &amp; CCPA governance on every single pipeline</li>
+      <li>This link works once, then it is permanently invalidated</li>
+      <li>Existing sessions for the account are signed out</li>
+      <li>Use 12+ characters with a mix of cases, numbers and symbols</li>
     </ul>
   </div>
-  <div class="quote">Every conversion produces a coverage score and an exception queue with
-    stable rule codes — the numbers a migration proposal is built on.
-    <b>Rules first · LLM-assist flagged · nothing silently guessed</b></div>
+  <div class="quote">Self-hosted means your credentials never leave your servers —
+    resets are handled inside your own deployment.
+    <b>One-time links · hashed at rest · sessions revoked on reset</b></div>
 </div>
 <div class="pane"><div class="card">
-  <a class="back" href="/">← metabridge.io</a>
-  <h1>Sign in</h1>
-  <div class="sub">Access your workspace and job history.</div>
-  <form id="f">
-    <label>Email</label>
-    <input type="email" name="email" placeholder="you@company.com" required autofocus>
-    <label>Password</label>
+  <a class="back" href="/login">← Back to sign in</a>
+  <h1 id="title">Choose a new password</h1>
+  <div class="sub" id="subtitle">Checking your reset link…</div>
+  <form id="f" style="display:none">
+    <label>New password</label>
     <div class="field">
-      <input type="password" name="password" id="pw" placeholder="••••••••" required>
+      <input type="password" name="password" id="pw" placeholder="8+ characters" required minlength="8">
       <button type="button" class="toggle" id="tg">SHOW</button>
     </div>
-    <a class="forgot" href="/forgot-password">Forgot password?</a>
-    <button class="btn" type="submit">Sign in →</button>
+    <div class="meter"><i id="meterBar"></i></div>
+    <div class="hint" id="hint">Use 12+ characters with a mix of cases, numbers and symbols.</div>
+    <label>Confirm new password</label>
+    <input type="password" name="confirm" id="pw2" placeholder="Repeat the password" required minlength="8">
+    <button class="btn" type="submit">Set new password →</button>
     <div class="err" id="err"></div>
+    <div class="ok" id="ok"></div>
   </form>
-  <div class="alt">New to MetaBridge AI? <a href="/signup">Create the workspace</a></div>
+  <div class="err" id="linkErr" style="display:none">
+    This reset link is invalid, expired, or already used.
+    <div style="margin-top:8px"><a href="/forgot-password" style="color:#f8c6c0;font-weight:700">Request a new one →</a></div>
+  </div>
+  <div class="alt">Remembered it? <a href="/login">Sign in</a></div>
 </div></div>
 <script>
-const tg = document.getElementById('tg'), pw = document.getElementById('pw');
-tg.onclick = () => { pw.type = pw.type === 'password' ? 'text' : 'password'; tg.textContent = pw.type === 'password' ? 'SHOW' : 'HIDE'; };
-document.getElementById('f').onsubmit = async ev => {
-  ev.preventDefault();
-  const err = document.getElementById('err'); err.style.display = 'none';
-  const btn = ev.target.querySelector('.btn'); btn.disabled = true; btn.textContent = 'Signing in…';
-  const fd = new FormData(ev.target);
+const token = new URLSearchParams(window.location.search).get('token') || '';
+const form = document.getElementById('f'), sub = document.getElementById('subtitle');
+const linkErr = document.getElementById('linkErr');
+
+async function validate() {
+  if (!token) { sub.style.display = 'none'; linkErr.style.display = 'block'; return; }
   try {
-    const r = await fetch('/auth/login', { method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({ email: fd.get('email'), password: fd.get('password') }) });
+    const r = await fetch('/auth/reset/validate?token=' + encodeURIComponent(token));
     const d = await r.json();
-    if (!r.ok) throw new Error(d.detail || 'Sign-in failed');
-    window.location.href = d.redirect || '/console';
+    if (!d.valid) throw new Error('invalid');
+    sub.textContent = 'Resetting the password for ' + (d.account || 'your account') + '.';
+    form.style.display = 'block';
+    document.getElementById('pw').focus();
+  } catch (e) { sub.style.display = 'none'; linkErr.style.display = 'block'; }
+}
+validate();
+
+const tg = document.getElementById('tg'), pw = document.getElementById('pw'), bar = document.getElementById('meterBar');
+tg.onclick = () => { pw.type = pw.type === 'password' ? 'text' : 'password'; tg.textContent = pw.type === 'password' ? 'SHOW' : 'HIDE'; };
+pw.oninput = () => {
+  const v = pw.value;
+  let s = 0;
+  if (v.length >= 8) s++; if (v.length >= 12) s++;
+  if (/[A-Z]/.test(v) && /[a-z]/.test(v)) s++;
+  if (/\d/.test(v)) s++; if (/[^A-Za-z0-9]/.test(v)) s++;
+  bar.style.width = (s * 20) + '%';
+  bar.style.background = s <= 2 ? '#f87171' : s <= 3 ? '#ffb454' : '#4ade80';
+};
+
+form.onsubmit = async ev => {
+  ev.preventDefault();
+  const err = document.getElementById('err'), ok = document.getElementById('ok');
+  err.style.display = 'none'; ok.style.display = 'none';
+  if (pw.value !== document.getElementById('pw2').value) {
+    err.textContent = 'The two passwords do not match.'; err.style.display = 'block'; return;
+  }
+  const btn = ev.target.querySelector('.btn'); btn.disabled = true; btn.textContent = 'Saving…';
+  try {
+    const r = await fetch('/auth/reset', { method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ token: token, password: pw.value }) });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.detail || 'Could not reset the password');
+    ok.textContent = 'Password updated. Redirecting you to sign in…';
+    ok.style.display = 'block';
+    btn.textContent = 'Password updated';
+    setTimeout(() => { window.location.href = '/login'; }, 1800);
   } catch (e) { err.textContent = e.message; err.style.display = 'block';
-    btn.disabled = false; btn.textContent = 'Sign in →'; }
+    btn.disabled = false; btn.textContent = 'Set new password →'; }
 };
 </script>
 </body>
