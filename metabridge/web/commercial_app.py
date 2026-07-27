@@ -143,7 +143,42 @@ async def _cp_error(_req, exc: ControlPlaneError):
 # ------------------------------------------------------------------ health
 @commercial_app.get("/health")
 def health():
-    return {"status": "ok", "configured": bool(_configured_key())}
+    """Readiness for the commercial plane — actionable, no auth, no secrets.
+    Reports whether the admin/finance keys are set, the datastore is reachable
+    and migrations are applied, so an operator can see exactly what's missing.
+    """
+    key_ok = bool(_configured_key())
+    finance_ok = bool(_finance_key())
+    db_ok = False
+    migrations_applied = False
+    pending: list = []
+    detail = ""
+    try:
+        from metabridge_control.migrations import runner as _mig
+        engine = _engine()
+        with engine.connect():
+            db_ok = True
+        st = _mig.status(engine)
+        pending = [name for _v, name, applied in st if not applied]
+        migrations_applied = not pending
+    except Exception as e:  # noqa: BLE001 — surface, don't crash health
+        detail = "%s: %s" % (type(e).__name__, str(e)[:200])
+    ready = key_ok and db_ok and migrations_applied
+    if not detail:
+        if not key_ok:
+            detail = ("Set CONTROLPLANE_ADMIN_KEY (and CONTROLPLANE_FINANCE_KEY "
+                      "for below-floor override approvals) to serve requests.")
+        elif pending:
+            detail = "%d migration(s) not applied: %s" % (
+                len(pending), ", ".join(pending[:5]))
+        else:
+            detail = "ready"
+    return {"status": "ok" if ready else "not_ready", "ready": ready,
+            "admin_key_configured": key_ok,
+            "finance_key_configured": finance_ok,
+            "database_reachable": db_ok,
+            "migrations_applied": migrations_applied,
+            "pending_migrations": pending, "detail": detail}
 
 
 # ------------------------------------------------------------------ tenants

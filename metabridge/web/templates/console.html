@@ -300,7 +300,7 @@
   <a data-page="system" title="System"><svg fill="none" stroke-width="1.8"><use href="#i-overview"/></svg><span class="lbl">System</span></a>
   <a data-page="marketplace" title="Integrations"><svg fill="none" stroke-width="1.8"><use href="#i-blocks"/></svg><span class="lbl">Integrations</span></a>
   <a href="/docs" target="_blank" title="API & Developers"><svg fill="none" stroke-width="1.8"><use href="#i-code"/></svg><span class="lbl">API &amp; Developers</span></a>
-  <a href="/commercial" target="_blank" title="Commercial Admin (staff)"><svg fill="none" stroke-width="1.8"><use href="#i-blocks"/></svg><span class="lbl">Commercial Admin</span></a>
+  <a id="navCommercial" href="/commercial/" target="_blank" title="Commercial Admin (staff)" style="display:none"><svg fill="none" stroke-width="1.8"><use href="#i-blocks"/></svg><span class="lbl">Commercial Admin</span></a>
   <a data-page="settings" title="Settings"><svg fill="none" stroke-width="1.8"><use href="#i-settings"/></svg><span class="lbl">Settings</span></a>
   <button class="collapse-btn" id="navCollapse" aria-label="Collapse sidebar">&#171; <span class="lbl">Collapse</span></button>
   <div class="foot">
@@ -1516,7 +1516,23 @@ async function loadUser() {
       $('#profilePanel').style.display = 'none';
     }
     applyRbacUi();
+    gateCommercialNav();
   } catch (e) { /* open mode */ }
+}
+// Commercial Admin is a separate staff plane. Only surface its nav entry when
+// the feature is actually enabled AND reachable (mounted + migrated), and only
+// to workspace owners — the link opens the commercial UI, which enforces its
+// own key auth (the product session never bridges into it).
+async function gateCommercialNav() {
+  const nav = $('#navCommercial');
+  if (!nav) return;
+  const isOwner = myPerms.includes('*') || myPerms._role === 'owner';
+  if (!isOwner) { nav.style.display = 'none'; return; }
+  try {
+    const s = await api('/api/system/commercial');
+    nav.style.display = (s.enabled && s.ready) ? '' : 'none';
+    if (s.enabled && s.ready && s.url) nav.href = s.url;
+  } catch (e) { nav.style.display = 'none'; }
 }
 const acctBtn = $('#topAvatarBtn'), acctMenu = $('#topMenu');
 function acctSetOpen(open) {

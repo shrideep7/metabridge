@@ -72,6 +72,34 @@ Connection secrets for generated pipelines (e.g. `MB_SNOWFLAKE_PASSWORD`) are
 sets on whatever runtime executes the pipelines (dbt runner, Secure Agent,
 PowerCenter integration service).
 
+### Commercial Admin (optional control plane)
+
+The commercial control plane (tenants, subscriptions, entitlements, licensing,
+metering, pricing & billing) is a **separate plane** served at `/commercial`
+with its own key auth and its own datastore — it shares no auth or state with
+the product data plane. It is **off by default** and only mounts when enabled.
+
+1. Install the extra: `pip install "/opt/metabridge/src[web,commercial]"`
+   (adds SQLAlchemy; for PostgreSQL also install `psycopg2-binary`).
+2. Enable and configure it via env:
+
+| Env var | Default | Purpose |
+|---|---|---|
+| `METABRIDGE_COMMERCIAL_ADMIN` | *(off)* | `1`/`true` mounts the commercial admin at `/commercial` |
+| `CONTROLPLANE_ADMIN_KEY` | *(unset)* | Staff admin key — sent as `X-Commercial-Key`; without it the plane fails closed (503). May instead be a `0600` `controlplane_admin.key` file in the data dir |
+| `CONTROLPLANE_FINANCE_KEY` | *(unset)* | Separate finance key (`X-Finance-Key`) that approves below-floor overrides — segregation of duties |
+| `CONTROLPLANE_DATABASE_URL` | `sqlite:///$METABRIDGE_DATA_DIR/controlplane.db` | Commercial datastore (use a PostgreSQL URL in production) |
+
+3. Migrations run automatically (idempotent) when the plane is enabled; check
+   readiness at `GET /commercial/health` (no auth) — it reports whether the
+   keys, database and migrations are in place.
+
+When `METABRIDGE_COMMERCIAL_ADMIN` is unset, `/commercial/*` returns a clear
+"not enabled" response. When enabled but the extra/database isn't ready,
+`/commercial/health` and the routes return an actionable error rather than
+disappearing silently. The console shows a **Commercial Admin** nav entry to
+workspace owners only when the plane is enabled and reachable.
+
 ## 4. Reverse proxy (TLS / SSO)
 
 Terminate TLS and corporate SSO at the proxy; MetaBridge's API key is the
