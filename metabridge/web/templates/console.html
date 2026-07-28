@@ -5003,6 +5003,21 @@ function renderTwinGraph() {
 $('#twinView').onchange = renderTwinGraph;
 $('#twinSearch').oninput = renderTwinGraph;
 
+// Compact facts line from a node's metadata (rows/columns/schema for tables,
+// object counts for systems) — surfaces the introspected detail on click.
+function twinFacts(m) {
+  if (!m) return '';
+  const f = [];
+  if (m.system) f.push('in ' + esc(String(m.system)));
+  if (m.schema) f.push('schema ' + esc(String(m.schema)));
+  if (m.object_type && m.object_type !== 'BASE TABLE') f.push(esc(String(m.object_type)));
+  if (m.database) f.push('db ' + esc(String(m.database)));
+  if (m.rows != null) f.push(Number(m.rows).toLocaleString() + ' rows');
+  if (m.columns) f.push(m.columns + ' cols');
+  if (m.tables != null && !('schema' in m)) f.push(m.tables + ' tables');
+  if (m.views) f.push(m.views + ' views');
+  return f.join(' · ');
+}
 async function twinSelect(nid) {
   twinSelected = nid;
   const n = gTwin.nodes.find(x => x.id === nid);
@@ -5016,6 +5031,7 @@ async function twinSelect(nid) {
       + '<b>' + esc(n.name) + '</b> <span style="color:#68738a">(' + esc(n.kind.replace(/_/g, ' '))
       + (n.technology ? ' · ' + esc(n.technology) : '') + (n.domain ? ' · domain: ' + esc(n.domain) : '')
       + (n.owner ? ' · owner: ' + esc(n.owner) : '') + ')</span><br>'
+      + (twinFacts(n.metadata) ? '<span style="color:#68738a;font-size:12.5px">' + twinFacts(n.metadata) + '</span><br>' : '')
       + '<span style="display:inline-block;margin:6px 0;padding:2px 10px;border-radius:20px;background:' + lvl
       + ';color:#fff;font-size:12px;font-weight:600">IMPACT ' + d.impact_level + '</span> '
       + esc(d.summary)
