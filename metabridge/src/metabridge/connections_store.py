@@ -84,6 +84,7 @@ STATE_TESTING = "testing"
 STATE_FAILED = "failed"
 STATE_CONNECTED = "connected"
 STATE_UNCONNECTED = "unconnected"
+STATE_NEEDS_CREDENTIAL = "needs_credential"
 
 
 def connection_state(row: dict) -> str:
@@ -95,6 +96,10 @@ def connection_state(row: dict) -> str:
     # a failed live test is the current truth (an "unsupported" probe is not
     # a failure — the connector simply has no live driver)
     if lt.get("ok") is False and not lt.get("unsupported"):
+        # a missing credential is actionable, not broken — keep it distinct
+        # from a genuine connectivity/auth failure so it isn't shown as red
+        if lt.get("needs_credential"):
+            return STATE_NEEDS_CREDENTIAL
         return STATE_FAILED
     # proven reachable: a passing test, or a successful metadata analysis
     if lt.get("ok") is True or row.get("last_analysis"):
@@ -243,13 +248,16 @@ def record_test(conn_id: str, result: dict) -> None:
                     "error": (result.get("error") or "")[:200] or None,
                 }
             else:
-                r["last_test"] = {
+                lt = {
                     "ok": bool(result.get("ok")),
                     "at": datetime.datetime.now().isoformat(
                         timespec="seconds"),
                     "latency_ms": result.get("latency_ms"),
                     "error": (result.get("error") or "")[:200] or None,
                 }
+                if result.get("needs_credential"):
+                    lt["needs_credential"] = True
+                r["last_test"] = lt
             _write(rows)
             return
 
