@@ -4,11 +4,19 @@ services:
     image: metabridge:0.1.0
     ports:
       - "8000:8000"
+    # every KEY=value in .env is passed straight into the container, so
+    # secrets (SMTP password, API keys) live only in .env — never in this
+    # file or the image. env_file passes values literally: no shell/compose
+    # interpolation, so passwords containing $ | , ? are safe as-is.
+    env_file:
+      - .env
     environment:
       # require an API key on every /api request (recommended)
       METABRIDGE_API_KEY: ${METABRIDGE_API_KEY:?set METABRIDGE_API_KEY in .env}
       # optional: enable LLM assist for unconvertible expressions
       # ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+      # Outbound email (Amazon SES SMTP) + notification links are configured
+      # entirely in .env — see .env.example for the full list.
     volumes:
       - metabridge_data:/data
     restart: unless-stopped
