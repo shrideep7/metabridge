@@ -3043,11 +3043,12 @@ const CAP_LABELS = {pipeline_scaffold:'Pipeline Scaffold', dbt:'dbt', idmc:'IDMC
 // is the single source of truth, the console never re-derives connectivity.
 const STATE_LABELS = {NOT_CONNECTED:'Connect', CONNECTED:'Connected',
   FAILED:'Failed', TESTING:'Testing…', UNCONNECTED:'Unconnected',
-  STOPPED:'Stopped'};
+  STOPPED:'Stopped', NEEDS_CREDENTIAL:'Needs credential'};
 // dot colour class + accessible wording per state; only genuine failures are
-// styled as errors — unconnected/stopped use a neutral indicator
+// styled as errors — unconnected/stopped use a neutral indicator, and a
+// missing credential is amber (actionable) rather than red (broken)
 const STATE_DOT = {CONNECTED:'', FAILED:'err', TESTING:'warn',
-  UNCONNECTED:'dis', STOPPED:'dis', NOT_CONNECTED:'dis'};
+  UNCONNECTED:'dis', STOPPED:'dis', NOT_CONNECTED:'dis', NEEDS_CREDENTIAL:'warn'};
 let allConnections = [];
 let mktFilters = {q:'', cap:'', status:''};
 
@@ -3072,6 +3073,10 @@ function connectionFor(key) {
 }
 
 async function loadSavedConnections() {
+  // connector specs drive the status label, primary action and live-test
+  // capability — load them first so a card never renders with a stale/blank
+  // spec (which made status and actions look wrong).
+  try { if (!allConnectors.length) allConnectors = (await api('/api/v1/connectors')).connectors || []; } catch (e) {}
   try {
     allConnections = (await api('/api/v1/connections')).connections || [];
   } catch (e) { allConnections = []; }
@@ -3090,6 +3095,7 @@ async function loadSavedConnections() {
     const t = x.last_test;
     const label = STATE_LABELS[st];
     const health = st === 'FAILED' ? 'Connection failed — ' + esc((t && t.error) || 'last test did not pass')
+      : st === 'NEEDS_CREDENTIAL' ? 'Password not stored — add a credential to connect (or set MB_' + esc((x.connector||'').toUpperCase()) + '_PASSWORD)'
       : st === 'CONNECTED' ? (t && t.ok ? 'Last tested ' + fmtAgo(t.at) + ' · connection healthy' : 'Reachable · analyzed ' + fmtAgo((x.last_analysis||{}).at))
       : st === 'STOPPED' ? 'Stopped — start it to use this connection'
       : st === 'TESTING' ? 'Testing connection…'
@@ -3104,6 +3110,7 @@ async function loadSavedConnections() {
     // action opens the modal to generate artifacts rather than a live probe.
     const canLive = sup.introspect !== false;   // undefined (old cache) => allow
     const primary = st === 'FAILED' ? '<button data-act="fix" data-id="' + x.id + '">Fix connection</button>'
+      : st === 'NEEDS_CREDENTIAL' ? '<button data-act="fix" data-id="' + x.id + '">Add credential</button>'
       : st === 'STOPPED' ? '<button data-act="start" data-id="' + x.id + '">Start</button>'
       : (canLive ? '<button data-act="analyze" data-id="' + x.id + '">Analyze</button>'
                  : '<button data-act="edit" data-id="' + x.id + '">Generate artifacts</button>');
@@ -3129,17 +3136,31 @@ async function loadSavedConnections() {
       + '</div><div id="connOut_' + x.id + '"></div></div>';
   }).join('') + '</div>';
 
+  const closeConnMenus = () => el.querySelectorAll('.menu').forEach(x => x.style.display = 'none');
   el.querySelectorAll('.kebab').forEach(b => b.onclick = ev => {
     ev.stopPropagation();
     const m = $('#menu_' + b.dataset.menu);
     const open = m.style.display === 'block';
-    el.querySelectorAll('.menu').forEach(x => x.style.display = 'none');
-    m.style.display = open ? 'none' : 'block';
+    closeConnMenus();
+    m.style.display = open ? 'none' : 'block';   // toggle
   });
-  document.addEventListener('click', () => el.querySelectorAll('.menu').forEach(x => x.style.display = 'none'), {once:true});
+  // Persistent outside-click + Escape close, bound ONCE for the whole app so
+  // it never self-removes (the previous {once:true} handler stopped working
+  // after the first click, leaving menus stuck open). Enterprise menu UX.
+  if (!window._connMenuGlobalBound) {
+    window._connMenuGlobalBound = true;
+    document.addEventListener('click', ev => {
+      if (ev.target.closest('#savedConns .menu, #savedConns .kebab')) return;
+      document.querySelectorAll('#savedConns .menu').forEach(x => x.style.display = 'none');
+    });
+    document.addEventListener('keydown', ev => {
+      if (ev.key === 'Escape') document.querySelectorAll('#savedConns .menu').forEach(x => x.style.display = 'none');
+    });
+  }
 
   el.querySelectorAll('button[data-act]').forEach(b => b.onclick = async ev => {
     ev.stopPropagation();
+    closeConnMenus();                            // selecting any option closes the menu
     const id = b.dataset.id, act = b.dataset.act;
     const row = allConnections.find(x => x.id === id);
     const out = $('#connOut_' + id);
@@ -3697,8 +3718,10 @@ async function openConnector(key, connId) {
         + '<span style="font-size:13px;color:#667">Upload this manifest in <strong>Pipeline Studio</strong> to generate dbt + IDMC + PowerCenter pipelines for these ' + r.tables + ' tables.</span>';
     } catch (e) { $('#artOut').innerHTML = '<label style="color:#b03a2e">Analysis failed</label><pre>' + esc(e.message || e) + '</pre>'; }
   };
-  $('#saveConn').onclick = async () => {
+  const saveBtn = $('#saveConn');
+  saveBtn.onclick = async () => {
     if (!validateFields(false)) return;   // secret may stay stored on edit
+    if (saveBtn.dataset.saving) return;   // guard double-submit
     const params = {};
     $('#modalBody').querySelectorAll('input[data-field]').forEach(i => {
       // don't overwrite a stored secret with an empty box on edit
@@ -3708,13 +3731,25 @@ async function openConnector(key, connId) {
     const payload = {connector: key, params, save_secrets: $('#savePw').checked,
                      name: ($('#connName').value || '').trim()};
     if (editRow) payload.id = editRow.id;
+    const lbl = saveBtn.textContent;
+    saveBtn.dataset.saving = '1'; saveBtn.disabled = true;
+    saveBtn.textContent = editRow ? 'Updating...' : 'Saving...';
     try {
       const d = await api('/api/v1/connections', {method:'POST', headers:{'Content-Type':'application/json'},
         body: JSON.stringify(payload)});
+      // Server-verify the SAVED config (its stored secret / MB_* env) so the
+      // Saved Connections card shows the real, current status immediately
+      // after create/update — the modal's transient test never reached the
+      // store, which is why a "Connected" test didn't move the saved card.
+      if (sup.live_test && ($('#savePw').checked || d.has_secrets)) {
+        saveBtn.textContent = 'Verifying...';
+        try { await api('/api/v1/connections/' + d.id + '/test', {method:'POST'}); } catch (e) {}
+      }
       $('#artOut').innerHTML = '<label style="color:#1e8449">' + (editRow ? 'Updated \u201C' : 'Saved as \u201C') + esc(d.name) + '\u201D — it stays available under Marketplace \u2192 Saved connections until you stop or delete it'
         + (d.has_secrets ? ' (password stored on this host, file mode 0600).' : ' (password NOT stored — supply MB_* env var or re-enter when asked).') + '</label>';
       loadSavedConnections();
     } catch (e) { $('#artOut').innerHTML = '<label style="color:#b03a2e">Save failed</label><pre>' + esc(e.message||e) + '</pre>'; }
+    finally { delete saveBtn.dataset.saving; saveBtn.disabled = false; saveBtn.textContent = lbl; }
   };
   const genBtn = $('#genArt');
   if (genBtn) genBtn.onclick = async () => {

@@ -99,9 +99,15 @@ def test_connection(key: str, params: Dict[str, str]) -> dict:
         # credentials + role only: context problems must not hide auth
         conn = _snowflake_connect(params, with_context=False)
     except Exception as e:  # noqa: BLE001 — report, never crash the app
+        msg = str(e)
+        # A missing credential is not a broken connection — it just can't be
+        # probed until a password is supplied. Flag it so the UI shows an
+        # actionable "needs credential" state instead of a red failure.
+        needs_credential = "no password provided" in msg.lower()
         return {"ok": False, "connector": key, "authenticated": False,
+                "needs_credential": needs_credential,
                 "latency_ms": int((time.time() - started) * 1000),
-                "error": str(e)[:400]}
+                "error": msg[:400]}
     report: dict = {"ok": True, "connector": key, "authenticated": True,
                     "probes": [], "steps": []}
     try:
