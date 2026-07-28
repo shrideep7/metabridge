@@ -1,4 +1,9 @@
 .venv/
+# secrets / local runtime config — NEVER commit real credentials.
+# .env holds SMTP (SES) passwords, API keys, etc.; only the example is tracked.
+.env
+.env.*
+!.env.example
 __pycache__/
 *.pyc
 *.egg-info/
