@@ -102,6 +102,68 @@ def _snowflake_connect(params: Dict[str, str],
     return snowflake.connector.connect(**kw)
 
 
+def _split_endpoint(raw: str):
+    """Tolerate a full endpoint pasted into the host field. The AWS Redshift
+    console shows an endpoint as ``host:port/database`` and JDBC/URI strings
+    are common copy-paste sources, so normalize any of::
+
+        host
+        host:5439
+        host:5439/dev
+        postgres://[user[:pw]@]host:5432/db
+        jdbc:redshift://host:5439/dev
+
+    into ``(host, port|None, database|None)``. A bare, already-clean host
+    passes through unchanged (idempotent)."""
+    s = (raw or "").strip()
+    if not s:
+        return "", None, None
+    if s.lower().startswith("jdbc:"):        # jdbc:redshift://…, jdbc:postgresql://…
+        s = s[5:]
+    idx = s.find("://")                       # scheme:// prefix
+    if idx != -1:
+        s = s[idx + 3:]
+    if "@" in s:                              # user:pw@ userinfo
+        s = s.rsplit("@", 1)[1]
+    s = s.split("?", 1)[0]                     # drop ?query params
+    database = None
+    if "/" in s:
+        s, rest = s.split("/", 1)
+        database = rest.strip() or None
+    host, port = s, None
+    if host.startswith("["):                   # [ipv6]:port
+        end = host.find("]")
+        if end != -1:
+            after = host[end + 1:]
+            host = host[:end + 1]
+            if after.startswith(":") and after[1:].isdigit():
+                port = int(after[1:])
+    elif host.count(":") == 1:                 # host:port (one colon only;
+        host, port_s = host.rsplit(":", 1)     # more => bare IPv6, leave it)
+        if port_s.isdigit():
+            port = int(port_s)
+        else:
+            host, port = "%s:%s" % (host, port_s), None
+    return host.strip(), port, database
+
+
+def _normalize_sql_params(params: Dict[str, str]) -> Dict[str, str]:
+    """Return a copy of params with a pasted full endpoint split apart: a
+    host of the form ``host:port/database`` has its port and database peeled
+    off into the dedicated fields WHEN THOSE ARE EMPTY (explicit fields
+    always win), so DNS resolves the bare hostname and introspection still
+    sees the database."""
+    p = dict(params or {})
+    host, port, database = _split_endpoint(p.get("host", ""))
+    if host:
+        p["host"] = host
+    if port and not str(p.get("port") or "").strip():
+        p["port"] = str(port)
+    if database and not str(p.get("database") or "").strip():
+        p["database"] = database
+    return p
+
+
 def _psycopg_connect(key: str, params: Dict[str, str]):
     """Open a READ-ONLY PostgreSQL / Amazon Redshift session via psycopg2.
     Both speak the same wire protocol and expose INFORMATION_SCHEMA, so a
@@ -163,12 +225,21 @@ def _sqldb_test(key: str, params: Dict[str, str]) -> dict:
     shape as the Snowflake path: authenticate first, then verify the
     schema context as a separate diagnostic step (so one wrong value never
     masks that authentication works), then count the visible objects."""
+    params = _normalize_sql_params(params)
     started = time.time()
     try:
         conn = _psycopg_connect(key, params)
     except Exception as e:  # noqa: BLE001 — report, never crash the app
         msg = str(e)
-        needs_credential = "no password provided" in msg.lower()
+        low = msg.lower()
+        needs_credential = "no password provided" in low
+        if ("translate host name" in low or "could not resolve" in low
+                or "name or service not known" in low
+                or "nodename nor servname" in low):
+            msg += (" — put ONLY the hostname in the Host field; the port "
+                    "and database belong in their own fields (an endpoint "
+                    "pasted as host:port/database is split automatically, "
+                    "so re-check the value if this persists).")
         return {"ok": False, "connector": key, "authenticated": False,
                 "needs_credential": needs_credential,
                 "latency_ms": int((time.time() - started) * 1000),
@@ -248,6 +319,7 @@ def _sqldb_introspect(key: str, params: Dict[str, str],
     """Read-only inventory for PostgreSQL / Redshift, returning the SAME
     shape as the Snowflake introspect (tables/columns/views + readiness +
     manifest) so the console and scaffold consume it unchanged."""
+    params = _normalize_sql_params(params)
     database = params.get("database", "")
     schema = (params.get("schema") or "").strip()
     if not database:
