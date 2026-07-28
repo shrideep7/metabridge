@@ -7,8 +7,9 @@ WORKDIR /opt/metabridge
 COPY pyproject.toml README.md ./
 COPY src ./src
 COPY web ./web
-# web+dtd for the app; connectors for the live driver(s) (Snowflake) so
-# Test connection / Analyze database work out of the box.
+# web+dtd for the app; connectors for the live drivers (Snowflake, plus
+# PostgreSQL/Redshift via psycopg2) so Test connection / Analyze database
+# work out of the box.
 RUN pip install --no-cache-dir ".[web,dtd,connectors]"
 
 # state (job history, uploads, outputs) lives here — mount a volume
