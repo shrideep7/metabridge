@@ -33,7 +33,7 @@ docker run -d -p 8000:8000 -e METABRIDGE_API_KEY=... -v mb_data:/data metabridge
 
 ```bash
 python3 -m venv /opt/metabridge/.venv
-/opt/metabridge/.venv/bin/pip install "/opt/metabridge/src[web,dtd]"
+/opt/metabridge/.venv/bin/pip install "/opt/metabridge/src[web,dtd,connectors]"
 ```
 
 `/etc/systemd/system/metabridge.service`:

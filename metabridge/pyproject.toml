@@ -26,6 +26,12 @@ web = ["fastapi>=0.110", "uvicorn[standard]>=0.29", "python-multipart>=0.0.9",
        "python-pptx>=0.6.23", "reportlab>=4.0"]
 llm = ["anthropic[bedrock]>=0.34"]
 dtd = ["lxml>=5.0"]
+# Live connector drivers — needed for Test connection / Analyze database /
+# Load against a live system. Snowflake is the certified live connector today
+# (see metabridge.livecheck.LIVE_CONNECTORS); add a live connector's driver
+# here as it is certified. Without this extra the deterministic engines still
+# work; only the live actions are unavailable and say so.
+connectors = ["snowflake-connector-python>=3.0"]
 # commercial control plane (multi-tenant; SQLite for dev/test, PostgreSQL in
 # production via CONTROLPLANE_DATABASE_URL — install psycopg2-binary for RDS)
 commercial = ["sqlalchemy>=2.0,<3"]
