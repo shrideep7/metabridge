@@ -64,13 +64,64 @@ WantedBy=multi-user.target
 | `ANTHROPIC_API_KEY` | *(unset)* | Enables Claude features (alternative: configure in console Settings) |
 | `METABRIDGE_AI_PROVIDER` | *(unset)* | Force `anthropic` or `bedrock` (overrides settings.json) |
 | `IDMC_USER` / `IDMC_PASSWORD` | *(unset)* | Credentials for `metabridge deploy --execute` |
-| `METABRIDGE_PUBLIC_URL` | *(request URL)* | Public base URL used when building password-reset links (set it behind a reverse proxy) |
-| `METABRIDGE_SMTP_HOST` | *(unset)* | Enables emailed password-reset links. With it: `METABRIDGE_SMTP_PORT` (587), `METABRIDGE_SMTP_USER`, `METABRIDGE_SMTP_PASSWORD`, `METABRIDGE_SMTP_FROM`, `METABRIDGE_SMTP_STARTTLS` (on by default) |
+| `METABRIDGE_PUBLIC_URL` | *(request URL)* | Public base URL used when building links in emails (set it behind a reverse proxy) |
+| `METABRIDGE_SMTP_HOST` | *(unset)* | Enables the outbound **notification service** (see below). With it: `METABRIDGE_SMTP_PORT` (587), `METABRIDGE_SMTP_USER`, `METABRIDGE_SMTP_PASSWORD`, `METABRIDGE_SMTP_FROM`, `METABRIDGE_SMTP_STARTTLS` (on), `METABRIDGE_SMTP_SSL` (off) |
+| `METABRIDGE_NOTIFY_EMAIL` | *(on)* | Master switch for outbound email; set `0` to silence all notifications without unsetting SMTP |
+| `METABRIDGE_DEPLOY_NOTIFY` | *(unset)* | Comma-separated addresses emailed on an executed `metabridge deploy --execute` (success or failure) |
 
 Connection secrets for generated pipelines (e.g. `MB_SNOWFLAKE_PASSWORD`) are
 **never stored by MetaBridge** — artifacts reference env vars that the customer
 sets on whatever runtime executes the pipelines (dbt runner, Secure Agent,
 PowerCenter integration service).
+
+### Email notifications (Amazon SES)
+
+MetaBridge sends transactional email through a single outbound service that
+speaks plain SMTP, so it works with any relay — and with the **Amazon SES SMTP
+interface** in particular. It is **off until `METABRIDGE_SMTP_HOST` is set** and
+never stores a credential itself.
+
+To wire it to SES (domain already verified in SES):
+
+1. In the SES console create **SMTP credentials** (IAM user with
+   `ses:SendRawEmail`). SES shows an SMTP username/password and an endpoint
+   `email-smtp.<region>.amazonaws.com`.
+2. Set on the server:
+
+   ```bash
+   METABRIDGE_SMTP_HOST=email-smtp.<region>.amazonaws.com   # e.g. ap-south-1
+   METABRIDGE_SMTP_PORT=587
+   METABRIDGE_SMTP_USER=<SES SMTP username>
+   METABRIDGE_SMTP_PASSWORD=<SES SMTP password>
+   METABRIDGE_SMTP_FROM=no-reply@yourdomain.com             # under the verified domain
+   METABRIDGE_PUBLIC_URL=https://metabridge.customer.example # for absolute links
+   ```
+3. Verify from **console → Settings → Notifications**: it shows provider,
+   From identity and readiness, and a **Send test email** button that mails
+   the signed-in operator and reports the real result. Health is also at
+   `GET /api/settings/notifications/email` (owner/admin).
+
+> **SES sandbox:** a new SES account can only send to *verified* recipients.
+> Request **production access** to email arbitrary users; until then the test
+> only reaches verified addresses.
+
+What gets sent (each is best-effort — a mail failure never blocks the action,
+and every event is also written to the in-app notification feed):
+
+| Event | Recipient |
+|---|---|
+| Member added | the new member — a one-time link to set their own password |
+| Role changed / member removed | the affected member |
+| Password reset requested / link minted by an admin | the account holder |
+| Password changed | the account holder (security notice) |
+| Agent action awaiting approval | the eligible approvers |
+| Approval approved / rejected | the requester |
+| Governance scan with policy violations | workspace owners & admins |
+| Critical observability alert | workspace owners & admins (deduplicated) |
+| Executed IDMC deploy (success/failure) | `METABRIDGE_DEPLOY_NOTIFY` addresses |
+
+Delivery is off the request thread by default (`METABRIDGE_NOTIFY_ASYNC`,
+on); set it to `0` in tests to send synchronously.
 
 ### Commercial Admin (optional control plane)
 

@@ -219,7 +219,7 @@ class _FakeSMTP:
     def __exit__(self, *a):
         return False
 
-    def starttls(self):
+    def starttls(self, context=None):
         pass
 
     def login(self, user, password):
@@ -229,13 +229,25 @@ class _FakeSMTP:
         _FakeSMTP.sent.append(msg)
 
 
+def _msg_text(msg):
+    """Plain-text part of a (possibly multipart text+html) email."""
+    if msg.is_multipart():
+        for part in msg.walk():
+            if part.get_content_type() == "text/plain":
+                return part.get_content()
+        return ""
+    return msg.get_content()
+
+
 def test_forgot_with_smtp_emails_a_working_link(client, monkeypatch):
     import smtplib
     monkeypatch.setenv("METABRIDGE_SMTP_HOST", "mail.example.com")
+    monkeypatch.setenv("METABRIDGE_SMTP_FROM", "no-reply@example.com")
     monkeypatch.setenv("METABRIDGE_PUBLIC_URL", "https://mb.example.com")
+    monkeypatch.setenv("METABRIDGE_NOTIFY_ASYNC", "0")   # deterministic sends
     monkeypatch.setattr(smtplib, "SMTP", _FakeSMTP)
-    _FakeSMTP.sent = []
     _add_member(client, "dev@example.com", "engineer")
+    _FakeSMTP.sent = []          # ignore the invite email sent on member creation
 
     r = client.post("/auth/forgot", json={"email": "dev@example.com"})
     assert r.status_code == 200 and r.json()["delivery"] == "email"
@@ -250,7 +262,7 @@ def test_forgot_with_smtp_emails_a_working_link(client, monkeypatch):
     assert len(_FakeSMTP.sent) == 1
     msg = _FakeSMTP.sent[0]
     assert msg["To"] == "dev@example.com"
-    link = [ln for ln in msg.get_content().splitlines()
+    link = [ln for ln in _msg_text(msg).splitlines()
             if "reset-password#token=" in ln][0].strip()
     assert link.startswith("https://mb.example.com/reset-password#token=")
     token = link.split("token=")[1]
@@ -295,8 +307,8 @@ def test_forgot_never_builds_email_link_from_host_header(client, monkeypatch):
     monkeypatch.setenv("METABRIDGE_SMTP_HOST", "mail.example.com")
     monkeypatch.delenv("METABRIDGE_PUBLIC_URL", raising=False)
     monkeypatch.setattr(smtplib, "SMTP", _FakeSMTP)
-    _FakeSMTP.sent = []
     _add_member(client, "dev@example.com", "engineer")
+    _FakeSMTP.sent = []          # ignore the invite email sent on member creation
 
     # attacker spoofs the Host header
     r = client.post("/auth/forgot", json={"email": "dev@example.com"},
@@ -313,10 +325,12 @@ def test_forgot_email_link_uses_configured_public_url_not_host(client,
                                                                monkeypatch):
     import smtplib
     monkeypatch.setenv("METABRIDGE_SMTP_HOST", "mail.example.com")
+    monkeypatch.setenv("METABRIDGE_SMTP_FROM", "no-reply@example.com")
     monkeypatch.setenv("METABRIDGE_PUBLIC_URL", "https://mb.example.com")
+    monkeypatch.setenv("METABRIDGE_NOTIFY_ASYNC", "0")   # deterministic sends
     monkeypatch.setattr(smtplib, "SMTP", _FakeSMTP)
-    _FakeSMTP.sent = []
     _add_member(client, "dev@example.com", "engineer")
+    _FakeSMTP.sent = []          # ignore the invite email sent on member creation
 
     r = client.post("/auth/forgot", json={"email": "dev@example.com"},
                     headers={"Host": "evil.attacker.example"})
@@ -324,7 +338,7 @@ def test_forgot_email_link_uses_configured_public_url_not_host(client,
     deadline = time.time() + 5
     while not _FakeSMTP.sent and time.time() < deadline:
         time.sleep(0.05)
-    body = _FakeSMTP.sent[0].get_content()
+    body = _msg_text(_FakeSMTP.sent[0])
     assert "https://mb.example.com/reset-password" in body
     assert "evil.attacker.example" not in body
 

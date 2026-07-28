@@ -1241,6 +1241,7 @@
       <div class="sgrp">PLATFORM</div>
       <button data-sec="ai">AI Runtime</button>
       <button data-sec="secrets">Connections &amp; Secrets</button>
+      <button data-sec="notifications">Notifications</button>
       <button data-sec="system">System</button>
       <div class="sgrp">ACCESS</div>
       <button data-sec="members">Members</button>
@@ -1377,6 +1378,23 @@
       <div class="set-table-wrap"><table id="secTable"></table></div>
       <div class="fhint" style="margin-top:12px">Connection credentials are stored on this server only when saving
       them was explicitly chosen; otherwise they are resolved from server environment variables at use time.</div>
+    </section>
+
+    <section class="set-sec" id="sec-notifications">
+      <h2>Notifications</h2>
+      <div class="shint">Outbound email for account, approval and operational events. Delivered over SMTP — point it at Amazon SES (<code>email-smtp.&lt;region&gt;.amazonaws.com</code>) for production.</div>
+      <div id="notifStatus" class="set-table-wrap">Loading…</div>
+      <div class="facts" style="margin-top:14px">
+        <button type="button" class="secondary" id="notifTest">Send test email to me</button>
+        <span id="notifTestMsg" style="font-size:12.5px"></span>
+      </div>
+      <div class="fhint" style="margin-top:14px">
+        Configure on the server: <code>METABRIDGE_SMTP_HOST</code>, <code>METABRIDGE_SMTP_PORT</code>,
+        <code>METABRIDGE_SMTP_USER</code>, <code>METABRIDGE_SMTP_PASSWORD</code>,
+        <code>METABRIDGE_SMTP_FROM</code> (an address under your SES-verified domain), and
+        <code>METABRIDGE_PUBLIC_URL</code> so links in emails are absolute. If your SES account is
+        still in the sandbox, mail only reaches verified recipients.
+      </div>
     </section>
 
     <section class="set-sec" id="sec-system">
@@ -1804,7 +1822,8 @@ const ROLE_LABEL = {owner: 'Owner', admin: 'Admin', engineer: 'Engineer', viewer
 const roleColor = {owner: '#101d33', admin: '#2f7bbd', engineer: '#1e8449', viewer: '#889'};
 
 const SET_LOADERS = {workspace: loadWorkspace, profile: loadProfileSec, ai: loadAiSettings,
-                     secrets: loadSecrets, system: loadSystemInfo, members: loadMembers,
+                     secrets: loadSecrets, notifications: loadNotifSettings,
+                     system: loadSystemInfo, members: loadMembers,
                      roles: renderRolesMatrix};
 
 function settingsDirty() {
@@ -1836,7 +1855,7 @@ function confirmDiscard(nextSec) {
 }
 document.querySelectorAll('#setNav button').forEach(b => b.onclick = () => showSettings(b.dataset.sec));
 $('#setNavSel').innerHTML = [['GENERAL', [['workspace', 'Workspace'], ['profile', 'Profile']]],
-  ['PLATFORM', [['ai', 'AI Runtime'], ['secrets', 'Connections & Secrets'], ['system', 'System']]],
+  ['PLATFORM', [['ai', 'AI Runtime'], ['secrets', 'Connections & Secrets'], ['notifications', 'Notifications'], ['system', 'System']]],
   ['ACCESS', [['members', 'Members'], ['roles', 'Roles & Permissions']]]]
   .map(g => '<optgroup label="' + g[0] + '">' + g[1].map(i =>
     '<option value="' + i[0] + '">' + i[1] + '</option>').join('') + '</optgroup>').join('');
@@ -2140,6 +2159,52 @@ function classifyAiFailure(detail) {
     return 'AUTHENTICATION_ERROR';
   return 'ERROR';
 }
+// -- Notifications (outbound email) settings --------------------------------
+async function loadNotifSettings() {
+  const box = $('#notifStatus'), msg = $('#notifTestMsg');
+  if (msg) msg.textContent = '';
+  box.textContent = 'Loading…';
+  try {
+    const d = await api('/api/settings/notifications/email');
+    const badge = d.ready
+      ? '<span style="color:#1e8449;font-weight:600">Ready</span>'
+      : (d.configured
+          ? '<span style="color:#c77d0a;font-weight:600">Configured — action needed</span>'
+          : '<span style="color:#8a90a0;font-weight:600">Not configured</span>');
+    const rows = [['Status', badge], ['Provider', esc(d.provider || 'none')],
+      ['From', esc(d.from || '—')],
+      ['Host', esc(d.host || '—') + (d.port ? (':' + d.port) : '')],
+      ['Transport security', esc(d.tls || '—')]];
+    let html = '<table>' + rows.map(r =>
+      '<tr><th style="text-align:left;padding:6px 16px 6px 0;color:#68738a;'
+      + 'font-weight:600;white-space:nowrap;vertical-align:top">' + r[0]
+      + '</th><td style="padding:6px 0">' + r[1] + '</td></tr>').join('')
+      + '</table>';
+    if ((d.notes || []).length)
+      html += '<ul style="margin:12px 0 0;padding-left:18px;color:#68738a;'
+        + 'font-size:12.5px;line-height:1.6">'
+        + d.notes.map(n => '<li>' + esc(n) + '</li>').join('') + '</ul>';
+    box.innerHTML = html;
+    const t = $('#notifTest');
+    if (t) { t.disabled = !d.ready || !canManageSettings(); if (!d.ready) t.title = 'Configure email first'; }
+  } catch (e) {
+    box.innerHTML = '<span style="color:#b03a2e">' + esc((e && e.message)
+      || 'Could not load email status.') + '</span>';
+  }
+}
+$('#notifTest').onclick = async () => {
+  const btn = $('#notifTest'), msg = $('#notifTestMsg'), lbl = btn.textContent;
+  btn.disabled = true; btn.textContent = 'Sending…'; msg.textContent = '';
+  try {
+    const d = await api('/api/settings/notifications/email/test', {method: 'POST'});
+    msg.style.color = '#1e8449'; msg.textContent = '✓ Sent to ' + d.sent_to;
+  } catch (e) {
+    msg.style.color = '#b03a2e'; msg.textContent = (e && e.message) || 'Send failed';
+  } finally {
+    btn.textContent = lbl; btn.disabled = false;
+  }
+};
+
 $('#aiTest').onclick = async () => {
   renderAiStatus('TESTING');
   try {
