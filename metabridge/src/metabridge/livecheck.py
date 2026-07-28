@@ -53,7 +53,17 @@ def _secret(key: str, field: str, params: Dict[str, str]) -> str:
 
 def _snowflake_connect(params: Dict[str, str],
                        with_context: bool = True):
-    import snowflake.connector  # driver import deferred: optional dep
+    try:
+        import snowflake.connector  # driver import deferred: optional dep
+    except ModuleNotFoundError as e:
+        # Actionable message instead of a bare "No module named 'snowflake'":
+        # the deployment was built without the live-connector driver.
+        raise RuntimeError(
+            "The Snowflake driver is not installed in this deployment. "
+            "Rebuild the image with the connectors extra — "
+            "pip install 'metabridge[web,dtd,connectors]' "
+            "(adds snowflake-connector-python) — then retry Test connection."
+        ) from e
     kw = {
         "account": params.get("account", ""),
         "user": params.get("user", ""),
