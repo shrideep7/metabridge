@@ -491,20 +491,22 @@ async def auth_forgot(request: Request):
     email = str(body.get("email", "")).strip().lower()
     if not email or "@" not in email:
         raise HTTPException(422, "Enter the email address of your account")
-    # Email delivery needs a trustworthy absolute base URL. Because this is
-    # an UNAUTHENTICATED request, we never build the link from the (spoofable)
-    # Host header — if METABRIDGE_PUBLIC_URL is unset we fall through to the
-    # admin-notification path rather than email an attacker-controlled link.
+    # Email the reset link whenever outbound email is configured. The link's
+    # base URL is METABRIDGE_PUBLIC_URL when set (authoritative — the spoofable
+    # Host header is ignored, the recommended setup behind a reverse proxy);
+    # when it is NOT set we fall back to the request origin so a directly
+    # accessed self-hosted deployment sends a working link out of the box.
+    # (Only when NO relay is configured do we fall through to notifying the
+    # workspace admins so a locked-out user still has a path back in.)
     from metabridge import notify
-    can_email = (notify.email_enabled()
-                 and _public_base(request, False) is not None)
+    can_email = notify.email_enabled()
     if can_email:
         token = AUTH.create_reset_token(email)   # None when no such account
         if token:
             # the service delivers off-request, so response timing is
             # identical whether or not the account exists (no enumeration
             # via latency) and delivery is never confirmed/denied
-            link = _reset_link(request, token, trust_request=False)
+            link = _reset_link(request, token, trust_request=True)
             notify.reset_link(email, "", link)
         return {"ok": True, "delivery": "email",
                 "detail": "If that email has an account here, a reset link "

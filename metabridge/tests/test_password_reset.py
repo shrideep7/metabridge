@@ -300,25 +300,32 @@ class _NoSendSMTP(_FakeSMTP):
     pass
 
 
-def test_forgot_never_builds_email_link_from_host_header(client, monkeypatch):
-    """Host-header poisoning guard: an unauthenticated /auth/forgot must not
-    email a link whose host comes from the (spoofable) Host header."""
+def test_forgot_falls_back_to_request_origin_without_public_url(client,
+                                                                monkeypatch):
+    """Self-hosted convenience: with no METABRIDGE_PUBLIC_URL configured, an
+    unauthenticated /auth/forgot still emails a WORKING reset link built from
+    the request origin (rather than going quiet). Behind a proxy, operators
+    set METABRIDGE_PUBLIC_URL so the Host header is never trusted — that
+    guarantee is covered by the companion test below."""
     import smtplib
     monkeypatch.setenv("METABRIDGE_SMTP_HOST", "mail.example.com")
+    monkeypatch.setenv("METABRIDGE_SMTP_FROM", "no-reply@example.com")
+    monkeypatch.setenv("METABRIDGE_NOTIFY_ASYNC", "0")
     monkeypatch.delenv("METABRIDGE_PUBLIC_URL", raising=False)
     monkeypatch.setattr(smtplib, "SMTP", _FakeSMTP)
     _add_member(client, "dev@example.com", "engineer")
     _FakeSMTP.sent = []          # ignore the invite email sent on member creation
 
-    # attacker spoofs the Host header
-    r = client.post("/auth/forgot", json={"email": "dev@example.com"},
-                    headers={"Host": "evil.attacker.example"})
-    assert r.status_code == 200
-    # with no configured public URL we refuse to email a Host-derived link
-    # and fall back to admin-notification delivery instead
-    assert r.json()["delivery"] == "admin"
-    time.sleep(0.3)
-    assert _FakeSMTP.sent == []          # nothing emailed to a spoofed host
+    r = client.post("/auth/forgot", json={"email": "dev@example.com"})
+    assert r.status_code == 200 and r.json()["delivery"] == "email"
+    assert len(_FakeSMTP.sent) == 1
+    link = [ln for ln in _msg_text(_FakeSMTP.sent[0]).splitlines()
+            if "reset-password#token=" in ln][0].strip()
+    assert link.startswith("http://testserver/reset-password#token=")
+    token = link.split("token=")[1]
+    assert client.post("/auth/reset",
+                       json={"token": token,
+                             "password": "originpass1"}).status_code == 200
 
 
 def test_forgot_email_link_uses_configured_public_url_not_host(client,
