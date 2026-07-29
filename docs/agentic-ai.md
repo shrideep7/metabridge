@@ -192,7 +192,7 @@ Every agent action — and every human approve/reject decision — is appended t
 }
 ```
 
-**Honest scope.** This detects tampering by anyone *without* the server key. It is not a substitute for an external, independently-anchored ledger against an attacker who *also* holds the key. This is audit evidence — not a certification, and no SOC 2 or ISO claim is implied. See [Governance & Security](governance-security.md).
+**Honest scope.** This detects tampering by anyone *without* the server key — altered events, reordering, deletion or insertion of a *middle* event, and appended forgeries are all caught. It does **not** detect truncation of the chain's *tail* (deleting the most recent N events leaves the remainder internally consistent), and it is not a substitute for an external, independently-anchored ledger against an attacker who *also* holds the key. This is audit evidence — not a certification, and no SOC 2 or ISO claim is implied. See [Governance & Security](governance-security.md).
 
 ## How a run executes
 

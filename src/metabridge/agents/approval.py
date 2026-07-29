@@ -24,6 +24,13 @@ class ApprovalError(Exception):
     """Approval-queue error."""
 
 
+def _canon(identity: str) -> str:
+    """Normalize an identity string for segregation-of-duties comparison —
+    case and surrounding whitespace must not defeat the requester/approver
+    check (e.g. 'alice' vs 'Alice' vs ' alice')."""
+    return str(identity or "").strip().lower()
+
+
 class ApprovalQueue:
     def __init__(self, data_dir: str = "") -> None:
         base = Path(data_dir or os.environ.get("METABRIDGE_DATA_DIR",
@@ -71,7 +78,15 @@ class ApprovalQueue:
                      created_at: str = "", requested_by: str = "") -> str:
         """Record a pending approval for one agent result. The approval id
         is deterministic per (run, agent). Re-opening an ALREADY-DECIDED
-        request is a no-op (never resets a decision back to pending)."""
+        request is a no-op (never resets a decision back to pending).
+
+        requested_by is mandatory — segregation of duties can only be
+        enforced against a known requester, so an unresolved identity is a
+        hard failure here rather than a silently disabled check."""
+        if not requested_by:
+            raise ApprovalError(
+                "requested_by is required — segregation of duties cannot "
+                "be enforced against an unknown requester")
         approval_id = "%s:%s" % (run_id, result.agent_id)
         with self._locked():
             state = self._load()
@@ -118,9 +133,12 @@ class ApprovalQueue:
                 raise ApprovalError("%s already %s" % (approval_id,
                                                        rec["status"]))
             # segregation of duties: the run's requester may not
-            # self-approve their own consequential action
-            if status == "approved" and rec.get("requested_by") and \
-                    approver == rec.get("requested_by"):
+            # self-approve their own consequential action. Identities are
+            # canonicalized so case/whitespace/format differences can't
+            # bypass the check (rec["requested_by"] is always set — see
+            # open_request's mandatory-requester guard).
+            if status == "approved" and \
+                    _canon(approver) == _canon(rec.get("requested_by")):
                 raise ApprovalError(
                     "%s cannot approve their own run's action — a different "
                     "approver is required" % approver)
@@ -146,7 +164,7 @@ class ApprovalQueue:
             if rec["status"] != "pending":
                 raise ApprovalError("%s already %s" % (approval_id,
                                                        rec["status"]))
-            if rec.get("requested_by") and claimer == rec["requested_by"]:
+            if _canon(claimer) == _canon(rec.get("requested_by")):
                 raise ApprovalError(
                     "%s cannot claim their own run's action — a different "
                     "approver is required" % claimer)

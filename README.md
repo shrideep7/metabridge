@@ -35,7 +35,7 @@ tamper-evident audit trail — automation a regulated client's risk team will ac
 | **Design** | Semantic Intelligence (parsed IR → platform-neutral CIR) · Pipeline Studio |
 | **Migrate** | Migration Engine — 8 source platforms + 10 SQL dialects → cloud/dbt targets, with AI review + human approve-and-apply |
 | **Validate** | Validation Engine — confidence scoring, lineage, reconciliation |
-| **Govern** | Governance Engine (PII/PHI classification, residency & masking policy) · tamper-evident Audit |
+| **Govern** | Governance Engine (metadata-based PII/PHI classification, residency & masking policy) · tamper-evident Audit |
 | **Operate** | Observability (pipeline / agent / connector health, SLA, alerting) · Documentation (14 doc types) · Agent Orchestration |
 
 Every engine reads and writes the same **7 canonical models** (IR pipeline, CIR project,

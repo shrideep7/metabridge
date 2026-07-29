@@ -205,7 +205,7 @@ Every event carries the acting agent, task type, action class, governance decisi
 
 ### Honest scope
 
-This chain detects tampering by anyone **without** the server key. It is not a substitute for an external, independently anchored ledger against an attacker who **also** holds the server key. As with everything else in this layer, the platform tells you exactly what the guarantee is and where it ends.
+This chain detects tampering by anyone **without** the server key. It does **not** detect truncation of the chain's tail — deleting the most recent N events leaves every remaining event internally consistent, since nothing pins an externally-expected event count or head. It is not a substitute for an external, independently anchored ledger against an attacker who **also** holds the server key. As with everything else in this layer, the platform tells you exactly what the guarantee is and where it ends.
 
 ---
 

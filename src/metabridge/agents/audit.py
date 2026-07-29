@@ -4,16 +4,22 @@ Each event is chained to the previous one and sealed with an HMAC-SHA256
 keyed by a server-held secret (``entry_hash = HMAC(key, prev_hash +
 canonical(event))``). Because the key is held by the server and is NOT
 stored in the persisted run report, an editor of the report JSON cannot
-recompute a valid chain — so any later edit, reordering, deletion or
+recompute a valid chain — so an altered event, a reordered chain, or an
 appended forgery is detectable via ``verify()``. ``verify()`` also
-checks sequence contiguity, so a removed middle event is caught. The
-trail records the governance decision behind every action (successes,
-denials, skips, failures AND human approve/reject decisions) so the
-record is complete, not curated.
+checks sequence contiguity, so a deleted or inserted MIDDLE event is
+caught. The trail records the governance decision behind every action
+(successes, denials, skips, failures AND human approve/reject decisions)
+so the record is complete, not curated.
 
 Honest scope: this detects tampering by anyone without the server key;
 it is not a substitute for an external, independently-anchored ledger
-against an attacker who also holds the key.
+against an attacker who also holds the key. It also does NOT detect
+truncation of the chain's TAIL — deleting the most recent N events
+leaves every remaining event internally consistent, since nothing here
+pins an externally-expected event count or head against the persisted
+one (contrast ``metabridge_control/audit.py``, which anchors the head
+in a separate table for exactly this reason). Callers that need
+tail-truncation detection should use that DB-backed chain instead.
 """
 from __future__ import annotations
 

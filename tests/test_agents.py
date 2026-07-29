@@ -118,7 +118,7 @@ def test_governance_preapproval_and_failed():
 def test_approval_queue_lifecycle(tmp_path):
     q = ApprovalQueue(data_dir=str(tmp_path / "q"))
     r = _res(ActionClass.GENERATE, 0.9, task_type="migration")
-    aid = q.open_request("run1", r, ["needs approval"])
+    aid = q.open_request("run1", r, ["needs approval"], requested_by="alex@x.com")
     assert len(q.pending()) == 1
     q.approve(aid, approver="sam", note="ok")
     assert q.get(aid)["status"] == "approved" and q.get(aid)["approver"] == "sam"
@@ -126,7 +126,10 @@ def test_approval_queue_lifecycle(tmp_path):
     with pytest.raises(ApprovalError):
         q.approve(aid, approver="sam")            # already decided
     with pytest.raises(ApprovalError):
-        q.reject(q.open_request("run1", r, []), approver="")  # approver req'd
+        q.reject(q.open_request("run1", r, [], requested_by="alex@x.com"),
+                approver="")  # approver req'd
+    with pytest.raises(ApprovalError):
+        q.open_request("run2", r, [])              # requested_by mandatory
 
 
 # --- orchestrator plan / cycle / skip -------------------------------------
@@ -164,7 +167,8 @@ def test_unmet_dependency_is_skipped():
 def full_run(tmp_path):
     ctx = SharedContext(paths=[FIXTURE], project="retail", target_region="us")
     orch = TaskOrchestrator()
-    return ctx, orch, orch.run(ctx, created_at="2026-07-14")
+    return ctx, orch, orch.run(ctx, created_at="2026-07-14",
+                               requested_by="requester@x.com")
 
 
 def test_full_run_all_agents_scored_and_audited(full_run):
@@ -201,7 +205,8 @@ def test_full_run_executive_synthesizes(full_run):
 def test_preapproval_commits_generate(tmp_path):
     ctx = SharedContext(paths=[FIXTURE], project="retail")
     orch = TaskOrchestrator()
-    rep = orch.run(ctx, preapproved={"migration"}, approver="sam")
+    rep = orch.run(ctx, preapproved={"migration"}, approver="sam",
+                   requested_by="requester@x.com")
     mig = by_key(rep, "migration")
     assert mig["decision"] == Decision.APPROVED and mig["approver"] == "sam"
     assert ctx.memory.has("migration")
@@ -365,9 +370,9 @@ def test_governance_sensitivity_overrides_preapproval():
 def test_approval_open_request_does_not_clobber_decision(tmp_path):
     q = ApprovalQueue(data_dir=str(tmp_path / "q"))
     r = _res(ActionClass.GENERATE, 0.9, task_type="migration")
-    aid = q.open_request("run1", r, [])
+    aid = q.open_request("run1", r, [], requested_by="alex@x.com")
     q.approve(aid, approver="sam")
-    q.open_request("run1", r, [])              # re-open must NOT reset it
+    q.open_request("run1", r, [], requested_by="alex@x.com")  # re-open must NOT reset it
     assert q.get(aid)["status"] == "approved" and q.get(aid)["approver"] == "sam"
 
 
@@ -384,7 +389,7 @@ def test_get_run_reverifies_and_detects_tampering():
     import json
     ctx = SharedContext(paths=[FIXTURE])
     orch = TaskOrchestrator()
-    run_id = orch.run(ctx)["run_id"]
+    run_id = orch.run(ctx, requested_by="requester@x.com")["run_id"]
     assert orch.get_run(run_id)["audit"]["verification"]["intact"]
     f = orch._runs_dir / (run_id + ".json")
     doc = json.loads(f.read_text())
@@ -397,7 +402,7 @@ def test_get_run_reverifies_and_detects_tampering():
 def test_record_decision_is_audited():
     ctx = SharedContext(paths=[FIXTURE])
     orch = TaskOrchestrator()
-    run_id = orch.run(ctx)["run_id"]
+    run_id = orch.run(ctx, requested_by="requester@x.com")["run_id"]
     n0 = len(orch.get_run(run_id)["audit"]["events"])
     ev = orch.record_decision(run_id, "migration", "approved", "boss@x.com",
                               summary="ok")
@@ -420,7 +425,7 @@ def test_parser_coverage_penalizes_failed_sources():
 
 def test_executive_coverage_scoped_to_declared_deps():
     ctx = SharedContext(paths=[FIXTURE])
-    TaskOrchestrator().run(ctx)
+    TaskOrchestrator().run(ctx, requested_by="requester@x.com")
     er = ctx.memory.get("executive_report")
     # ExecutiveReporting declares 7 deps; coverage counts only those, not
     # every 'ok' agent (semantic etc. commit too but are not deps)
