@@ -1623,6 +1623,24 @@
 
 <script>
 const $ = s => document.querySelector(s);
+// --- section-container integrity (self-heal) --------------------------------
+// Every section must be a DIRECT child of <main>: only one is shown at a time
+// by toggling .visible, so a section nested inside another one is hidden
+// whenever its host is hidden — which renders it blank/"not visible" no matter
+// what the user clicks. A single unbalanced tag anywhere in the markup (a bad
+// merge, a hand edit, a truncated file) makes the browser nest every following
+// section inside the previous one. Rather than fail, re-parent them.
+let gPagesRepaired = 0;
+(function repairSectionContainers() {
+  const main = document.querySelector('main');
+  if (!main) return;
+  document.querySelectorAll('.page').forEach(p => {
+    if (p.parentElement !== main) { main.appendChild(p); gPagesRepaired++; }
+  });
+  if (gPagesRepaired)
+    console.warn('MetaBridge: repaired ' + gPagesRepaired + ' misnested section'
+      + ' container(s) — the page markup is malformed (rebuild recommended).');
+})();
 let apiKey = localStorage.getItem('mb_api_key') || '';
 
 async function api(url, opts = {}) {
@@ -2078,16 +2096,27 @@ function withKey(url) { return apiKey ? url + (url.includes('?') ? '&' : '?') + 
 
 /* navigation */
 let gBuildId = '';
-function sectionError(label, why) {
+function sectionError(label, why, el) {
   const box = $('#sectionErr');
   if (!box) return;
+  let diag = '';
+  if (el) {
+    const host = el.parentElement;
+    diag = 'container: parent=' + esc(host ? (host.id || host.tagName) : 'none')
+      + ', height=' + el.offsetHeight
+      + ', children=' + el.children.length
+      + (el.offsetParent === null ? ', hidden by an ancestor' : '');
+  }
   $('#sectionErrTitle').textContent = label + ' did not render.';
   $('#sectionErrBody').innerHTML = esc(why)
     + '<br>Most often this is a stale cached page: reload with '
     + '<b>Ctrl+Shift+R</b> (Cmd+Shift+R on macOS). If it persists, rebuild the '
     + 'server image (<code>docker compose up -d --build</code>) and reload.'
-    + (gBuildId ? '<br><span style="font-size:12px;opacity:.8">console build '
-      + esc(gBuildId) + '</span>' : '');
+    + (diag ? '<br><span style="font-size:12px;opacity:.8">' + diag + '</span>' : '')
+    + '<br><span style="font-size:12px;opacity:.8">console build '
+    + esc(gBuildId || 'unknown')
+    + (gPagesRepaired ? ' · repaired ' + gPagesRepaired + ' misnested section(s)' : '')
+    + '</span>';
   box.style.display = 'block';
 }
 document.querySelectorAll('nav a[data-page]').forEach(a => a.onclick = () => {
@@ -2104,10 +2133,16 @@ document.querySelectorAll('nav a[data-page]').forEach(a => a.onclick = () => {
   }
   target.classList.add('visible');
   // ...and verify it is actually on screen; a hidden/zero-height container is
-  // the blank-page symptom, so surface it instead of showing nothing.
+  // the blank-page symptom, so surface it instead of showing nothing. A
+  // misnested container is repaired here too, so a malformed page still works.
   requestAnimationFrame(() => {
+    const main = document.querySelector('main');
+    if (target.offsetParent === null && main && target.parentElement !== main) {
+      main.appendChild(target);          // late self-heal, then re-measure
+      gPagesRepaired++;
+    }
     if (target.offsetParent === null || target.offsetHeight === 0)
-      sectionError(label, 'The section is present but not visible.');
+      sectionError(label, 'The section is present but not visible.', target);
   });
   $('#crumb').innerHTML = 'Workspace / <b>' + label + '</b>';
   document.querySelector('main').classList.toggle('wide',
