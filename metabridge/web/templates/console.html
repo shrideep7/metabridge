@@ -550,9 +550,19 @@
   <div class="panel">
     <h3 style="margin-bottom:10px">Active modernizations</h3>
     <table id="modTable"></table>
+    <div id="modTablePager" style="display:none;align-items:center;gap:12px;margin-top:12px;flex-wrap:wrap">
+      <button type="button" class="secondary" id="modTablePrev" style="margin:0;padding:5px 12px">&larr; Previous</button>
+      <span id="modTablePageInfo" style="font-size:12.5px;color:var(--ink3)" role="status" aria-live="polite"></span>
+      <button type="button" class="secondary" id="modTableNext" style="margin:0;padding:5px 12px">Next &rarr;</button>
+    </div>
   </div>
   <div class="panel"><h3 style="margin-bottom:10px">Recent activity</h3>
     <table id="jobTable"><tr><th>When</th><th>Type</th><th>Project</th><th>Status</th><th>Key figures</th><th></th></tr></table>
+    <div id="jobTablePager" style="display:none;align-items:center;gap:12px;margin-top:12px;flex-wrap:wrap">
+      <button type="button" class="secondary" id="jobTablePrev" style="margin:0;padding:5px 12px">&larr; Previous</button>
+      <span id="jobTablePageInfo" style="font-size:12.5px;color:var(--ink3)" role="status" aria-live="polite"></span>
+      <button type="button" class="secondary" id="jobTableNext" style="margin:0;padding:5px 12px">Next &rarr;</button>
+    </div>
   </div>
 </div>
 
@@ -927,7 +937,13 @@
     </div>
   </div>
 
-  <div class="panel"><table id="reportsTable"></table></div>
+  <div class="panel"><table id="reportsTable"></table>
+    <div id="reportsTablePager" style="display:none;align-items:center;gap:12px;margin-top:12px;flex-wrap:wrap">
+      <button type="button" class="secondary" id="reportsTablePrev" style="margin:0;padding:5px 12px">&larr; Previous</button>
+      <span id="reportsTablePageInfo" style="font-size:12.5px;color:var(--ink3)" role="status" aria-live="polite"></span>
+      <button type="button" class="secondary" id="reportsTableNext" style="margin:0;padding:5px 12px">Next &rarr;</button>
+    </div>
+  </div>
 </div>
 
 <!-- ======================= OBSERVABILITY ======================= -->
@@ -1001,29 +1017,51 @@
   <div style="display:flex;gap:16px;flex-wrap:wrap;align-items:flex-start">
     <div class="panel" style="flex:1.2;min-width:340px">
       <h3 style="margin-bottom:4px">Needs attention</h3>
-      <div style="color:#889;font-size:12px;margin-bottom:8px">Actionable items assembled from live workspace state — fix them from here.</div>
+      <div style="color:var(--muted);font-size:12px;margin-bottom:8px">Actionable items assembled from live workspace state — fix them from here.</div>
       <div id="sysAttention"></div>
     </div>
     <div class="panel" style="flex:1;min-width:320px">
-      <h3 style="margin-bottom:8px">Shared canonical models</h3>
-      <div style="color:var(--muted);font-size:12px;margin-bottom:8px">Engines compose over these, not point-to-point.</div>
-      <div id="sysCanonical"></div>
+      <h3 style="margin-bottom:4px">Recent activity</h3>
+      <div style="color:var(--muted);font-size:12px;margin-bottom:8px">Latest runs in this workspace — click one for its artifacts and reports.</div>
+      <div id="sysActivity"></div>
     </div>
   </div>
 
-  <div style="display:flex;gap:16px;flex-wrap:wrap">
-    <div class="panel" style="flex:1;min-width:320px">
-      <h3 style="margin-bottom:8px">Feature flags</h3>
-      <div style="color:var(--muted);font-size:12px;margin-bottom:8px">Deterministic gating (enable · role · rollout). Toggling needs Settings-manage rights.</div>
-      <div id="sysFlags"></div>
+  <!-- platform internals: the engine/service/model manifest, for admins -->
+  <details id="sysInternals" style="margin-top:18px">
+    <summary style="cursor:pointer;font-weight:700;font-size:14px;padding:10px 4px;color:var(--ink2)">
+      Platform internals <span style="color:var(--muted);font-weight:400;font-size:12.5px">— engines, services, canonical models, feature flags &amp; versions</span>
+    </summary>
+    <div class="mkt-metrics" id="sysOsMetrics" style="margin:10px 0 14px"></div>
+    <div class="sec-head"><h3>Core engines</h3><span class="cnt" id="sysEngCount"></span></div>
+    <div id="sysEngines"></div>
+
+    <div style="display:flex;gap:16px;flex-wrap:wrap;margin-top:8px">
+      <div class="panel" style="flex:1;min-width:320px">
+        <h3 style="margin-bottom:8px">Common platform services</h3>
+        <div id="sysServices"></div>
+      </div>
+      <div class="panel" style="flex:1;min-width:320px">
+        <h3 style="margin-bottom:8px">Shared canonical models</h3>
+        <div style="color:var(--muted);font-size:12px;margin-bottom:8px">Engines compose over these, not point-to-point.</div>
+        <div id="sysCanonical"></div>
+      </div>
     </div>
-    <div class="panel" style="flex:1;min-width:320px">
-      <h3 style="margin-bottom:8px">Component versions</h3>
-      <table id="sysVersions"></table>
-      <h3 style="margin:14px 0 8px">Notifications <span id="sysNotifCount" style="font-size:12px;color:var(--muted)"></span></h3>
-      <div id="sysNotifs" style="font-size:12.5px;max-height:200px;overflow-y:auto"></div>
+
+    <div style="display:flex;gap:16px;flex-wrap:wrap">
+      <div class="panel" style="flex:1;min-width:320px">
+        <h3 style="margin-bottom:8px">Feature flags</h3>
+        <div style="color:var(--muted);font-size:12px;margin-bottom:8px">Deterministic gating (enable · role · rollout). Toggling needs Settings-manage rights.</div>
+        <div id="sysFlags"></div>
+      </div>
+      <div class="panel" style="flex:1;min-width:320px">
+        <h3 style="margin-bottom:8px">Component versions</h3>
+        <table id="sysVersions"></table>
+        <h3 style="margin:14px 0 8px">Notifications <span id="sysNotifCount" style="font-size:12px;color:var(--muted)"></span></h3>
+        <div id="sysNotifs" style="font-size:12.5px;max-height:200px;overflow-y:auto"></div>
+      </div>
     </div>
-  </div>
+  </details>
 </div>
 
 <!-- ======================= CONVERT ======================= -->
@@ -1324,6 +1362,11 @@
     <div style="color:var(--ink3);font-size:13px;margin-bottom:8px">AI-proposed corrections are never applied automatically —
     every proposal shows its evidence and requires an explicit approval.</div>
     <table id="govQueue"></table>
+    <div id="govQueuePager" style="display:none;align-items:center;gap:12px;margin-top:12px;flex-wrap:wrap">
+      <button type="button" class="secondary" id="govQueuePrev" style="margin:0;padding:5px 12px">&larr; Previous</button>
+      <span id="govQueuePageInfo" style="font-size:12.5px;color:var(--ink3)" role="status" aria-live="polite"></span>
+      <button type="button" class="secondary" id="govQueueNext" style="margin:0;padding:5px 12px">Next &rarr;</button>
+    </div>
   </div>
   <div class="panel" id="govRisksPanel" style="display:none">
     <h3 style="margin-bottom:8px">Migration risks</h3>
@@ -1584,6 +1627,11 @@
       <div class="shint">Credential references and health for this workspace. Secret values are never displayed;
       configuration happens inside each integration.</div>
       <div class="set-table-wrap"><table id="secTable"></table></div>
+      <div id="secTablePager" style="display:none;align-items:center;gap:12px;margin-top:12px;flex-wrap:wrap">
+        <button type="button" class="secondary" id="secTablePrev" style="margin:0;padding:5px 12px">&larr; Previous</button>
+        <span id="secTablePageInfo" style="font-size:12.5px;color:var(--ink3)" role="status" aria-live="polite"></span>
+        <button type="button" class="secondary" id="secTableNext" style="margin:0;padding:5px 12px">Next &rarr;</button>
+      </div>
       <div class="fhint" style="margin-top:12px">Connection credentials are stored on this server only when saving
       them was explicitly chosen; otherwise they are resolved from server environment variables at use time.</div>
     </section>
@@ -2669,16 +2717,23 @@ async function loadSecrets() {
       go: 'marketplace'}));
   } catch (e) {}
   const stColor = s => s === 'Not configured' ? 'var(--amber)' : 'var(--green)';
-  $('#secTable').innerHTML = '<tr><th>Credential</th><th>Used by</th><th>Status</th><th></th></tr>'
-    + rows.map((r, i) => '<tr><td><b>' + esc(r.name) + '</b></td><td>' + esc(r.used) + '</td>'
-      + '<td><span class="stat"><i style="background:' + stColor(r.status) + '"></i>'
-      + esc(r.status) + '</span></td>'
-      + '<td style="text-align:right"><a data-sgo="' + r.go + '" style="color:var(--accent);'
-      + 'font-weight:600;cursor:pointer">Configure</a></td></tr>').join('');
-  $('#secTable').querySelectorAll('[data-sgo]').forEach(a => a.onclick = () => {
-    if (a.dataset.sgo === 'ai') showSettings('ai');
-    else document.querySelector('nav a[data-page="marketplace"]').click();
-  });
+  const secRows = rows.map(r => '<tr><td><b>' + esc(r.name) + '</b></td><td>' + esc(r.used) + '</td>'
+    + '<td><span class="stat"><i style="background:' + stColor(r.status) + '"></i>'
+    + esc(r.status) + '</span></td>'
+    + '<td style="text-align:right"><a data-sgo="' + r.go + '" style="color:var(--accent);'
+    + 'font-weight:600;cursor:pointer">Configure</a></td></tr>');
+  const secHeader = '<tr><th>Credential</th><th>Used by</th><th>Status</th><th></th></tr>';
+  const secEmpty = '<tr><td colspan=4 style="color:var(--muted)">No credentials yet.</td></tr>';
+  const renderSecTable = () => {
+    renderPage('secTable', secRows, secHeader, secEmpty, 'credentials', () => {
+      $('#secTable').querySelectorAll('[data-sgo]').forEach(a => a.onclick = () => {
+        if (a.dataset.sgo === 'ai') showSettings('ai');
+        else document.querySelector('nav a[data-page="marketplace"]').click();
+      });
+    });
+  };
+  renderSecTable();
+  bindPager('secTable', renderSecTable);
 }
 
 /* ---- members ---- */
@@ -2694,53 +2749,61 @@ async function loadMembers() {
   try { d = await api('/api/users'); }
   catch (e) { err.textContent = e.message; err.style.display = 'block'; return; }
   const owners = d.users.filter(u => u.role === 'owner').length;
-  $('#memBody').innerHTML = '<div class="set-table-wrap"><table id="memTable">'
-    + '<tr><th>Member</th><th>Email</th><th>Role</th><th>Joined</th><th>Status</th><th></th></tr>'
-    + d.users.map(u => {
-        const isMe = u.email === myEmail;
-        const soleOwner = u.role === 'owner' && owners <= 1;
-        // mirrors the server rules: only owners may change/remove/reset
-        // owner accounts; the sole owner can never be demoted or removed
-        const canMutate = !soleOwner && (u.role !== 'owner' || myPerms._role === 'owner');
-        const canReset = canResetFor(u);
-        return '<tr data-email="' + esc(u.email) + '">'
-          + '<td><div class="mem-cell"><span class="avatar" data-avatar></span>'
-          + '<span><b>' + esc(getUserDisplayName(u)) + '</b>'
-          + (isMe ? '<div class="you">You</div>' : '') + '</span></div></td>'
-          + '<td style="color:var(--ink3)">' + esc(u.email) + '</td>'
-          + '<td>' + badge(ROLE_LABEL[u.role] || u.role, roleColor[u.role] || 'var(--ink3)') + '</td>'
-          + '<td style="color:var(--muted)">' + esc((u.created || '').slice(0, 10)) + '</td>'
-          + '<td><span class="stat"><i style="background:var(--green)"></i>Active</span></td>'
-          + '<td style="text-align:right">' + (isMe || !(canMutate || canReset) ? ''
-              : '<div class="rowmenu"><button class="kebab" style="position:static" '
-                + 'aria-haspopup="menu" aria-label="Member actions">&#8942;</button>'
-                + '<div class="menu" role="menu">'
-                + (canMutate ? '<button data-act="role" role="menuitem">Change role…</button>' : '')
-                + (canReset ? '<button data-act="reset" role="menuitem">Send reset link…</button>' : '')
-                + (canMutate ? '<button data-act="rm" class="signout" role="menuitem">Remove from workspace</button>' : '')
-                + '</div></div>')
-          + '</td></tr>';
-      }).join('') + '</table></div>';
-  d.users.forEach(u => {
-    const slot = document.querySelector('#memTable tr[data-email="'
-      + (window.CSS && CSS.escape ? CSS.escape(u.email) : u.email) + '"] [data-avatar]');
-    if (slot) renderAvatar(slot, u);
+  $('#memBody').innerHTML = '<div class="set-table-wrap"><table id="memTable"></table>'
+    + pagerHtml('memTable') + '</div>';
+  const memRows = d.users.map(u => {
+    const isMe = u.email === myEmail;
+    const soleOwner = u.role === 'owner' && owners <= 1;
+    // mirrors the server rules: only owners may change/remove/reset
+    // owner accounts; the sole owner can never be demoted or removed
+    const canMutate = !soleOwner && (u.role !== 'owner' || myPerms._role === 'owner');
+    const canReset = canResetFor(u);
+    return '<tr data-email="' + esc(u.email) + '">'
+      + '<td><div class="mem-cell"><span class="avatar" data-avatar></span>'
+      + '<span><b>' + esc(getUserDisplayName(u)) + '</b>'
+      + (isMe ? '<div class="you">You</div>' : '') + '</span></div></td>'
+      + '<td style="color:var(--ink3)">' + esc(u.email) + '</td>'
+      + '<td>' + badge(ROLE_LABEL[u.role] || u.role, roleColor[u.role] || 'var(--ink3)') + '</td>'
+      + '<td style="color:var(--muted)">' + esc((u.created || '').slice(0, 10)) + '</td>'
+      + '<td><span class="stat"><i style="background:var(--green)"></i>Active</span></td>'
+      + '<td style="text-align:right">' + (isMe || !(canMutate || canReset) ? ''
+          : '<div class="rowmenu"><button class="kebab" style="position:static" '
+            + 'aria-haspopup="menu" aria-label="Member actions">&#8942;</button>'
+            + '<div class="menu" role="menu">'
+            + (canMutate ? '<button data-act="role" role="menuitem">Change role…</button>' : '')
+            + (canReset ? '<button data-act="reset" role="menuitem">Send reset link…</button>' : '')
+            + (canMutate ? '<button data-act="rm" class="signout" role="menuitem">Remove from workspace</button>' : '')
+            + '</div></div>')
+      + '</td></tr>';
   });
-  document.querySelectorAll('#memTable .kebab').forEach(k => k.onclick = ev => {
-    ev.stopPropagation();
-    const m = k.nextElementSibling;
-    const open = m.style.display === 'block';
-    document.querySelectorAll('#memTable .rowmenu .menu').forEach(x => { x.style.display = 'none'; });
-    m.style.display = open ? 'none' : 'block';
-    if (!open) document.addEventListener('click', () => { m.style.display = 'none'; }, {once: true});
-  });
-  document.querySelectorAll('#memTable [data-act]').forEach(b => b.onclick = () => {
-    const email = b.closest('tr').dataset.email;
-    const u = d.users.find(x => x.email === email);
-    if (b.dataset.act === 'role') openRoleDialog(u);
-    else if (b.dataset.act === 'reset') openResetLinkDialog(u);
-    else openRemoveMemberDialog(u);
-  });
+  const memHeader = '<tr><th>Member</th><th>Email</th><th>Role</th><th>Joined</th><th>Status</th><th></th></tr>';
+  const memEmpty = '<tr><td colspan=6 style="color:var(--muted)">No members yet.</td></tr>';
+  const renderMemTable = () => {
+    renderPage('memTable', memRows, memHeader, memEmpty, 'members', () => {
+      d.users.forEach(u => {
+        const slot = document.querySelector('#memTable tr[data-email="'
+          + (window.CSS && CSS.escape ? CSS.escape(u.email) : u.email) + '"] [data-avatar]');
+        if (slot) renderAvatar(slot, u);
+      });
+      document.querySelectorAll('#memTable .kebab').forEach(k => k.onclick = ev => {
+        ev.stopPropagation();
+        const m = k.nextElementSibling;
+        const open = m.style.display === 'block';
+        document.querySelectorAll('#memTable .rowmenu .menu').forEach(x => { x.style.display = 'none'; });
+        m.style.display = open ? 'none' : 'block';
+        if (!open) document.addEventListener('click', () => { m.style.display = 'none'; }, {once: true});
+      });
+      document.querySelectorAll('#memTable [data-act]').forEach(b => b.onclick = () => {
+        const email = b.closest('tr').dataset.email;
+        const u = d.users.find(x => x.email === email);
+        if (b.dataset.act === 'role') openRoleDialog(u);
+        else if (b.dataset.act === 'reset') openResetLinkDialog(u);
+        else openRemoveMemberDialog(u);
+      });
+    });
+  };
+  renderMemTable();
+  bindPager('memTable', renderMemTable);
 }
 // resetting an owner's password would hand over the owner account, so only
 // an owner may mint reset links for owner accounts (mirrors the server rule)
@@ -3189,6 +3252,57 @@ function mcard(n, l, d) {
     + (d ? '<div class="d">' + d + '</div>' : '') + '</div>';
 }
 
+// Generic client-side table pager — same shape as the hand-rolled Data
+// Estate pager (estatePage/estatePageSize/#estatePager), pulled out so
+// every growing list (jobs, reports, governance queue, secrets, members)
+// gets the same prev/next + "showing X-Y of N" treatment without
+// reimplementing page-state math per table. `id` scopes state per table;
+// `noun` is the plural label used in the "of N <noun>" summary.
+const _pagerState = {};
+function pagerState(id, pageSize) {
+  if (!_pagerState[id]) _pagerState[id] = {page: 1, pageSize};
+  return _pagerState[id];
+}
+function renderPage(id, allRows, headerHtml, emptyHtml, noun, onRender, pageSize) {
+  const st = pagerState(id, pageSize || 10);
+  const total = allRows.length;
+  const pages = Math.max(1, Math.ceil(total / st.pageSize));
+  if (st.page > pages) st.page = pages;
+  if (st.page < 1) st.page = 1;
+  const start = (st.page - 1) * st.pageSize;
+  const pageRows = allRows.slice(start, start + st.pageSize);
+  $('#' + id).innerHTML = headerHtml + (pageRows.join('') || emptyHtml);
+  const pager = $('#' + id + 'Pager');
+  if (pager) {
+    pager.style.display = total > st.pageSize ? 'flex' : 'none';
+    if (total) {
+      const from = start + 1, to = Math.min(start + st.pageSize, total);
+      $('#' + id + 'PageInfo').textContent = 'Showing ' + from + '–' + to
+        + ' of ' + total.toLocaleString() + ' ' + (total === 1 ? noun.replace(/s$/, '') : noun)
+        + ' · page ' + st.page + ' of ' + pages;
+      $('#' + id + 'Prev').disabled = st.page <= 1;
+      $('#' + id + 'Next').disabled = st.page >= pages;
+    }
+  }
+  if (onRender) onRender();
+}
+function bindPager(id, rerender) {
+  // re-binds against whatever DOM nodes exist right now — safe even when a
+  // table's container is rebuilt from scratch on every load (e.g. members),
+  // since onclick assignment always replaces rather than stacking handlers
+  const st = pagerState(id);
+  const prev = $('#' + id + 'Prev'), next = $('#' + id + 'Next');
+  if (prev) prev.onclick = () => { st.page--; rerender(); };
+  if (next) next.onclick = () => { st.page++; rerender(); };
+}
+function pagerHtml(id) {
+  return '<div id="' + id + 'Pager" style="display:none;align-items:center;gap:12px;margin-top:12px;flex-wrap:wrap">'
+    + '<button type="button" class="secondary" id="' + id + 'Prev" style="margin:0;padding:5px 12px">&larr; Previous</button>'
+    + '<span id="' + id + 'PageInfo" style="font-size:12.5px;color:var(--ink3)" role="status" aria-live="polite"></span>'
+    + '<button type="button" class="secondary" id="' + id + 'Next" style="margin:0;padding:5px 12px">Next &rarr;</button>'
+    + '</div>';
+}
+
 async function loadDashboard() {
   const {jobs} = await api('/api/jobs');
   gJobsCache = jobs;
@@ -3222,14 +3336,16 @@ async function loadDashboard() {
       + '<td>' + (co.conversion_confidence != null ? co.conversion_confidence + '%' : '--') + '</td>'
       + '<td>' + statChip(verdictToStatus((r.migration_validation || {}).verdict)) + '</td>'
       + '<td style="color:var(--muted)">' + esc((job.created || '').replace('T', ' ')) + '</td></tr>';
-  }).join('');
-  $('#modTable').innerHTML = mrows
-    ? '<tr><th>Project</th><th>Source</th><th>Target</th><th>Assets</th><th>Automation</th><th>Confidence</th><th>Status</th><th>Last activity</th></tr>' + mrows
-    : '<tr><td><div class="empty" style="border:none"><b>No modernization programs yet.</b>'
-      + 'Connect a source or upload a legacy project to begin.<br>'
-      + '<button class="secondary" style="margin:12px 6px 0 0" onclick="document.querySelector(\'nav a[data-page=marketplace]\').click()">Connect source</button>'
-      + '<button style="margin-top:12px" onclick="document.querySelector(\'nav a[data-page=convert]\').click()">Upload project</button></div></td></tr>';
-  const rows = jobs.map(j => {
+  });
+  const modHeader = '<tr><th>Project</th><th>Source</th><th>Target</th><th>Assets</th><th>Automation</th><th>Confidence</th><th>Status</th><th>Last activity</th></tr>';
+  const modEmpty = '<tr><td><div class="empty" style="border:none"><b>No modernization programs yet.</b>'
+    + 'Connect a source or upload a legacy project to begin.<br>'
+    + '<button class="secondary" style="margin:12px 6px 0 0" onclick="document.querySelector(\'nav a[data-page=marketplace]\').click()">Connect source</button>'
+    + '<button style="margin-top:12px" onclick="document.querySelector(\'nav a[data-page=convert]\').click()">Upload project</button></div></td></tr>';
+  renderPage('modTable', mrows, modHeader, modEmpty, 'programs');
+  bindPager('modTable', () => renderPage('modTable', mrows, modHeader, modEmpty, 'programs'));
+
+  const jrows = jobs.map(j => {
     const s = j.summary || {};
     let figures = '';
     if (j.kind === 'convert') figures = (s.automated_conversion_rate||0) + '% automated';
@@ -3244,12 +3360,19 @@ async function loadDashboard() {
     return '<tr><td>' + (j.created||'').replace('T',' ') + '</td><td>' + j.kind
       + '</td><td><a class="jd" data-id="' + esc(j.id) + '" title="Open job detail" style="color:var(--accent);cursor:pointer;font-weight:600">'
       + esc(j.project||'—') + '</a></td><td>' + st + '</td><td>' + figures + '</td><td>' + links + '</td></tr>';
-  }).join('');
-  $('#jobTable').innerHTML = '<tr><th>When</th><th>Type</th><th>Project</th><th>Status</th><th>Key figures</th><th></th></tr>' + (rows || '<tr><td colspan=6 style="color:var(--muted)">No jobs yet — run a conversion, scan, or scaffold.</td></tr>');
-  $('#jobTable').querySelectorAll('.jf').forEach(a =>
-    a.onclick = () => openJobFindings(a.dataset.id).catch(e => mbAlert(e.message)));
-  $('#jobTable').querySelectorAll('.jd').forEach(a =>
-    a.onclick = () => openJobDetail(a.dataset.id));
+  });
+  const jobHeader = '<tr><th>When</th><th>Type</th><th>Project</th><th>Status</th><th>Key figures</th><th></th></tr>';
+  const jobEmpty = '<tr><td colspan=6 style="color:var(--muted)">No jobs yet — run a conversion, scan, or scaffold.</td></tr>';
+  const renderJobTable = () => {
+    renderPage('jobTable', jrows, jobHeader, jobEmpty, 'jobs', () => {
+      $('#jobTable').querySelectorAll('.jf').forEach(a =>
+        a.onclick = () => openJobFindings(a.dataset.id).catch(e => mbAlert(e.message)));
+      $('#jobTable').querySelectorAll('.jd').forEach(a =>
+        a.onclick = () => openJobDetail(a.dataset.id));
+    });
+  };
+  renderJobTable();
+  bindPager('jobTable', renderJobTable);
 }
 
 /* ---------------- analyze + per-model plan ---------------- */
@@ -6310,14 +6433,20 @@ async function loadReports() {
     + '<td>' + statChip(j.status === 'done' ? 'GENERATED' : j.status === 'failed' ? 'FAILED' : 'MODERNIZING') + '</td>'
     + '<td>' + (j.status === 'done'
       ? '<a class="jobopen" data-id="' + esc(j.id) + '" style="color:var(--accent);cursor:pointer">View</a> · '
-        + '<a href="' + withKey('/api/jobs/' + j.id + '/download') + '" style="color:var(--accent)">Export</a>' : '') + '</td></tr>').join('');
-  $('#reportsTable').innerHTML = '<tr><th>Report</th><th>Project</th><th>Job ID</th><th>Generated</th><th>Status</th><th></th></tr>'
-    + (rows || '<tr><td colspan=6><div class="empty" style="border:none"><b>No reports yet</b>Reports appear here after analysis, modernization, scaffold and governance runs.</div></td></tr>');
+        + '<a href="' + withKey('/api/jobs/' + j.id + '/download') + '" style="color:var(--accent)">Export</a>' : '') + '</td></tr>');
+  const reportsHeader = '<tr><th>Report</th><th>Project</th><th>Job ID</th><th>Generated</th><th>Status</th><th></th></tr>';
+  const reportsEmpty = '<tr><td colspan=6><div class="empty" style="border:none"><b>No reports yet</b>Reports appear here after analysis, modernization, scaffold and governance runs.</div></td></tr>';
   // Job IDs and "View" both open the job-detail overlay (list state preserved)
-  $('#reportsTable').querySelectorAll('.joblink, .jobopen').forEach(a => {
-    a.onclick = () => openJobDetail(a.dataset.id);
-    a.onkeydown = ev => { if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); openJobDetail(a.dataset.id); } };
-  });
+  const renderReportsTable = () => {
+    renderPage('reportsTable', rows, reportsHeader, reportsEmpty, 'reports', () => {
+      $('#reportsTable').querySelectorAll('.joblink, .jobopen').forEach(a => {
+        a.onclick = () => openJobDetail(a.dataset.id);
+        a.onkeydown = ev => { if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); openJobDetail(a.dataset.id); } };
+      });
+    });
+  };
+  renderReportsTable();
+  bindPager('reportsTable', renderReportsTable);
 }
 
 /* ---------------- Governance extras ---------------- */
@@ -6354,15 +6483,21 @@ async function loadGovernanceExtras() {
   loadApprovalQueue();
   try {
     const {jobs} = await api('/api/jobs');
-    const converts = jobs.filter(j => j.kind === 'convert' && j.status === 'done').slice(0, 10);
-    $('#govQueue').innerHTML = '<tr><th>Project</th><th>Generated</th><th>Status</th><th></th></tr>'
-      + (converts.map(j => '<tr><td><b>' + esc(j.project || j.id) + '</b></td>'
-        + '<td>' + esc((j.created || '').replace('T', ' ')) + '</td>'
-        + '<td>' + statChip('MANUAL_REVIEW') + '</td>'
-        + '<td><a class="gq" data-id="' + j.id + '" style="color:var(--accent);cursor:pointer">Review proposals</a></td></tr>').join('')
-        || '<tr><td colspan=4 style="color:var(--muted)">No modernization runs yet — proposals appear after a run.</td></tr>');
-    $('#govQueue').querySelectorAll('.gq').forEach(a =>
-      a.onclick = () => openJobFindings(a.dataset.id).catch(e => mbAlert(e.message)));
+    const converts = jobs.filter(j => j.kind === 'convert' && j.status === 'done');
+    const govRows = converts.map(j => '<tr><td><b>' + esc(j.project || j.id) + '</b></td>'
+      + '<td>' + esc((j.created || '').replace('T', ' ')) + '</td>'
+      + '<td>' + statChip('MANUAL_REVIEW') + '</td>'
+      + '<td><a class="gq" data-id="' + j.id + '" style="color:var(--accent);cursor:pointer">Review proposals</a></td></tr>');
+    const govHeader = '<tr><th>Project</th><th>Generated</th><th>Status</th><th></th></tr>';
+    const govEmpty = '<tr><td colspan=4 style="color:var(--muted)">No modernization runs yet — proposals appear after a run.</td></tr>';
+    const renderGovQueue = () => {
+      renderPage('govQueue', govRows, govHeader, govEmpty, 'runs', () => {
+        $('#govQueue').querySelectorAll('.gq').forEach(a =>
+          a.onclick = () => openJobFindings(a.dataset.id).catch(e => mbAlert(e.message)));
+      });
+    };
+    renderGovQueue();
+    bindPager('govQueue', renderGovQueue);
     const latest = converts[0];
     if (latest) {
       const r = await jobReport(latest.id);
