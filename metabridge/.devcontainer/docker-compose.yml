@@ -1,0 +1,41 @@
+# Dev Container stack — the container IS the development environment.
+#
+# Differences from the production image/compose at the repo root, and why:
+#   * the repo is bind mounted at /workspace and working_dir is /workspace, so
+#     the code that RUNS is your working tree (no image rebuild to see edits);
+#   * the service runs as root because the production image drops to the
+#     unprivileged `metabridge` user, and development needs to pip-install
+#     into site-packages;
+#   * state uses its OWN volume, so a root-owned dev file can never break the
+#     production container (which writes /data as uid 10001);
+#   * the image healthcheck is disabled — nothing is listening until you start
+#     the server yourself, and an "unhealthy" container is just noise here;
+#   * `sleep infinity` keeps the container alive for VS Code to attach to.
+services:
+  metabridge:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    user: root
+    working_dir: /workspace
+    # Optional: a fresh clone has no .env, and the dev container must still
+    # start (requires Docker Compose 2.24+; drop `path:`/`required:` and use
+    # `- ../.env` on older versions, where the file must then exist).
+    env_file:
+      - path: ../.env
+        required: false
+    environment:
+      METABRIDGE_DATA_DIR: /data
+      PYTHONDONTWRITEBYTECODE: "1"
+      PYTHONUNBUFFERED: "1"
+    volumes:
+      - ..:/workspace:cached
+      - metabridge-dev-data:/data
+    ports:
+      - "8000:8000"
+    healthcheck:
+      disable: true
+    command: sleep infinity
+
+volumes:
+  metabridge-dev-data:

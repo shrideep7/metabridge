@@ -1,0 +1,43 @@
+{
+  "name": "MetaBridge",
+  "dockerComposeFile": "docker-compose.yml",
+  "service": "metabridge",
+  "workspaceFolder": "/workspace",
+  "shutdownAction": "stopCompose",
+
+  // The production image drops to the unprivileged `metabridge` user; the dev
+  // container needs root to install packages into site-packages.
+  "remoteUser": "root",
+  "containerUser": "root",
+
+  // compose already provides `sleep infinity` — don't replace it.
+  "overrideCommand": false,
+
+  "forwardPorts": [8000],
+  "portsAttributes": {
+    "8000": { "label": "MetaBridge console", "onAutoForward": "notify" }
+  },
+
+  // Make the WORKING TREE the code that runs. The image bakes a non-editable
+  // install at build time, so without this an edit to src/metabridge/** would
+  // not take effect until the image was rebuilt. `dev` adds pytest.
+  "postCreateCommand": "pip install --no-cache-dir -e \".[web,dtd,connectors,dev]\"",
+
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "ms-python.python",
+        "ms-python.vscode-pylance",
+        "ms-azuretools.vscode-docker"
+      ],
+      "settings": {
+        "python.defaultInterpreterPath": "/usr/local/bin/python",
+        "python.testing.pytestEnabled": true,
+        "python.testing.pytestArgs": ["tests"],
+        // Keep LF endings: the console template is served byte-for-byte, and
+        // CRLF rewrites change its build stamp (and have corrupted it before).
+        "files.eol": "\n"
+      }
+    }
+  }
+}
