@@ -121,13 +121,33 @@ _mount_commercial()
 from .auth import (  # noqa: E402
     API_KEY_PERMISSIONS, COOKIE_NAME, RESET_TOKEN_TTL_SECONDS,
     ROLE_DESCRIPTIONS, ROLES, SESSION_TTL_SECONDS, AuthStore,
-    has_permission, permissions_for,
+    has_permission, normalize_role, permissions_for,
 )
 
 DATA_DIR = Path(os.environ.get("METABRIDGE_DATA_DIR",
                                str(Path.home() / ".metabridge"))).expanduser()
-JOBS_DIR = DATA_DIR / "jobs"
-JOBS_DIR.mkdir(parents=True, exist_ok=True)
+DATA_DIR.mkdir(parents=True, exist_ok=True)
+
+from metabridge.workspace_ctx import (  # noqa: E402
+    active_data_dir, reset_active_data_dir, root_data_dir,
+    set_active_data_dir)
+
+
+def _ws_dir() -> Path:
+    """Active workspace's data dir (root for the default workspace)."""
+    d = active_data_dir()
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def _jobs_dir() -> Path:
+    """Jobs live inside the ACTIVE workspace, so history/reports/twin inputs
+    never leak between workspaces."""
+    d = _ws_dir() / "jobs"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
 try:
     # Pin the working directory somewhere that always exists and is readable —
     # some libraries call os.getcwd() at import time and crash if the service
@@ -141,13 +161,83 @@ API_KEY = os.environ.get("METABRIDGE_API_KEY", "")
 _TPL = Path(__file__).parent / "templates"
 AUTH = AuthStore(DATA_DIR)
 
+from .workspaces import WorkspaceStore, WorkspaceError  # noqa: E402
+WS = WorkspaceStore(DATA_DIR)
+
+
+def _account_admin(email: str) -> bool:
+    """Account-level admin: the deployment's global owner(s). They can create
+    workspaces and are implicit owners of every workspace (Databricks-style
+    account admin)."""
+    if not email:
+        return False
+    users = AUTH._load(AUTH.users_file)          # noqa: SLF001 (same package)
+    u = users.get(email.strip().lower())
+    from .auth import normalize_role
+    return bool(u) and normalize_role(u.get("role", "")) == "owner"
+
+
+def _migrate_workspaces() -> None:
+    """One-time: register the pre-existing single-workspace install as the
+    DEFAULT workspace (mapped to the root data dir, so nothing moves), with
+    every existing account as a member at its current global role and the
+    global owner as workspace owner."""
+    if WS.exists() or not AUTH.has_users():
+        return
+    users = AUTH.list_users()
+    owner = next((u["email"] for u in users if u["role"] == "owner"),
+                 users[0]["email"] if users else "")
+    members = {u["email"]: u["role"] for u in users}
+    WS.ensure_default("Default workspace", owner_email=owner, members=members)
+
+
+_migrate_workspaces()
+
 # Paths reachable without a session (marketing site, auth, docs, static).
 _PUBLIC_PREFIXES = ("/login", "/signup", "/auth/", "/static/", "/docs",
                     "/documentation", "/openapi.json", "/redoc", "/api/v1/info")
 
 
+def _active_workspace_id(request: Request) -> str:
+    """The workspace id for this request's session, defaulting to one the
+    account can enter (its default, else the first it belongs to)."""
+    token = request.cookies.get(COOKIE_NAME, "")
+    wsid = AUTH.session_workspace(token)
+    if wsid and WS.get(wsid):
+        return wsid
+    # session has no (valid) workspace yet — pick a sensible default
+    su = AUTH.session_user(token)
+    if su:
+        mine = WS.list_for_user(su["email"],
+                                _account_admin(su["email"]))
+        if mine:
+            return mine[0]["id"]
+    return WS.default_id() or ""
+
+
 def _request_user(request: Request):
-    return AUTH.session_user(request.cookies.get(COOKIE_NAME, ""))
+    """The signed-in account, with its role OVERLAID to the effective role in
+    the ACTIVE workspace (owner/admin/engineer/viewer for that workspace;
+    account admins are implicit owners). Adds `workspace` and `account_role`.
+    Returns None when not signed in, or when the account is not a member of
+    the active workspace (no access there)."""
+    token = request.cookies.get(COOKIE_NAME, "")
+    u = AUTH.session_user(token)
+    if u is None:
+        return None
+    email = u["email"]
+    acct_admin = _account_admin(email)
+    wsid = _active_workspace_id(request)
+    role = WS.effective_role(wsid, email, acct_admin) if wsid else None
+    if role is None:
+        # authenticated but not a member of the active workspace: only an
+        # account admin retains (owner) access; otherwise no role here
+        if not acct_admin:
+            return None
+        role = "owner"
+    u = dict(u, account_role=u["role"], role=role, workspace=wsid,
+             account_admin=acct_admin)
+    return u
 
 
 def _at(path: str, prefix: str) -> bool:
@@ -188,6 +278,16 @@ def _required_permission(path: str, method: str) -> str:
     # acknowledging one's own notifications is a read-side action
     if _at(path, "/api/system/notifications/seen"):
         return "jobs:read"
+    # workspaces: listing and switching your OWN active workspace are
+    # read-side (any member); creating a workspace and managing its member
+    # roster are authorized in-handler (account admin / workspace admin)
+    if _at(path, "/api/workspaces/switch") or (
+            _at(path, "/api/workspaces") and method == "GET"):
+        return "jobs:read"
+    if _at(path, "/api/workspaces") and "/members" in path:
+        return "users:manage"
+    if _at(path, "/api/workspaces"):
+        return "jobs:read"          # create/rename: handler enforces admin
     if method in ("POST", "PUT", "PATCH"):
         return "jobs:run"
     if method == "DELETE":
@@ -200,35 +300,50 @@ async def access_guard(request: Request, call_next):
     path = request.url.path
     protected = path.startswith("/api") or path.startswith("/console")
     public = path == "/" or any(path.startswith(p) for p in _PUBLIC_PREFIXES)
-    if protected and not public:
-        user = _request_user(request)
-        perms = None
-        if user is not None:
-            perms = permissions_for(user.get("role", ""))
-        elif API_KEY:
-            supplied = request.headers.get("x-api-key", "") or \
-                request.query_params.get("api_key", "")
-            if supplied == API_KEY:
-                perms = set(API_KEY_PERMISSIONS)
-        if perms is None and not AUTH.has_users() and not API_KEY:
-            perms = {"*"}  # fresh instance, nothing configured yet — open mode
-        if perms is None:
-            if path.startswith("/console"):
-                from fastapi.responses import RedirectResponse
-                return RedirectResponse(
-                    "/signup" if not AUTH.has_users() else "/login", 302)
-            return JSONResponse({"detail": "Authentication required"},
-                                status_code=401)
-        if path.startswith("/api"):
-            needed = _required_permission(path, request.method)
-            if "*" not in perms and needed not in perms:
-                who = (user or {}).get("role", "api key")
-                return JSONResponse(
-                    {"detail": "Your role (%s) does not allow this action "
-                               "(needs %s). Ask a workspace admin." % (who, needed)},
-                    status_code=403)
-        request.state.user = user
-    return await call_next(request)
+    # Pin the ACTIVE workspace's data dir for the whole request so every
+    # workspace-scoped store (connections, jobs, twin, notifications) resolves
+    # to the right isolated directory. Resolved only for app/console traffic.
+    ws_dir = None
+    if protected:
+        try:
+            wsid = _active_workspace_id(request)
+            if wsid:
+                ws_dir = str(WS.data_dir_for(wsid))
+        except Exception:                    # noqa: BLE001
+            ws_dir = None
+    tok = set_active_data_dir(ws_dir)
+    try:
+        if protected and not public:
+            user = _request_user(request)
+            perms = None
+            if user is not None:
+                perms = permissions_for(user.get("role", ""))
+            elif API_KEY:
+                supplied = request.headers.get("x-api-key", "") or \
+                    request.query_params.get("api_key", "")
+                if supplied == API_KEY:
+                    perms = set(API_KEY_PERMISSIONS)
+            if perms is None and not AUTH.has_users() and not API_KEY:
+                perms = {"*"}  # fresh instance, nothing configured — open mode
+            if perms is None:
+                if path.startswith("/console"):
+                    from fastapi.responses import RedirectResponse
+                    return RedirectResponse(
+                        "/signup" if not AUTH.has_users() else "/login", 302)
+                return JSONResponse({"detail": "Authentication required"},
+                                    status_code=401)
+            if path.startswith("/api"):
+                needed = _required_permission(path, request.method)
+                if "*" not in perms and needed not in perms:
+                    who = (user or {}).get("role", "api key")
+                    return JSONResponse(
+                        {"detail": "Your role (%s) does not allow this action "
+                                   "(needs %s). Ask a workspace admin."
+                                   % (who, needed)}, status_code=403)
+            request.state.user = user
+        return await call_next(request)
+    finally:
+        reset_active_data_dir(tok)
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -284,8 +399,14 @@ def documentation_page(slug: str):
 # Auth API
 # ---------------------------------------------------------------------------
 
-def _session_response(user: dict) -> JSONResponse:
-    token = AUTH.create_session(user["email"])
+def _default_workspace_for(email: str) -> str:
+    """The workspace to activate on sign-in: the account's default/first."""
+    mine = WS.list_for_user(email, _account_admin(email))
+    return mine[0]["id"] if mine else (WS.default_id() or "")
+
+
+def _session_response(user: dict, workspace: str = "") -> JSONResponse:
+    token = AUTH.create_session(user["email"], workspace=workspace)
     resp = JSONResponse({"user": user, "redirect": "/console"})
     resp.set_cookie(COOKIE_NAME, token, max_age=SESSION_TTL_SECONDS,
                     httponly=True, samesite="lax", path="/")
@@ -299,6 +420,7 @@ async def auth_signup(request: Request):
                                                "users:manage"):
         raise HTTPException(403, "This instance already has an owner — ask "
                             "an admin to add you from Settings, or sign in.")
+    first = not AUTH.has_users()
     try:
         user = AUTH.create_user(str(body.get("email", "")),
                                 str(body.get("password", "")),
@@ -306,7 +428,12 @@ async def auth_signup(request: Request):
                                 str(body.get("company", "")))
     except ValueError as e:
         raise HTTPException(422, str(e))
-    return _session_response(user)
+    # the first account is the account owner — give them a first workspace
+    if first or not WS.exists():
+        ws_name = str(body.get("workspace", "")).strip() \
+            or (user.get("company") or "Default workspace")
+        WS.ensure_default(ws_name, owner_email=user["email"])
+    return _session_response(user, _default_workspace_for(user["email"]))
 
 
 @app.post("/auth/login")
@@ -316,7 +443,7 @@ async def auth_login(request: Request):
                             str(body.get("password", "")))
     if user is None:
         raise HTTPException(401, "Incorrect email or password")
-    return _session_response(user)
+    return _session_response(user, _default_workspace_for(user["email"]))
 
 
 @app.post("/auth/logout")
@@ -408,8 +535,16 @@ def _nc():
 
 
 def _workspace_name() -> str:
-    return ((_load_settings_doc().get("workspace", {}) or {}).get("name")
-            or "MetaBridge")
+    """Display name of the ACTIVE workspace (resolved from the pinned data
+    dir), for emails and notifications. Falls back to the product name."""
+    try:
+        active = str(active_data_dir())
+        for w in WS.all():
+            if str(WS.data_dir_for(w["id"])) == active:
+                return w["name"]
+    except Exception:                        # noqa: BLE001
+        pass
+    return "MetaBridge"
 
 
 def _abs_url(request: Request, path: str, trust_request: bool) -> str:
@@ -560,8 +695,15 @@ async def auth_reset(request: Request):
 def me(request: Request):
     user = _request_user(request)
     perms = sorted(permissions_for(user["role"])) if user else []
-    return {"user": user, "permissions": perms,
-            "first_run": not AUTH.has_users()}
+    out = {"user": user, "permissions": perms,
+           "first_run": not AUTH.has_users()}
+    if user:
+        acct_admin = bool(user.get("account_admin"))
+        out["workspaces"] = WS.list_for_user(user["email"], acct_admin)
+        out["active_workspace"] = user.get("workspace", "")
+        out["account_admin"] = acct_admin
+        out["can_create_workspace"] = acct_admin
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -713,44 +855,50 @@ def _load_settings_doc() -> dict:
     return {}
 
 
-def _workspace_owner() -> Optional[dict]:
-    for u in AUTH.list_users():
-        if u["role"] == "owner":
-            return {"name": u["name"], "email": u["email"]}
+def _active_ws_id(request: Request) -> str:
+    return (_request_user(request) or {}).get("workspace", "") \
+        or _active_workspace_id(request)
+
+
+def _workspace_owner_member(wsid: str) -> Optional[dict]:
+    for m in _workspace_members(wsid):
+        if m["role"] == "owner":
+            return {"name": m.get("name", ""), "email": m["email"]}
     return None
 
 
 @app.get("/api/settings/workspace")
-def get_workspace_settings():
-    ws = _load_settings_doc().get("workspace", {})
-    owner = _workspace_owner()
-    return {"name": ws.get("name", ""),
-            "workspace_id": ws.get("workspace_id", ""),
-            "timezone": ws.get("timezone", ""),
-            "owner": owner,
+def get_workspace_settings(request: Request):
+    wsid = _active_ws_id(request)
+    ws = WS.get(wsid) or {}
+    tz = (_load_settings_doc().get("workspace", {}) or {}).get("timezone", "")
+    return {"name": ws.get("name", ""), "workspace_id": wsid,
+            "timezone": tz, "owner": _workspace_owner_member(wsid),
+            "members": len(WS.members(wsid)),
+            "default": bool(ws.get("default")),
             "deployment": "self-hosted"}
 
 
 @app.put("/api/settings/workspace")
 async def put_workspace_settings(request: Request):
-    _require_owner(request)
+    _require_owner(request)                  # settings:manage in active ws
+    wsid = _active_ws_id(request)
     body = await request.json()
     name = " ".join(str(body.get("name", "")).split())
     if not name:
         raise HTTPException(422, "Workspace name cannot be empty")
-    from metabridge.llm.assist import _settings_file
-    doc = _load_settings_doc()
-    ws = doc.get("workspace", {})
-    ws["name"] = name
-    if not ws.get("workspace_id"):
-        slug = "-".join("".join(c if c.isalnum() else " " for c in name)
-                        .lower().split())[:40]
-        ws["workspace_id"] = slug or "workspace"
+    try:
+        WS.rename(wsid, name)
+    except WorkspaceError as e:
+        raise HTTPException(422, str(e))
     tz = str(body.get("timezone", "")).strip()
     if tz and ("/" not in tz and tz != "UTC"):
         raise HTTPException(422, "Unknown timezone")
-    ws["timezone"] = tz
-    doc["workspace"] = ws
+    from metabridge.llm.assist import _settings_file
+    doc = _load_settings_doc()
+    wsblock = doc.get("workspace", {})
+    wsblock["timezone"] = tz
+    doc["workspace"] = wsblock
     f = _settings_file()
     f.parent.mkdir(parents=True, exist_ok=True)
     f.write_text(json.dumps(doc, indent=2))
@@ -758,7 +906,7 @@ async def put_workspace_settings(request: Request):
         os.chmod(f, 0o600)
     except OSError:
         pass
-    return get_workspace_settings()
+    return get_workspace_settings(request)
 
 
 @app.get("/api/v1/info")
@@ -786,9 +934,24 @@ def _require_owner(request: Request):
 # Team management (RBAC)
 # ---------------------------------------------------------------------------
 
+def _workspace_members(wsid: str) -> list:
+    """Members of a workspace as {account profile + workspace role}."""
+    roles = WS.members(wsid) if wsid else {}
+    accounts = {u["email"]: u for u in AUTH.list_users()}
+    out = []
+    for email, role in roles.items():
+        acct = accounts.get(email) or {"email": email,
+                                       "name": email.split("@")[0],
+                                       "avatar": {"type": "INITIALS"}}
+        out.append({**acct, "role": normalize_role(role)})
+    return sorted(out, key=lambda x: (x["role"] != "owner", x["email"]))
+
+
 @app.get("/api/users")
-def list_users():
-    return {"users": AUTH.list_users(), "roles": [
+def list_users(request: Request):
+    """Members of the ACTIVE workspace with their per-workspace role."""
+    wsid = (_request_user(request) or {}).get("workspace", "")
+    return {"users": _workspace_members(wsid), "roles": [
         {"role": r, "description": ROLE_DESCRIPTIONS[r]} for r in ROLES]}
 
 
@@ -796,111 +959,202 @@ def _caller_is_owner(request: Request) -> bool:
     user = _request_user(request)
     if user is None:
         return not AUTH.has_users()      # open mode (fresh instance)
+    # role here is the caller's EFFECTIVE role in the active workspace
     return user.get("role") == "owner"
 
 
 def _require_owner_for_owner_role(request: Request, detail: str):
-    """Least privilege: only an owner may hand out or take away the owner
-    role (or remove an owner). Otherwise any admin could mint themselves a
-    path to full control."""
+    """Least privilege: only a workspace owner may hand out or take away the
+    owner role (or remove an owner) in that workspace."""
     if not _caller_is_owner(request):
         raise HTTPException(403, detail)
 
 
 @app.post("/api/users")
 async def create_user(request: Request):
+    """Add a MEMBER to the active workspace with a workspace role. Creates the
+    account if the email is new; an existing account is simply granted
+    membership (Databricks-style: identity is account-level, access is
+    per-workspace)."""
     body = await _json_object(request)
-    from .auth import normalize_role
-    role = str(body.get("role", "engineer"))
-    if AUTH.has_users() and normalize_role(role) == "owner":
+    role = normalize_role(str(body.get("role", "engineer")))
+    email = str(body.get("email", "")).strip().lower()
+    if not email or "@" not in email:
+        raise HTTPException(422, "A valid email address is required")
+    if role == "owner":
         _require_owner_for_owner_role(
-            request, "Only an owner can create another owner account")
+            request, "Only a workspace owner can add another owner")
+    wsid = (_request_user(request) or {}).get("workspace", "")
+    if not wsid:
+        raise HTTPException(409, "No active workspace")
+    if WS.member_role(wsid, email) is not None:
+        raise HTTPException(422, "Already a member of this workspace")
+    new_account = not AUTH.user_exists(email)
+    if new_account:
+        try:
+            AUTH.create_user(email, str(body.get("password", "")),
+                             str(body.get("name", "")),
+                             str(body.get("company", "")),
+                             role="viewer")     # minimal ACCOUNT-level role
+        except ValueError as e:
+            raise HTTPException(422, str(e))
     try:
-        user = AUTH.create_user(str(body.get("email", "")),
-                                str(body.get("password", "")),
-                                str(body.get("name", "")),
-                                str(body.get("company", "")),
-                                role=role)
-    except ValueError as e:
+        WS.add_member(wsid, email, role)
+    except WorkspaceError as e:
         raise HTTPException(422, str(e))
-    # Invite email: rather than mail a plaintext password, mint a one-time
-    # reset link so the new member sets their own — best practice, and the
-    # admin-entered password still works as a fallback. Best-effort; only
-    # touches token state when email is actually configured.
+    acct = next((u for u in AUTH.list_users() if u["email"] == email),
+                {"email": email, "name": email.split("@")[0]})
     emailed = False
     try:
         from metabridge import notify
-        if notify.email_enabled():
-            token = AUTH.create_reset_token(user["email"])
+        if new_account and notify.email_enabled():
+            token = AUTH.create_reset_token(email)
             reset_url = _reset_link(request, token, trust_request=True) \
                 if token else ""
             res = notify.member_invited(
-                user["email"], user.get("name", ""), _workspace_name(),
-                user.get("role", ""), _actor_name(request),
+                email, acct.get("name", ""), _workspace_name(), role,
+                _actor_name(request),
                 login_url=_abs_url(request, "login", True),
                 reset_url=reset_url, center=_nc())
             emailed = bool(res.get("ok") or res.get("queued"))
     except Exception:                        # noqa: BLE001 - best-effort
         pass
-    return {**user, "invite_emailed": emailed}
+    return {**acct, "role": role, "invite_emailed": emailed,
+            "new_account": new_account}
 
 
 @app.patch("/api/users/{email}")
 async def change_role(email: str, request: Request):
     body = await _json_object(request)
-    from .auth import normalize_role
     email_norm = email.strip().lower()
     new_role = normalize_role(str(body.get("role", "")))
     me_user = _request_user(request)
+    wsid = (me_user or {}).get("workspace", "")
     if me_user and me_user["email"] == email_norm and \
             new_role != me_user["role"]:
         raise HTTPException(422, "You cannot change your own role")
-    target = next((u for u in AUTH.list_users()
-                   if u["email"] == email_norm), None)
-    if target is None:
-        raise HTTPException(422, "No such user")
-    if new_role == "owner" or target["role"] == "owner":
+    cur = WS.member_role(wsid, email_norm)
+    if cur is None:
+        raise HTTPException(422, "Not a member of this workspace")
+    if new_role == "owner" or normalize_role(cur) == "owner":
         _require_owner_for_owner_role(
-            request, "Only an owner can grant or revoke the owner role")
+            request, "Only a workspace owner can grant or revoke the owner "
+                     "role")
     try:
-        updated = AUTH.set_role(email, new_role)
-    except ValueError as e:
+        WS.set_role(wsid, email_norm, new_role)
+    except WorkspaceError as e:
         raise HTTPException(422, str(e))
-    if new_role != target["role"]:          # only on an actual change
+    acct = next((u for u in AUTH.list_users() if u["email"] == email_norm),
+                {"email": email_norm, "name": email_norm})
+    if normalize_role(cur) != new_role:
         try:
             from metabridge import notify
             notify.role_changed(
-                email_norm, updated.get("name", ""), new_role,
+                email_norm, acct.get("name", ""), new_role,
                 _actor_name(request),
                 login_url=_abs_url(request, "login", True), center=_nc())
         except Exception:                    # noqa: BLE001 - best-effort
             pass
-    return updated
+    return {**acct, "role": new_role}
 
 
 @app.delete("/api/users/{email}")
 async def delete_user(email: str, request: Request):
     email_norm = email.strip().lower()
     me_user = _request_user(request)
+    wsid = (me_user or {}).get("workspace", "")
     if me_user and me_user["email"] == email_norm:
-        raise HTTPException(422, "You cannot remove yourself")
-    target = next((u for u in AUTH.list_users()
-                   if u["email"] == email_norm), None)
-    if target is not None and target["role"] == "owner":
+        raise HTTPException(422, "You cannot remove yourself from a workspace")
+    cur = WS.member_role(wsid, email_norm)
+    if cur is None:
+        raise HTTPException(422, "Not a member of this workspace")
+    if normalize_role(cur) == "owner":
         _require_owner_for_owner_role(
-            request, "Only an owner can remove an owner account")
+            request, "Only a workspace owner can remove an owner")
     try:
-        AUTH.remove_user(email)
-    except ValueError as e:
+        WS.remove_member(wsid, email_norm)
+    except WorkspaceError as e:
         raise HTTPException(422, str(e))
+    acct = next((u for u in AUTH.list_users() if u["email"] == email_norm),
+                {"name": ""})
     try:
         from metabridge import notify
-        notify.member_removed(
-            email_norm, (target or {}).get("name", ""), _workspace_name(),
-            _actor_name(request), center=_nc())
+        notify.member_removed(email_norm, acct.get("name", ""),
+                              _workspace_name(), _actor_name(request),
+                              center=_nc())
     except Exception:                        # noqa: BLE001 - best-effort
         pass
-    return {"removed": email}
+    return {"removed": email_norm}
+
+
+# ---------------------------------------------------------------------------
+# Workspaces — isolated resource containers with per-workspace RBAC
+# ---------------------------------------------------------------------------
+
+@app.get("/api/workspaces")
+def workspaces_list(request: Request):
+    """Workspaces the signed-in account can enter, plus the active one."""
+    user = _request_user(request)
+    if user is None:
+        raise HTTPException(401, "Sign in first")
+    admin = bool(user.get("account_admin"))
+    return {"workspaces": WS.list_for_user(user["email"], admin),
+            "active": user.get("workspace", ""),
+            "can_create": admin}
+
+
+@app.post("/api/workspaces")
+async def workspaces_create(request: Request):
+    """Create a new isolated workspace (account admin only). The creator
+    becomes its owner and it starts empty — its own connections, jobs, twin,
+    settings and members."""
+    user = _request_user(request)
+    if user is None:
+        raise HTTPException(401, "Sign in first")
+    if not user.get("account_admin"):
+        raise HTTPException(403, "Only an account admin can create "
+                                 "workspaces")
+    body = await _json_object(request)
+    try:
+        ws = WS.create(str(body.get("name", "")), owner_email=user["email"])
+    except WorkspaceError as e:
+        raise HTTPException(422, str(e))
+    return ws
+
+
+@app.post("/api/workspaces/switch")
+async def workspaces_switch(request: Request):
+    """Switch the caller's active workspace (must be a member, or an account
+    admin). Rebinds the session so subsequent requests are isolated to it."""
+    user = _request_user(request)
+    if user is None:
+        raise HTTPException(401, "Sign in first")
+    body = await _json_object(request)
+    wsid = str(body.get("workspace", "") or body.get("id", "")).strip()
+    if not WS.get(wsid):
+        raise HTTPException(404, "No such workspace")
+    admin = bool(user.get("account_admin"))
+    if WS.effective_role(wsid, user["email"], admin) is None:
+        raise HTTPException(403, "You are not a member of that workspace")
+    AUTH.set_session_workspace(request.cookies.get(COOKIE_NAME, ""), wsid)
+    return {"ok": True, "active": wsid, "name": WS.get(wsid)["name"]}
+
+
+@app.patch("/api/workspaces/{wsid}")
+async def workspaces_rename(wsid: str, request: Request):
+    """Rename a workspace (workspace owner/admin or account admin)."""
+    user = _request_user(request)
+    if user is None:
+        raise HTTPException(401, "Sign in first")
+    admin = bool(user.get("account_admin"))
+    role = WS.effective_role(wsid, user["email"], admin)
+    if role not in ("owner", "admin"):
+        raise HTTPException(403, "Only a workspace owner/admin can rename it")
+    body = await _json_object(request)
+    try:
+        return WS.rename(wsid, str(body.get("name", "")))
+    except WorkspaceError as e:
+        raise HTTPException(422, str(e))
 
 
 @app.post("/api/users/{email}/reset-link")
@@ -997,7 +1251,7 @@ async def test_ai_settings(request: Request):
 
 def _new_job(kind: str) -> Path:
     job_id = uuid.uuid4().hex[:12]
-    job_dir = JOBS_DIR / job_id
+    job_dir = _jobs_dir() / job_id
     (job_dir / "input").mkdir(parents=True)
     (job_dir / "output").mkdir(parents=True)
     meta = {"id": job_id, "kind": kind, "status": "running",
@@ -1020,7 +1274,7 @@ def _finish_job(job_dir: Path, **extra) -> dict:
 def _job_dir(job_id: str) -> Path:
     if not job_id.isalnum():
         raise HTTPException(400, "Bad job id")
-    d = JOBS_DIR / job_id
+    d = _jobs_dir() / job_id
     if not d.exists():
         raise HTTPException(404, "Job not found")
     return d
@@ -1117,7 +1371,7 @@ def _primary_report_url(job_id: str, job_dir: Path) -> str:
 @app.get("/api/jobs")
 def list_jobs():
     jobs = []
-    for meta_file in JOBS_DIR.glob("*/meta.json"):
+    for meta_file in _jobs_dir().glob("*/meta.json"):
         try:
             jobs.append(json.loads(meta_file.read_text()))
         except Exception:  # noqa: BLE001
@@ -1395,7 +1649,7 @@ async def api_detect(request: Request):
     if file is None or not getattr(file, "filename", ""):
         raise HTTPException(400, "Provide a file upload or a JSON body "
                                  "with project_id")
-    tmp = JOBS_DIR / ("det_%s" % uuid.uuid4().hex[:10])
+    tmp = _jobs_dir() / ("det_%s" % uuid.uuid4().hex[:10])
     tmp.mkdir(parents=True)
     try:
         root = await _extract_zip(file, tmp)
@@ -1792,9 +2046,9 @@ async def ai_readiness_run(request: Request):
                 root = entries[0]
             source = str(body.get("source_format", "") or "")
         twin = None
-        if _TWIN_FILE.exists():
+        if _twin_file().exists():
             try:
-                twin = json.loads(_TWIN_FILE.read_text())
+                twin = json.loads(_twin_file().read_text())
             except (ValueError, OSError):
                 twin = None
         a = assess_ai_readiness(str(root), source, twin=twin)
@@ -1873,9 +2127,9 @@ async def tech_debt_run(request: Request):
         # prefer the full workspace twin (has dashboards/APIs/topics/
         # process chains); else build one from the upload
         twin = None
-        if _TWIN_FILE.exists():
+        if _twin_file().exists():
             try:
-                twin = json.loads(_TWIN_FILE.read_text())
+                twin = json.loads(_twin_file().read_text())
             except (ValueError, OSError):
                 twin = None
         if twin is None and paths:
@@ -1963,9 +2217,9 @@ async def finops_run(request: Request):
                      else [str(root)])
         pipelines = _parse_pipelines(paths)
         twin = None
-        if _TWIN_FILE.exists():
+        if _twin_file().exists():
             try:
-                twin = json.loads(_TWIN_FILE.read_text())
+                twin = json.loads(_twin_file().read_text())
             except (ValueError, OSError):
                 twin = None
         if twin is None and paths:
@@ -2052,9 +2306,9 @@ async def security_run(request: Request):
         # parser drops must still be caught)
         raw_texts = _read_raw_texts(paths)
         twin = None
-        if _TWIN_FILE.exists():
+        if _twin_file().exists():
             try:
-                twin = json.loads(_TWIN_FILE.read_text())
+                twin = json.loads(_twin_file().read_text())
             except (ValueError, OSError):
                 twin = None
         if twin is None and paths:
@@ -2196,7 +2450,7 @@ async def docs_run(request: Request):
                                 "Documentation is never generated from empty "
                                 "or cached state.")
         # twin + pipelines built STRICTLY from this project's inputs — no
-        # process-global _TWIN_FILE, so nothing from a prior project leaks in.
+        # process-global _twin_file(), so nothing from a prior project leaks in.
         from metabridge.twin.discover import build_twin
         twin = build_twin(paths=paths, include_connections=False)
         pipelines = _parse_pipelines(paths)
@@ -2320,7 +2574,7 @@ async def plugins_scaffold(request: Request):
     from metabridge.plugins.sdk import scaffold_plugin
     from metabridge.plugins.spec import PluginError
     body = await _json_object(request)
-    tmp = JOBS_DIR / ("scaffold_%s" % uuid.uuid4().hex[:10])
+    tmp = _jobs_dir() / ("scaffold_%s" % uuid.uuid4().hex[:10])
     try:
         res = scaffold_plugin(str(tmp), str(body.get("type", "")),
                               str(body.get("name", "") or "My Plugin"),
@@ -2511,12 +2765,12 @@ def marketplace_keypair():
 
 def _agents_orch():
     from metabridge.agents import TaskOrchestrator
-    return TaskOrchestrator(data_dir=str(DATA_DIR))
+    return TaskOrchestrator(data_dir=str(_ws_dir()))    # per-workspace runs
 
 
 def _agents_queue():
     from metabridge.agents import ApprovalQueue
-    return ApprovalQueue(data_dir=str(DATA_DIR))
+    return ApprovalQueue(data_dir=str(_ws_dir()))       # per-workspace queue
 
 
 def _today() -> str:
@@ -2588,12 +2842,24 @@ def agents_runs():
     return {"runs": _agents_orch().list_runs()}
 
 
+def _active_ws_id_ctx() -> str:
+    """Active workspace id resolved from the request-pinned data dir (for
+    helpers that run inside a request but take no `request` argument)."""
+    active = str(active_data_dir())
+    for w in WS.all():
+        if str(WS.data_dir_for(w["id"])) == active:
+            return w["id"]
+    return WS.default_id() or ""
+
+
 def _eligible_approvers(requested_by: str = "") -> list:
-    """Workspace members whose role grants agents:approve, excluding the
-    requester (who may never approve their own run's actions)."""
-    return [u["email"] for u in AUTH.list_users()
-            if has_permission(u, "agents:approve")
-            and u["email"] != (requested_by or "").strip().lower()]
+    """Members of the ACTIVE workspace whose WORKSPACE role grants
+    agents:approve, excluding the requester (who may never approve their own
+    run's actions). Uses the per-workspace role, not the account role."""
+    members = _workspace_members(_active_ws_id_ctx())
+    return [m["email"] for m in members
+            if has_permission({"role": m["role"]}, "agents:approve")
+            and m["email"] != (requested_by or "").strip().lower()]
 
 
 def _approval_view(rec: dict, user: Optional[dict]) -> dict:
@@ -2833,8 +3099,10 @@ def observability_export():
 # ---------------------------------------------------------------------------
 
 def _os():
+    # scoped to the ACTIVE workspace so the notification feed and platform
+    # state are isolated per workspace
     from metabridge.platform import MetaBridgeOS
-    return MetaBridgeOS(str(DATA_DIR))
+    return MetaBridgeOS(str(_ws_dir()))
 
 
 @app.get("/api/system")
@@ -2950,7 +3218,9 @@ async def test_email_notifications(request: Request):
 # telemetry — the responses say so where it matters).
 # ---------------------------------------------------------------------------
 
-_TWIN_FILE = DATA_DIR / "twin.json"
+def _twin_file() -> Path:
+    """The digital twin of the ACTIVE workspace."""
+    return _ws_dir() / "twin.json"
 
 
 def _write_tree_files(files, dest: Path) -> Path:
@@ -2995,10 +3265,10 @@ def _write_tree_files(files, dest: Path) -> Path:
 
 def _twin_load():
     from metabridge.twin.model import twin_from_dict
-    if not _TWIN_FILE.exists():
+    if not _twin_file().exists():
         raise HTTPException(404, "No digital twin built yet — POST "
                                  "/api/twin/build first")
-    return twin_from_dict(json.loads(_TWIN_FILE.read_text()))
+    return twin_from_dict(json.loads(_twin_file().read_text()))
 
 
 async def _json_object(request: Request) -> dict:
@@ -3017,13 +3287,13 @@ def _write_twin(doc: dict) -> None:
     """Persist the workspace twin atomically with owner-only perms — it
     can carry connection metadata, so it follows the same 0600
     convention as other connection-derived state."""
-    tmp = _TWIN_FILE.with_suffix(".json.tmp")
+    tmp = _twin_file().with_suffix(".json.tmp")
     tmp.write_text(json.dumps(doc, indent=1))
     try:
         os.chmod(tmp, 0o600)
     except OSError:
         pass
-    os.replace(tmp, _TWIN_FILE)
+    os.replace(tmp, _twin_file())
 
 
 def _ensure_connection_inventories() -> None:
@@ -3102,7 +3372,7 @@ async def twin_build(request: Request):
         twin = build_twin(
             paths=paths, estate_docs=estate_docs,
             include_connections=include_connections,
-            jobs_dir=str(JOBS_DIR) if body.get("include_jobs", True)
+            jobs_dir=str(_jobs_dir()) if body.get("include_jobs", True)
             else None,
             name=str(body.get("name", "") or "estate"))
         doc = twin.to_dict()
@@ -3121,10 +3391,10 @@ async def twin_build(request: Request):
 
 @app.get("/api/twin")
 def twin_get():
-    if not _TWIN_FILE.exists():
+    if not _twin_file().exists():
         raise HTTPException(404, "No digital twin built yet — POST "
                                  "/api/twin/build first")
-    return json.loads(_TWIN_FILE.read_text())
+    return json.loads(_twin_file().read_text())
 
 
 @app.get("/api/twin/graph")
@@ -4487,7 +4757,7 @@ def estate_stats(system: str = ""):
     or a stale aggregate."""
     from metabridge.connections_store import list_connections
     conns = list_connections()
-    convert_jobs = sum(1 for f in JOBS_DIR.glob("*/meta.json")
+    convert_jobs = sum(1 for f in _jobs_dir().glob("*/meta.json")
                        if _job_kind_is(f, "convert"))
     systems = [{"id": c["id"], "name": c.get("name", c["id"]),
                 "connector": c.get("connector", ""),
@@ -4746,7 +5016,7 @@ async def v1_explain(file: UploadFile = File(...), source: str = Form(""),
     """Upload a project zip; get business-logic documentation per pipeline."""
     from metabridge.engine import parse_input
     from metabridge.report.explainer import explain_pipeline
-    tmp = JOBS_DIR / ("ex_%s" % uuid.uuid4().hex[:10])
+    tmp = _jobs_dir() / ("ex_%s" % uuid.uuid4().hex[:10])
     tmp.mkdir(parents=True)
     try:
         root = await _extract_zip(file, tmp)
@@ -4766,7 +5036,7 @@ async def v1_impact(file: UploadFile = File(...), entity: str = Form(...),
     from metabridge.engine import parse_input
     from metabridge.report.impact import analyze_impact
     catalog = json.loads(reports) if reports else None
-    tmp = JOBS_DIR / ("im_%s" % uuid.uuid4().hex[:10])
+    tmp = _jobs_dir() / ("im_%s" % uuid.uuid4().hex[:10])
     tmp.mkdir(parents=True)
     try:
         root = await _extract_zip(file, tmp)
@@ -4801,7 +5071,7 @@ async def v1_tests(file: UploadFile = File(...), source: str = Form(""),
     (11 test types + reconciliation SQL; dbt schema tests when target=dbt)."""
     from metabridge.engine import parse_input
     from metabridge.report.testgen import generate_tests
-    tmp = JOBS_DIR / ("tg_%s" % uuid.uuid4().hex[:10])
+    tmp = _jobs_dir() / ("tg_%s" % uuid.uuid4().hex[:10])
     tmp.mkdir(parents=True)
     try:
         root = await _extract_zip(file, tmp)
@@ -4819,7 +5089,7 @@ async def v1_lineage(file: UploadFile = File(...), source: str = Form(""),
     """Upload a project zip; get table/column/transformation lineage + Mermaid."""
     from metabridge.engine import parse_input
     from metabridge.report.lineage import build_lineage
-    tmp = JOBS_DIR / ("ln_%s" % uuid.uuid4().hex[:10])
+    tmp = _jobs_dir() / ("ln_%s" % uuid.uuid4().hex[:10])
     tmp.mkdir(parents=True)
     try:
         root = await _extract_zip(file, tmp)
@@ -4836,7 +5106,7 @@ async def v1_complexity(file: UploadFile = File(...), source: str = Form(""),
     """Upload a project zip; get per-asset migration complexity scoring."""
     from metabridge.engine import parse_input
     from metabridge.report.complexity import score_pipeline
-    tmp = JOBS_DIR / ("cx_%s" % uuid.uuid4().hex[:10])
+    tmp = _jobs_dir() / ("cx_%s" % uuid.uuid4().hex[:10])
     tmp.mkdir(parents=True)
     try:
         root = await _extract_zip(file, tmp)
@@ -4851,7 +5121,7 @@ async def v1_complexity(file: UploadFile = File(...), source: str = Form(""),
 async def v1_detect(file: UploadFile = File(...)):
     """Upload a project zip; get format detection with confidence + evidence."""
     from metabridge.engine import detect_format_detailed
-    tmp = JOBS_DIR / ("det_%s" % uuid.uuid4().hex[:10])
+    tmp = _jobs_dir() / ("det_%s" % uuid.uuid4().hex[:10])
     tmp.mkdir(parents=True)
     try:
         root = await _extract_zip(file, tmp)
@@ -4881,7 +5151,7 @@ async def v1_pcmodel(file: UploadFile = File(...), summary: bool = Form(True)):
     (pre-CIR representation) — summary by default, full model with
     summary=false."""
     from metabridge.parsers.pc_model import build_pc_model
-    tmp = JOBS_DIR / ("pcm_%s" % uuid.uuid4().hex[:10])
+    tmp = _jobs_dir() / ("pcm_%s" % uuid.uuid4().hex[:10])
     tmp.mkdir(parents=True)
     try:
         if (file.filename or "").lower().endswith(".zip"):
@@ -4901,7 +5171,7 @@ async def v1_pcmodel(file: UploadFile = File(...), summary: bool = Form(True)):
 async def v1_validate(file: UploadFile = File(...)):
     from metabridge.validate.powercenter_validator import validate_powercenter_xml
     data = await file.read()
-    tmp = JOBS_DIR / ("val_%s.xml" % uuid.uuid4().hex[:10])
+    tmp = _jobs_dir() / ("val_%s.xml" % uuid.uuid4().hex[:10])
     tmp.write_bytes(data)
     try:
         return validate_powercenter_xml(str(tmp)).to_dict()
@@ -4919,7 +5189,7 @@ async def v1_govern(
     """Stateless governance scan (JSON only, nothing persisted)."""
     from metabridge.engine import parse_input
     from metabridge.governance.engine import govern as run_govern
-    tmp = JOBS_DIR / ("gov_%s" % uuid.uuid4().hex[:10])
+    tmp = _jobs_dir() / ("gov_%s" % uuid.uuid4().hex[:10])
     tmp.mkdir(parents=True)
     try:
         root = await _extract_zip(file, tmp)

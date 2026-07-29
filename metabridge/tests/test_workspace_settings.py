@@ -26,21 +26,25 @@ def client(tmp_path, monkeypatch):
 def test_workspace_defaults_and_owner(client):
     d = client.get("/api/settings/workspace").json()
     assert d["deployment"] == "self-hosted"
-    assert d["workspace_id"] == ""            # not assigned until first save
+    # the first workspace's immutable id is derived from its name at signup
+    # (company "Metafor Data" -> "metafor-data")
+    assert d["workspace_id"] == "metafor-data"
     assert d["owner"]["email"] == "owner@example.com"
 
 
 def test_workspace_save_generates_immutable_id(client):
+    before = client.get("/api/settings/workspace").json()["workspace_id"]
+    assert before == "metafor-data"
     d = client.put("/api/settings/workspace",
                    json={"name": "MFD Workspace",
                          "timezone": "Asia/Kolkata"}).json()
     assert d["name"] == "MFD Workspace"
-    assert d["workspace_id"] == "mfd-workspace"
+    assert d["workspace_id"] == before          # id is immutable across renames
     assert d["timezone"] == "Asia/Kolkata"
-    # renaming keeps the generated id
+    # renaming again keeps the same id
     d2 = client.put("/api/settings/workspace",
                     json={"name": "Metafor Modernization"}).json()
-    assert d2["workspace_id"] == "mfd-workspace"
+    assert d2["workspace_id"] == before
     assert d2["name"] == "Metafor Modernization"
 
 

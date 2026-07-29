@@ -320,6 +320,15 @@
 <div class="workarea">
 <div class="topbar">
   <span class="crumb" id="crumb">Workspace / <b>Overview</b></span>
+  <div id="wsSwitch" style="position:relative;margin-left:14px;display:none">
+    <button id="wsBtn" aria-haspopup="menu" aria-expanded="false" title="Switch workspace"
+            style="display:flex;align-items:center;gap:7px;background:#f2f5fa;border:1px solid #dfe3ea;border-radius:9px;padding:6px 11px;font-size:13px;font-weight:600;color:#123;cursor:pointer;max-width:230px">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg>
+      <span id="wsBtnName" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">Workspace</span>
+      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>
+    </button>
+    <div class="menu" id="wsMenu" role="menu" style="top:46px;left:0;min-width:250px;display:none"></div>
+  </div>
   <div class="gsearch">
     <input id="gSearch" type="search" name="mb-global-search" placeholder="Search assets, pipelines, migrations...  (&#8984;K)"
            aria-label="Global search" autocomplete="off" autocorrect="off"
@@ -1501,6 +1510,55 @@ function renderAvatar(el, user) {
     el.textContent = getUserInitials(getUserDisplayName(user));
   }
 }
+let gWorkspaces = [], gActiveWs = '';
+function renderWorkspaceSwitcher(d) {
+  const sw = $('#wsSwitch'); if (!sw) return;
+  gWorkspaces = d.workspaces || [];
+  gActiveWs = d.active_workspace || '';
+  if (!gWorkspaces.length) { sw.style.display = 'none'; return; }
+  sw.style.display = '';
+  const active = gWorkspaces.find(w => w.id === gActiveWs) || gWorkspaces[0];
+  $('#wsBtnName').textContent = active ? active.name : 'Workspace';
+  let html = '<div style="padding:8px 12px 4px;font-size:11px;letter-spacing:.5px;color:#8a94a6;font-weight:700">WORKSPACES</div>'
+    + gWorkspaces.map(w =>
+      '<button role="menuitem" data-ws="' + esc(w.id) + '" style="display:flex;justify-content:space-between;gap:10px;width:100%;text-align:left">'
+      + '<span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(w.name)
+      + '<span style="color:#8a94a6;font-weight:400"> · ' + esc(w.role) + '</span></span>'
+      + (w.id === gActiveWs ? '<span style="color:var(--accent)">✓</span>' : '') + '</button>').join('');
+  if (d.can_create_workspace)
+    html += '<div style="border-top:1px solid #eceef3;margin-top:4px"></div>'
+      + '<button role="menuitem" id="wsCreate" style="width:100%;text-align:left;color:var(--accent);font-weight:600">+ New workspace</button>';
+  $('#wsMenu').innerHTML = html;
+  $('#wsMenu').querySelectorAll('button[data-ws]').forEach(b => b.onclick = async () => {
+    if (b.dataset.ws === gActiveWs) { $('#wsMenu').style.display = 'none'; return; }
+    try { await api('/api/workspaces/switch', {method: 'POST', body: JSON.stringify({workspace: b.dataset.ws})});
+          window.location.reload(); }
+    catch (e) { alert((e && e.message) || 'Could not switch workspace'); }
+  });
+  const cr = $('#wsCreate');
+  if (cr) cr.onclick = async () => {
+    const name = (prompt('Name your new workspace:') || '').trim();
+    if (!name) return;
+    try {
+      const w = await api('/api/workspaces', {method: 'POST', body: JSON.stringify({name})});
+      await api('/api/workspaces/switch', {method: 'POST', body: JSON.stringify({workspace: w.id})});
+      window.location.reload();
+    } catch (e) { alert((e && e.message) || 'Could not create workspace'); }
+  };
+  $('#wsBtn').onclick = (ev) => {
+    ev.stopPropagation();
+    const m = $('#wsMenu');
+    m.style.display = m.style.display === 'block' ? 'none' : 'block';
+    $('#wsBtn').setAttribute('aria-expanded', m.style.display === 'block');
+  };
+  if (!window._wsMenuBound) {
+    window._wsMenuBound = true;
+    document.addEventListener('click', ev => {
+      if (ev.target.closest('#wsSwitch')) return;
+      const m = $('#wsMenu'); if (m) m.style.display = 'none';
+    });
+  }
+}
 async function loadUser() {
   try {
     const d = await api('/api/v1/me');
@@ -1529,6 +1587,7 @@ async function loadUser() {
       $('#avRemove').style.display = hasPhoto ? '' : 'none';
       $('#avUploadLbl').textContent = hasPhoto ? 'Change photo' : 'Upload photo';
       $('#logoutBtn').onclick = async () => { await fetch('/auth/logout', {method:'POST'}); window.location.href = '/'; };
+      renderWorkspaceSwitcher(d);
     } else {
       $('#userName').textContent = 'Local workspace';
       $('#userRole').textContent = 'open mode';
