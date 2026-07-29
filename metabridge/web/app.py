@@ -5135,10 +5135,12 @@ async def v1_connection_load(conn_id: str,
                              create: bool = Form(True)):
     """LOAD a tabular file (xlsx/csv/tsv/json) into the connected
     warehouse using the platform's STANDARD path. Live execution on
-    Snowflake (CREATE -> PUT -> COPY INTO -> verify); other connectors
-    get their standard load package generated instead."""
+    Snowflake (CREATE -> PUT -> COPY INTO -> verify) and Databricks
+    (CREATE -> batched INSERT -> verify); other connectors get their
+    standard load package generated instead."""
     from metabridge.connections_store import get_connection, resolve_params
     from metabridge.dataload import (generate_load_package,
+                                     load_into_databricks,
                                      load_into_snowflake, read_tabular)
     row = get_connection(conn_id)
     if row is None:
@@ -5152,6 +5154,12 @@ async def v1_connection_load(conn_id: str,
         result = load_into_snowflake(params, table, data,
                                      file.filename or "data.csv",
                                      create=create)
+        result.pop("password", None)
+        return result
+    if row["connector"] == "databricks":
+        result = load_into_databricks(params, table, data,
+                                      file.filename or "data.csv",
+                                      create=create)
         result.pop("password", None)
         return result
     # no live driver: emit the target's standard load artifacts

@@ -479,14 +479,14 @@
 <div class="workarea">
 <div class="topbar">
   <span class="crumb" id="crumb">Workspace / <b>Overview</b></span>
-  <div id="wsSwitch" style="position:relative;margin-left:14px;display:none">
+  <div id="wsSwitch" style="position:relative;margin-left:10px;display:none">
     <button id="wsBtn" aria-haspopup="menu" aria-expanded="false" title="Switch workspace"
-            style="display:flex;align-items:center;gap:7px;background:#fff;border:1px solid var(--border);border-radius:var(--radius-sm);padding:6px 11px;font-size:13px;font-weight:600;color:var(--ink2);cursor:pointer;max-width:230px">
+            style="display:flex;align-items:center;gap:7px;height:32px;margin:0;background:#fff;border:1px solid var(--border);border-radius:var(--radius-sm);padding:0 10px;font-size:13px;font-weight:600;color:var(--ink2);cursor:pointer;max-width:230px">
       <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg>
       <span id="wsBtnName" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">Workspace</span>
       <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>
     </button>
-    <div class="menu" id="wsMenu" role="menu" style="top:46px;left:0;min-width:250px;display:none"></div>
+    <div class="menu" id="wsMenu" role="menu" style="top:40px;left:0;min-width:250px;display:none"></div>
   </div>
   <div class="gsearch">
     <input id="gSearch" type="search" name="mb-global-search" placeholder="Search assets, pipelines, migrations...  (&#8984;K)"
@@ -1034,22 +1034,47 @@
   </div>
   <div class="panel">
     <form id="convForm">
-      <div class="row">
-        <div style="flex:2;min-width:280px">
-          <label>Upload project or scripts</label>
-          <div class="drop" data-drop="convFile"><input type="file"
-               accept=".zip,.xml,.sql,.dtsx,.dtproj,.conmgr,.params,.dsx,.item,.properties,.mp,.dml,.xfr,.pset,.plan,.ddls,.cds,.abap,.hdbcalculationview,.json" hidden>
-            <span class="txt"><b>Upload a project, ETL export, or SQL workload</b><br>
-            <span style="font-size:12px">ZIP, dbt, PowerCenter/IDMC, SQL scripts, SSIS (.dtsx),
-            DataStage (.dsx), Talend (.item), Ab Initio (.mp/.dml/.xfr), SAP (BW XML, CDS .ddls,
-            calc views, ABAP) — platform auto-detected</span></span></div>
-        </div>
-        <div style="flex:1;min-width:220px">
-          <label>Or select a connected system</label>
-          <div id="modConnList" style="font-size:13px;color:var(--ink3)">—</div>
+
+      <!-- ── Input method toggle ─────────────────────────────────────── -->
+      <div style="margin-bottom:16px">
+        <label style="margin:0 0 8px">How would you like to provide your code?</label>
+        <div style="display:flex;gap:0;border:1px solid var(--border);border-radius:5px;overflow:hidden;width:fit-content">
+          <button type="button" id="inputTabUpload"
+            style="margin:0;border-radius:0;border:none;background:var(--accent);color:#fff;font-weight:600;padding:0 20px;height:34px"
+            onclick="switchInputTab('upload')">
+            📁 Upload Files / Project
+          </button>
+          <button type="button" id="inputTabConn"
+            style="margin:0;border-radius:0;border:none;background:#fff;color:var(--ink2);font-weight:500;padding:0 20px;height:34px;border-left:1px solid var(--border)"
+            onclick="switchInputTab('conn')">
+            🔗 Connect to a Live System
+          </button>
         </div>
       </div>
-      <label>Target platform</label>
+
+      <!-- ── Panel A: Upload ─────────────────────────────────────────── -->
+      <div id="inputPanelUpload">
+        <div class="drop" data-drop="convFile"><input type="file"
+             accept=".zip,.xml,.sql,.dtsx,.dtproj,.conmgr,.params,.dsx,.item,.properties,.mp,.dml,.xfr,.pset,.plan,.ddls,.cds,.abap,.hdbcalculationview,.json" hidden>
+          <span class="txt"><b>Upload a project, ETL export, or SQL workload</b><br>
+          <span style="font-size:12px">ZIP, dbt, PowerCenter/IDMC, SQL scripts, SSIS (.dtsx),
+          DataStage (.dsx), Talend (.item), Ab Initio (.mp/.dml/.xfr), SAP (BW XML, CDS .ddls,
+          calc views, ABAP) — platform auto-detected</span></span></div>
+      </div>
+
+      <!-- ── Panel B: Connected System ───────────────────────────────── -->
+      <div id="inputPanelConn" style="display:none">
+        <div style="background:#F8FAFC;border:1px solid var(--border);border-radius:6px;padding:14px 16px">
+          <div style="font-size:13px;color:var(--ink3);margin-bottom:10px">Select a saved connection. MetaBridge reads view definitions and schema directly — no file export needed.</div>
+          <div id="modConnList" style="font-size:13px;color:var(--ink3)">—</div>
+        </div>
+        <div style="font-size:12px;color:var(--muted);margin-top:6px">
+          💡 <b>No connection yet?</b> Go to <b>Marketplace</b> in the sidebar to add one first.
+        </div>
+      </div>
+
+      <!-- ── Target Platform ─────────────────────────────────────────── -->
+      <label style="margin-top:20px">Target platform <span style="font-weight:400;text-transform:none;color:var(--muted);font-size:12px">(where you want the modernized code to run)</span></label>
       <div class="tsel" id="targetSel" role="radiogroup" aria-label="Target platform"></div>
       <label>Target mode</label>
       <div style="display:flex;gap:14px;flex-wrap:wrap;font-size:13.5px">
@@ -1113,7 +1138,6 @@
       <div style="display:flex;gap:12px;align-items:center">
         <button type="button" id="analyzeBtn">Analyze workload</button>
         <button type="submit" class="secondary" id="generateAllBtn" disabled title="Analyze the workload first">Generate target (all assets)</button>
-        <span style="font-size:12px;color:var(--muted)">MetaBridge AI analyzes before modernization — asset selection and strategies come from the analysis.</span>
       </div>
     </form>
     <div class="err" id="convErr"></div>
@@ -1513,11 +1537,13 @@
             <div class="fhint" id="bedIamHint">MetaBridge uses the AWS credentials configured for this deployment.</div>
           </div>
           <div class="fld" id="bedKeyFld" hidden><label for="aiToken">Bedrock API key</label>
-            <input type="password" id="aiToken" autocomplete="off"></div>
+            <input type="password" id="aiToken" autocomplete="new-password"
+                   data-1p-ignore data-lpignore="true" data-form-type="other"></div>
         </div>
         <div id="aiAnthCfg">
           <div class="fld"><label for="aiKey">Anthropic API key</label>
-            <input type="password" id="aiKey" placeholder="sk-ant-…" autocomplete="off"></div>
+            <input type="password" id="aiKey" placeholder="sk-ant-…" autocomplete="new-password"
+                   data-1p-ignore data-lpignore="true" data-form-type="other"></div>
         </div>
         <h3>Model</h3>
         <div class="fld"><label for="aiModelSel">Model</label>
@@ -3190,11 +3216,24 @@ $('#convForm').source.onchange = updateCompat;
 $('#convForm').target.onchange = updateCompat;
 
 let analyzeInFlight = false;
+function switchInputTab(tab) {
+  const isUpload = tab === 'upload';
+  $('#inputPanelUpload').style.display = isUpload ? '' : 'none';
+  $('#inputPanelConn').style.display   = isUpload ? 'none' : '';
+  $('#inputTabUpload').style.background = isUpload ? 'var(--accent)' : '#fff';
+  $('#inputTabUpload').style.color      = isUpload ? '#fff' : 'var(--ink2)';
+  $('#inputTabConn').style.background   = isUpload ? '#fff' : 'var(--accent)';
+  $('#inputTabConn').style.color        = isUpload ? 'var(--ink2)' : '#fff';
+}
+
 $('#analyzeBtn').onclick = async () => {
   if (analyzeInFlight) return;                 // no duplicate submissions
   const err = $('#convErr'); err.style.display = 'none';
   $('#planPanel').style.display = 'none'; $('#convResult').style.display = 'none';
-  if (!chosen.convFile) { err.textContent = 'Choose a .zip first.'; err.style.display = 'block'; return; }
+  if (!chosen.convFile) {
+    err.innerHTML = '📁 No file uploaded yet. Click <b>Upload Files / Project</b> above and drop your .sql, .xml, or .zip file — then click Analyze again.';
+    err.style.display = 'block'; return;
+  }
   const form = $('#convForm');
   const fd = new FormData();
   fd.set('file', chosen.convFile);
@@ -3477,6 +3516,18 @@ function connectionFor(key) {
   return mine.find(x => x.state === 'connected') || mine[0];
 }
 
+// A driver error can be long (a full SQL statement + caret underline) and the
+// card has no room for it — wrap it in a scrollable box with an explicit ×
+// so it doesn't feel stuck open with no way to dismiss it.
+function connErrBox(msg) {
+  return '<div style="position:relative;margin-top:6px">'
+    + '<button type="button" title="Dismiss" onclick="this.parentElement.remove()" '
+    + 'style="position:absolute;top:6px;right:6px;width:20px;height:20px;padding:0;'
+    + 'margin:0;line-height:18px;border-radius:4px;background:var(--navy2);'
+    + 'border-color:var(--navy-line);color:var(--navy-txt);font-size:13px">&times;</button>'
+    + '<pre style="color:#FF9E93;padding-right:32px">' + esc(msg) + '</pre></div>';
+}
+
 async function loadSavedConnections() {
   // connector specs drive the status label, primary action and live-test
   // capability — load them first so a card never renders with a stale/blank
@@ -3573,7 +3624,7 @@ async function loadSavedConnections() {
     // mutating action needs jobs:run; "config" is read-only
     const need = act === 'config' ? '' : act === 'delete' ? 'jobs:delete' : 'jobs:run';
     if (need && !can(need)) {
-      if (out) out.innerHTML = '<pre style="margin-top:6px;color:#b03a2e">' + esc(permTitle(need)) + '</pre>';
+      if (out) out.innerHTML = connErrBox(permTitle(need));
       return;
     }
     try {
@@ -3594,7 +3645,7 @@ async function loadSavedConnections() {
         b.disabled = true; b.textContent = 'Preparing…';
         out.innerHTML = '<div style="font-size:13px;padding:6px 0">Fetching table manifest…</div>';
         const d = await api('/api/v1/connections/' + id + '/introspect', {method:'POST'});
-        if (!d.ok) { out.innerHTML = '<pre style="color:#b03a2e">' + esc(d.error||'failed') + '</pre>'; return; }
+        if (!d.ok) { out.innerHTML = connErrBox(d.error||'failed'); return; }
         const f = new File([d.manifest_yaml], row.connector + '_manifest.yml', {type:'text/yaml'});
         chosen.scafFile = f;
         const dz = document.querySelector('[data-drop="scafFile"] .txt');
@@ -3626,8 +3677,8 @@ async function loadSavedConnections() {
               out.innerHTML = '<pre style="margin-top:6px;color:var(--green)">Loaded ' + d.rows_in_file.toLocaleString() + ' rows into ' + d.table
                 + ' — table now has ' + d.rows_in_table.toLocaleString() + ' rows (' + d.elapsed_ms + 'ms)\n'
                 + d.steps.map(s => 'OK   ' + s.step + ' (' + s.ms + 'ms)').join('\n') + '</pre>';
-            } else { out.innerHTML = '<pre style="margin-top:6px;color:#b03a2e">' + esc(d.error || 'load failed') + '</pre>'; }
-          } catch (e) { out.innerHTML = '<pre style="margin-top:6px;color:#b03a2e">' + esc(e.message||e) + '</pre>'; }
+            } else { out.innerHTML = connErrBox(d.error || 'load failed'); }
+          } catch (e) { out.innerHTML = connErrBox(e.message||e); }
           inp.value = '';
         };
         inp.click();
@@ -3640,10 +3691,10 @@ async function loadSavedConnections() {
       if (act === 'test') {
         out.innerHTML = d.ok
           ? '<pre style="margin-top:6px">Connected — ' + d.latency_ms + 'ms\n' + esc(JSON.stringify(d.context||{}, null, 2)) + '</pre>'
-          : '<pre style="margin-top:6px;color:#b03a2e">' + esc(d.error||'failed') + '</pre>';
+          : connErrBox(d.error||'failed');
         loadSavedConnections();
       } else {
-        if (!d.ok) { out.innerHTML = '<pre style="margin-top:6px;color:#b03a2e">' + esc(d.error||'failed') + '</pre>'; }
+        if (!d.ok) { out.innerHTML = connErrBox(d.error||'failed'); }
         else {
           const r = d.readiness;
           const blob = new Blob([d.manifest_yaml], {type:'text/yaml'});
@@ -3653,7 +3704,7 @@ async function loadSavedConnections() {
           loadSavedConnections();
         }
       }
-    } catch (e) { out && (out.innerHTML = '<pre style="margin-top:6px;color:#b03a2e">' + esc(e.message||e) + '</pre>'); }
+    } catch (e) { out && (out.innerHTML = connErrBox(e.message||e)); }
     finally { b.disabled = false; }
   });
   loadMarketplace();

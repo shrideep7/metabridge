@@ -27,12 +27,14 @@ web = ["fastapi>=0.110", "uvicorn[standard]>=0.29", "python-multipart>=0.0.9",
 llm = ["anthropic[bedrock]>=0.34"]
 dtd = ["lxml>=5.0"]
 # Live connector drivers — needed for Test connection / Analyze database /
-# Load against a live system. Snowflake, PostgreSQL and Amazon Redshift are the
-# certified live connectors today (see metabridge.livecheck.LIVE_CONNECTORS);
-# PostgreSQL and Redshift share the psycopg2 wire path. Add a live connector's
-# driver here as it is certified. Without this extra the deterministic engines
-# still work; only the live actions are unavailable and say so.
-connectors = ["snowflake-connector-python>=3.0", "psycopg2-binary>=2.9"]
+# Load against a live system. Snowflake, Databricks, PostgreSQL and Amazon
+# Redshift are the certified live connectors today (see
+# metabridge.livecheck.LIVE_CONNECTORS); PostgreSQL and Redshift share the
+# psycopg2 wire path. Add a live connector's driver here as it is certified.
+# Without this extra the deterministic engines still work; only the live
+# actions are unavailable and say so.
+connectors = ["snowflake-connector-python>=3.0", "psycopg2-binary>=2.9",
+              "databricks-sql-connector>=3.0"]
 # commercial control plane (multi-tenant; SQLite for dev/test, PostgreSQL in
 # production via CONTROLPLANE_DATABASE_URL — install psycopg2-binary for RDS)
 commercial = ["sqlalchemy>=2.0,<3"]

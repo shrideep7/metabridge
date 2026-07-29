@@ -1,6 +1,6 @@
 """Data loading: any tabular file -> analyzed tables on any warehouse.
 
-Two capabilities, both schema-inferring (Excel .xlsx, CSV/TSV, JSON
+Three capabilities, all schema-inferring (Excel .xlsx, CSV/TSV, JSON
 records):
 
     load_into_snowflake(...)      REAL load over a live connection using
@@ -9,13 +9,18 @@ records):
                                   stage (@%table), COPY INTO with a CSV
                                   file format, then a verification
                                   SELECT COUNT(*). Evidence per step.
+    load_into_databricks(...)     REAL load over a live SQL warehouse
+                                  connection — CREATE TABLE IF NOT EXISTS,
+                                  batched parameterized INSERTs (no
+                                  client-reachable stage/COPY INTO source
+                                  without a Unity Catalog volume), then a
+                                  verification SELECT COUNT(*).
     generate_load_package(...)    every other warehouse gets its OWN
                                   standard load artifacts generated
-                                  (never generic SQL renamed): Databricks
-                                  COPY INTO/Delta, BigQuery bq load,
-                                  Redshift COPY ... IAM_ROLE, Synapse
-                                  COPY INTO from storage, Postgres \\copy
-                                  — DDL + load script + notes.
+                                  (never generic SQL renamed): BigQuery
+                                  bq load, Redshift COPY ... IAM_ROLE,
+                                  Synapse COPY INTO from storage, Postgres
+                                  \\copy — DDL + load script + notes.
 
 Type inference is conservative: integers, decimals, dates, timestamps,
 booleans by full-column agreement over a sample; anything mixed stays
@@ -288,3 +293,60 @@ def load_into_snowflake(params: Dict[str, str], table: str,
                 conn.close()
             except Exception:  # noqa: BLE001
                 pass
+
+
+def load_into_databricks(params: Dict[str, str], table: str,
+                         data: bytes, filename: str,
+                         create: bool = True,
+                         batch_size: int = 1000) -> dict:
+    """REAL load over a live Databricks SQL warehouse connection: CREATE
+    TABLE IF NOT EXISTS -> batched parameterized INSERTs -> verify count.
+    Databricks SQL warehouses have no client-side file-stage primitive
+    reachable from a plain Python driver (COPY INTO needs the file already
+    sitting in a Unity Catalog volume/cloud path), so row-by-row INSERT is
+    the connector's own live path rather than a re-implementation of
+    COPY INTO."""
+    from .livecheck import _databricks_connect
+    cols, rows, notes = read_tabular(data, filename)
+    t = _safe_ident(table or Path(filename).stem)
+
+    started = time.time()
+    conn = _databricks_connect(params)
+    steps: List[dict] = []
+    try:
+        cur = conn.cursor()
+
+        def step(label: str, sql: str, params_: Optional[list] = None):
+            t0 = time.time()
+            cur.execute(sql, params_) if params_ is not None else cur.execute(sql)
+            steps.append({"step": label,
+                          "ms": int((time.time() - t0) * 1000)})
+
+        if create:
+            step("create table", _ddl(t, cols, "databricks", " USING DELTA"))
+        col_list = ", ".join(c["name"] for c in cols)
+        placeholders = ", ".join(["?"] * len(cols))
+        insert_sql = "INSERT INTO %s (%s) VALUES (%s)" % (t, col_list,
+                                                           placeholders)
+        for i in range(0, len(rows), batch_size):
+            batch = rows[i:i + batch_size]
+            t0 = time.time()
+            for r in batch:
+                cur.execute(insert_sql, [v if v != "" else None for v in r])
+            steps.append({"step": "insert rows %d-%d" % (i, i + len(batch)),
+                         "ms": int((time.time() - t0) * 1000)})
+        verified = cur.execute("SELECT COUNT(*) FROM %s" % t).fetchone()
+        return {"ok": True, "table": t,
+                "columns": cols, "rows_in_file": len(rows),
+                "rows_in_table": int(verified[0]),
+                "steps": steps, "notes": notes,
+                "elapsed_ms": int((time.time() - started) * 1000),
+                "manifest_yaml": _manifest_yaml(t, cols)}
+    except Exception as e:  # noqa: BLE001 — report, never crash
+        return {"ok": False, "table": t, "error": str(e)[:400],
+                "steps": steps, "notes": notes}
+    finally:
+        try:
+            conn.close()
+        except Exception:  # noqa: BLE001
+            pass

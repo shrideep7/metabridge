@@ -30,23 +30,24 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 
-# Connectors that have a REAL, live driver in this build. Snowflake uses its
-# native driver; PostgreSQL and Amazon Redshift share the psycopg2 +
-# INFORMATION_SCHEMA path (Redshift speaks the PostgreSQL wire protocol).
-# Adding another SQL database is a one-line entry here plus its driver in the
-# `connectors` extra — the UI turns on Test/Analyze automatically for any
-# connector this reports as live. Everything else stays declarative (artifact
-# generation / scaffold from a manifest) and a live probe returns an HONEST
-# "unsupported" result, which callers must NOT treat as a failed connection.
+# Connectors that have a REAL, live driver in this build. Snowflake and
+# Databricks each use their native driver; PostgreSQL and Amazon Redshift
+# share the psycopg2 + INFORMATION_SCHEMA path (Redshift speaks the
+# PostgreSQL wire protocol). Adding another SQL database is a one-line entry
+# here plus its driver in the `connectors` extra — the UI turns on
+# Test/Analyze automatically for any connector this reports as live.
+# Everything else stays declarative (artifact generation / scaffold from a
+# manifest) and a live probe returns an HONEST "unsupported" result, which
+# callers must NOT treat as a failed connection.
 _SQL_DIALECTS = {"postgres": "postgres", "redshift": "redshift"}
 
 
 def _has_live_driver(key: str) -> bool:
-    return key == "snowflake" or key in _SQL_DIALECTS
+    return key in ("snowflake", "databricks") or key in _SQL_DIALECTS
 
 
 # Back-compat: earlier code imported this set directly.
-LIVE_CONNECTORS = frozenset({"snowflake"}) | frozenset(_SQL_DIALECTS)
+LIVE_CONNECTORS = frozenset({"snowflake", "databricks"}) | frozenset(_SQL_DIALECTS)
 
 
 def live_support(key: str) -> Dict[str, bool]:
@@ -56,12 +57,12 @@ def live_support(key: str) -> Dict[str, bool]:
 
     Reported honestly per capability: the SQL connectors have a read path
     (Test connection + Analyze/introspect), while live LOAD — writing data
-    into the target — is certified for Snowflake only today; the SQL
-    connectors fall back to a generated load PACKAGE, so live_load stays
-    False for them rather than overclaiming."""
+    into the target — is certified for Snowflake and Databricks today; the
+    other connectors fall back to a generated load PACKAGE, so live_load
+    stays False for them rather than overclaiming."""
     live = _has_live_driver(key)
     return {"live_test": live, "introspect": live,
-            "live_load": key == "snowflake"}
+            "live_load": key in ("snowflake", "databricks")}
 
 
 def _secret(key: str, field: str, params: Dict[str, str]) -> str:
@@ -100,6 +101,209 @@ def _snowflake_connect(params: Dict[str, str],
             "No password provided — export MB_SNOWFLAKE_PASSWORD (values "
             "are never stored) or pass it transiently in the request.")
     return snowflake.connector.connect(**kw)
+
+
+def _databricks_connect(params: Dict[str, str]):
+    """Open a READ-ONLY session against a Databricks SQL warehouse. Auth is
+    a personal access token (Databricks' standard programmatic credential),
+    following the same never-stored contract as every other connector."""
+    try:
+        import databricks.sql as databricks_sql  # optional dep
+    except ModuleNotFoundError as e:
+        raise RuntimeError(
+            "The Databricks driver is not installed in this deployment. "
+            "Rebuild the image with the connectors extra — "
+            "pip install 'metabridge[web,dtd,connectors]' "
+            "(adds databricks-sql-connector) — then retry Test connection."
+        ) from e
+    token = _secret("databricks", "token", params)
+    if not token:
+        raise ValueError(
+            "No access token provided — export MB_DATABRICKS_TOKEN (values "
+            "are never stored) or pass it transiently in the request.")
+    host = (params.get("host") or "").strip()
+    if not host:
+        raise ValueError("No workspace host provided — the SQL warehouse's "
+                         "workspace hostname is required to connect.")
+    http_path = (params.get("http_path") or "").strip()
+    if not http_path:
+        raise ValueError("No SQL warehouse HTTP path provided — copy it "
+                         "from the warehouse's Connection Details.")
+    kw = {"server_hostname": host, "http_path": http_path,
+          "access_token": token}
+    if params.get("catalog"):
+        kw["catalog"] = params["catalog"]
+    if params.get("schema"):
+        kw["schema"] = params["schema"]
+    return databricks_sql.connect(**kw)
+
+
+def _databricks_test(params: Dict[str, str]) -> dict:
+    """Databricks live probe — the SAME evidence-based report shape as the
+    Snowflake/SQL paths. Catalog and schema are fixed at connect time by the
+    driver (unlike Snowflake's USE-based ladder), so a bad catalog/schema
+    surfaces as a connect-time failure rather than a separate step."""
+    started = time.time()
+    try:
+        conn = _databricks_connect(params)
+    except Exception as e:  # noqa: BLE001 — report, never crash the app
+        msg = str(e)
+        low = msg.lower()
+        needs_credential = "no access token provided" in low
+        return {"ok": False, "connector": "databricks", "authenticated": False,
+                "needs_credential": needs_credential,
+                "latency_ms": int((time.time() - started) * 1000),
+                "error": msg[:400]}
+    report: dict = {"ok": True, "connector": "databricks",
+                    "authenticated": True, "probes": [], "steps": []}
+    try:
+        cur = conn.cursor()
+
+        def probe(label: str, sql: str):
+            t0 = time.time()
+            cur.execute(sql)
+            row = cur.fetchone()
+            report["probes"].append({
+                "probe": label, "sql": sql,
+                "result": str(row[0]) if row and row[0] is not None
+                else str(row),
+                "ms": int((time.time() - t0) * 1000)})
+            return row
+
+        probe("server_version", "SELECT current_version()")
+        probe("server_time", "SELECT current_timestamp()")
+
+        row = cur.execute(
+            "SELECT current_catalog(), current_database(), "
+            "current_user()").fetchone()
+        report["context"] = dict(zip(
+            ("catalog", "schema", "user"),
+            (str(x) if x is not None else None for x in row)))
+
+        row = cur.execute(
+            "SELECT count(*) FROM information_schema.tables "
+            "WHERE table_schema = current_database()").fetchone()
+        report["objects"] = {"tables_visible": int(row[0]) if row else 0}
+
+        report["latency_ms"] = int((time.time() - started) * 1000)
+    except Exception as e:  # noqa: BLE001
+        report.update({"ok": False, "error": str(e)[:400],
+                       "latency_ms": int((time.time() - started) * 1000)})
+    finally:
+        try:
+            conn.close()
+        except Exception:  # noqa: BLE001
+            pass
+    return report
+
+
+def _databricks_introspect(params: Dict[str, str],
+                           max_tables: int = 500) -> dict:
+    """Read-only inventory for Databricks, returning the SAME shape as the
+    Snowflake/SQL introspect (tables/columns/views + readiness + manifest)
+    so the console and scaffold consume it unchanged."""
+    catalog = (params.get("catalog") or "").strip()
+    schema = (params.get("schema") or "").strip()
+    started = time.time()
+    try:
+        conn = _databricks_connect(params)
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "connector": "databricks", "error": str(e)[:400]}
+    try:
+        cur = conn.cursor()
+        row = cur.execute(
+            "SELECT current_catalog(), current_database()").fetchone()
+        catalog = catalog or str(row[0] or "")
+        schema = schema or str(row[1] or "")
+        cur.execute(
+            "SELECT table_schema, table_name, table_type "
+            "FROM information_schema.tables "
+            "WHERE table_schema = COALESCE(?, table_schema) "
+            "LIMIT %d" % int(max_tables),
+            [schema or None])
+        tables = {(r[0], r[1]): {"schema": r[0], "name": r[1],
+                                 "type": ("VIEW" if str(r[2]).upper() ==
+                                          "VIEW" else "BASE TABLE"),
+                                 "rows": 0, "bytes": 0, "columns": []}
+                  for r in cur.fetchall()}
+        cur.execute(
+            "SELECT table_schema, table_name, column_name, data_type "
+            "FROM information_schema.columns "
+            "WHERE table_schema = COALESCE(?, table_schema) "
+            "ORDER BY table_schema, table_name, ordinal_position",
+            [schema or None])
+        for r in cur.fetchall():
+            key_ = (r[0], r[1])
+            if key_ in tables:
+                tables[key_]["columns"].append(
+                    {"name": str(r[2]), "type": str(r[3])})
+        views = []
+        cur.execute(
+            "SELECT table_schema, table_name, view_definition "
+            "FROM information_schema.views "
+            "WHERE table_schema = COALESCE(?, table_schema)",
+            [schema or None])
+        for r in cur.fetchall():
+            views.append({"schema": r[0], "name": r[1],
+                          "definition": str(r[2] or "")[:8000]})
+    except Exception as e:  # noqa: BLE001
+        try:
+            conn.close()
+        except Exception:  # noqa: BLE001
+            pass
+        return {"ok": False, "connector": "databricks", "error": str(e)[:400]}
+    finally:
+        try:
+            conn.close()
+        except Exception:  # noqa: BLE001
+            pass
+
+    # conversion readiness: every view's SQL parsed with the real dialect
+    import sqlglot
+    convertible, needs_review = [], []
+    for v in views:
+        if not v["definition"].strip():
+            needs_review.append({"view": v["name"],
+                                 "reason": "definition not visible to "
+                                           "this user"})
+            continue
+        try:
+            sqlglot.parse_one(v["definition"], read="databricks")
+            convertible.append(v["name"])
+        except Exception as e:  # noqa: BLE001
+            needs_review.append({"view": v["name"], "reason": str(e)[:150]})
+
+    base_tables = [t for t in tables.values()
+                   if "VIEW" not in t["type"].upper()]
+    manifest = {"tables": [
+        {"name": t["name"], "schema": t["schema"],
+         "columns": [{"name": c["name"], "type": c["type"]}
+                     for c in t["columns"]]}
+        for t in base_tables]}
+    import yaml as _yaml
+    return {
+        "ok": True, "connector": "databricks",
+        "database": catalog, "schema": schema or "(all)",
+        "elapsed_ms": int((time.time() - started) * 1000),
+        "tables": sorted(tables.values(),
+                         key=lambda t: (-t["rows"], t["name"])),
+        "views": [{"schema": v["schema"], "name": v["name"]}
+                  for v in views],
+        "view_definitions": {v["name"]: v["definition"] for v in views},
+        "readiness": {
+            "tables": len(base_tables),
+            "views": len(views),
+            "total_rows": sum(t["rows"] for t in base_tables),
+            "tables_with_columns": sum(1 for t in base_tables
+                                       if t["columns"]),
+            "views_convertible": len(convertible),
+            "views_needing_review": needs_review,
+            "verdict": "READY" if base_tables or convertible else
+                       "NOTHING_TO_CONVERT",
+        },
+        "manifest_yaml": _yaml.safe_dump(manifest, sort_keys=False,
+                                         width=100),
+    }
 
 
 def _split_endpoint(raw: str):
@@ -456,6 +660,8 @@ def test_connection(key: str, params: Dict[str, str]) -> dict:
                          % key}
     if key in _SQL_DIALECTS:
         return _sqldb_test(key, params)
+    if key == "databricks":
+        return _databricks_test(params)
     started = time.time()
     try:
         # credentials + role only: context problems must not hide auth
@@ -624,6 +830,8 @@ def introspect(key: str, params: Dict[str, str],
                 "error": "introspection not implemented for '%s' yet" % key}
     if key in _SQL_DIALECTS:
         return _sqldb_introspect(key, params, max_tables=max_tables)
+    if key == "databricks":
+        return _databricks_introspect(params, max_tables=max_tables)
     database = params.get("database", "")
     schema = (params.get("schema") or "").upper()
     if not database:
