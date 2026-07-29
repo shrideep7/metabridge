@@ -27,8 +27,10 @@ from .connectors.base import get_registry
 
 
 def _store_path() -> Path:
-    root = Path(os.environ.get("METABRIDGE_DATA_DIR",
-                               str(Path.home() / ".metabridge")))
+    # scoped to the ACTIVE workspace (falls back to the root data dir when no
+    # workspace context is set — CLI, API-key automation, tests)
+    from .workspace_ctx import active_data_dir
+    root = active_data_dir()
     root.mkdir(parents=True, exist_ok=True)
     return root / "connections.json"
 
