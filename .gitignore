@@ -20,3 +20,5 @@ temp/
 /reports/*.pptx
 /reports/*.xlsx
 /reports/*.pdf
+docker-compose.dev.yml
+
