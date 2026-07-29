@@ -321,5 +321,5 @@ def write_documentation(result: dict, out_dir: str) -> str:
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
     path = out / "pipeline_documentation.md"
-    path.write_text("\n".join(lines) + "\n")
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return str(path)

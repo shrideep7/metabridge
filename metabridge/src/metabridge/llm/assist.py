@@ -128,7 +128,7 @@ def load_ai_settings() -> dict:
     f = _settings_file()
     if f.exists():
         try:
-            cfg.update((json.loads(f.read_text()) or {}).get("ai", {}))
+            cfg.update((json.loads(f.read_text(encoding="utf-8")) or {}).get("ai", {}))
         except Exception:  # noqa: BLE001
             pass
     if os.environ.get("ANTHROPIC_API_KEY") and not cfg.get("api_key"):
@@ -150,7 +150,7 @@ def save_ai_settings(provider: str, api_key: str = "", region: str = "",
     doc = {}
     if f.exists():
         try:
-            doc = json.loads(f.read_text()) or {}
+            doc = json.loads(f.read_text(encoding="utf-8")) or {}
         except Exception:  # noqa: BLE001
             doc = {}
     ai = doc.get("ai", {})
@@ -168,7 +168,7 @@ def save_ai_settings(provider: str, api_key: str = "", region: str = "",
     ai["model"] = model or _DEFAULT_MODELS.get(provider, "")
     doc["ai"] = ai
     f.parent.mkdir(parents=True, exist_ok=True)
-    f.write_text(json.dumps(doc, indent=2))
+    f.write_text(json.dumps(doc, indent=2), encoding="utf-8")
     try:
         os.chmod(f, 0o600)
     except OSError:

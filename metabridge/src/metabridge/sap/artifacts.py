@@ -278,14 +278,14 @@ def write_sap_artifacts(land: SAPLandscape, target: str,
     out.mkdir(parents=True, exist_ok=True)
     written = []
     (out / "sap_business_documentation.md").write_text(
-        business_documentation(land))
+        business_documentation(land), encoding="utf-8")
     written.append("sap_business_documentation.md")
     (out / "sap_business_lineage.json").write_text(
-        json.dumps(business_lineage(land), indent=1))
+        json.dumps(business_lineage(land), indent=1), encoding="utf-8")
     written.append("sap_business_lineage.json")
     vdir = out / "sap_validation"
     vdir.mkdir(exist_ok=True)
     for fname, sql in validation_pack(land, target).items():
-        (vdir / fname).write_text(sql)
+        (vdir / fname).write_text(sql, encoding="utf-8")
         written.append("sap_validation/" + fname)
     return written

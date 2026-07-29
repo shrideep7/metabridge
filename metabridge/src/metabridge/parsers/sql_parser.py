@@ -78,7 +78,7 @@ def parse_sql_scripts(path: str, format_name: str = "sql",
 
     for f in files:
         try:
-            text = f.read_text(errors="replace")
+            text = f.read_text(errors="replace", encoding="utf-8")
         except OSError as e:
             pipeline.issues.append(ConversionIssue(
                 severity=IssueSeverity.ERROR, code="FILE_UNREADABLE",
@@ -175,7 +175,7 @@ def parse_sql_scripts(path: str, format_name: str = "sql",
         analyze_temp_chains(pipeline)
         from ..detection.sql_dialect import detect_sql_dialect
         pipeline.metadata["dialect_detection"] = detect_sql_dialect(
-            "\n".join((f.read_text(errors="replace")[:100_000]
+            "\n".join((f.read_text(errors="replace", encoding="utf-8")[:100_000]
                        for f in files))[:400_000])
     return pipeline
 

@@ -142,7 +142,7 @@ def _read_jobs(base: Path) -> List[dict]:
         return out
     for meta in sorted(jobs_dir.glob("*/meta.json")):
         try:
-            m = json.loads(meta.read_text())
+            m = json.loads(meta.read_text(encoding="utf-8"))
         except (ValueError, OSError):
             continue
         if not isinstance(m, dict):
@@ -163,7 +163,7 @@ def _read_agent_runs(base: Path) -> List[dict]:
         return out
     for f in sorted(runs_dir.glob("*.json")):
         try:
-            r = json.loads(f.read_text())
+            r = json.loads(f.read_text(encoding="utf-8"))
         except (ValueError, OSError):
             continue
         # results MUST be a list — a dict/str would be iterated as keys/chars
@@ -183,7 +183,7 @@ def _read_connections(base: Path) -> List[dict]:
     if not f.exists():
         return []
     try:
-        rows = json.loads(f.read_text()) or []
+        rows = json.loads(f.read_text(encoding="utf-8")) or []
     except (ValueError, OSError):
         return []
     out = []
@@ -199,7 +199,7 @@ def _read_twin(base: Path):
         return None
     try:
         from ..twin.model import twin_from_dict
-        return twin_from_dict(json.loads(f.read_text()))
+        return twin_from_dict(json.loads(f.read_text(encoding="utf-8")))
     except Exception:                            # noqa: BLE001
         return None
 

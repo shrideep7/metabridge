@@ -37,7 +37,7 @@ class NotificationCenter:
     def _load(self) -> dict:
         if self._file.exists():
             try:
-                d = json.loads(self._file.read_text())
+                d = json.loads(self._file.read_text(encoding="utf-8"))
                 if isinstance(d, dict):
                     # coerce INNER types too — a repaired/hand-edited file
                     # may hold the wrong type for log/subscriptions

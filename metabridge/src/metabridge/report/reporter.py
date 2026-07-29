@@ -249,6 +249,6 @@ def write_report(pipeline: Pipeline, target_format: str, out_dir: str) -> dict:
     workbook = build_workbook(pipeline, report, out_dir, target_format)
     if workbook:
         report["summary"]["workload"]["workbook"] = workbook
-    (out / "conversion_report.json").write_text(json.dumps(report, indent=2))
-    (out / "conversion_report.html").write_text(render_html(report))
+    (out / "conversion_report.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
+    (out / "conversion_report.html").write_text(render_html(report), encoding="utf-8")
     return report

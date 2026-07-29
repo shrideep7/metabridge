@@ -578,5 +578,5 @@ def generate_events(cer: CER, target: str, out_dir: str) -> dict:
     for name, content in files.items():
         p = out / name
         p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(content)
+        p.write_text(content, encoding="utf-8")
     return {"target": target, "files": sorted(files)}

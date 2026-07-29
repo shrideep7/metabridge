@@ -51,7 +51,7 @@ class ApprovalQueue:
     def _load(self) -> dict:
         if self._file.exists():
             try:
-                return json.loads(self._file.read_text())
+                return json.loads(self._file.read_text(encoding="utf-8"))
             except (ValueError, OSError):
                 return {}
         return {}
@@ -60,7 +60,7 @@ class ApprovalQueue:
         # atomic: write to a temp file then replace, so a crash mid-write
         # never truncates the queue
         tmp = self._file.with_suffix(".json.tmp")
-        tmp.write_text(json.dumps(state, indent=1))
+        tmp.write_text(json.dumps(state, indent=1), encoding="utf-8")
         os.replace(tmp, self._file)
 
     def _now(self) -> float:

@@ -74,7 +74,7 @@ def detect_orchestration_platform(path: str) -> dict:
 
     for f in files:
         try:
-            head = f.read_text(errors="replace")[:65536]
+            head = f.read_text(errors="replace", encoding="utf-8")[:65536]
         except OSError:
             continue
         suf = f.suffix.lower()
@@ -84,7 +84,7 @@ def detect_orchestration_platform(path: str) -> dict:
         elif suf == ".json":
             try:
                 doc = json.loads(head if len(head) < 65536
-                                 else f.read_text(errors="replace"))
+                                 else f.read_text(errors="replace", encoding="utf-8"))
             except (json.JSONDecodeError, OSError):
                 continue
             if isinstance(doc, dict):
@@ -202,7 +202,7 @@ def parse_airflow(path: str) -> COR:
     cor = COR(name=_clean(p.stem), source_platform="airflow")
     for f in files:
         try:
-            tree = ast.parse(f.read_text(errors="replace"))
+            tree = ast.parse(f.read_text(errors="replace", encoding="utf-8"))
         except (SyntaxError, OSError) as e:
             cor.issues.append({"severity": "ERROR", "code": "AF_PARSE",
                                "message": "%s is not parseable Python: %s"
@@ -463,7 +463,7 @@ def parse_adf(path: str, platform: str = "adf") -> COR:
     linked: List[dict] = []
     for f in files:
         try:
-            doc = json.loads(f.read_text(errors="replace"))
+            doc = json.loads(f.read_text(errors="replace", encoding="utf-8"))
         except (json.JSONDecodeError, OSError):
             continue
         if not isinstance(doc, dict):
@@ -618,7 +618,7 @@ def parse_stepfunctions(path: str) -> COR:
     cor = COR(name=_clean(p.stem), source_platform="stepfunctions")
     for f in files:
         try:
-            doc = json.loads(f.read_text(errors="replace"))
+            doc = json.loads(f.read_text(errors="replace", encoding="utf-8"))
         except (json.JSONDecodeError, OSError):
             continue
         if isinstance(doc, dict) and "States" in doc and "StartAt" in doc:
@@ -703,7 +703,7 @@ def parse_glue_workflow(path: str) -> COR:
     cor = COR(name=_clean(p.stem), source_platform="glue_workflow")
     for f in files:
         try:
-            doc = json.loads(f.read_text(errors="replace"))
+            doc = json.loads(f.read_text(errors="replace", encoding="utf-8"))
         except (json.JSONDecodeError, OSError):
             continue
         w = doc.get("Workflow") if isinstance(doc, dict) else None
@@ -781,7 +781,7 @@ def parse_controlm(path: str) -> COR:
                               "(deploy jobs::get) as JSON and re-run."})
             continue
         try:
-            doc = json.loads(f.read_text(errors="replace"))
+            doc = json.loads(f.read_text(errors="replace", encoding="utf-8"))
         except (json.JSONDecodeError, OSError):
             continue
         if not isinstance(doc, dict):
@@ -879,7 +879,7 @@ def parse_autosys(path: str) -> COR:
     cor = COR(name=_clean(p.stem), source_platform="autosys")
     jobs: List[dict] = []
     for f in files:
-        text = f.read_text(errors="replace")
+        text = f.read_text(errors="replace", encoding="utf-8")
         if "insert_job" not in text:
             continue
         cur: Dict[str, str] = {}
@@ -959,7 +959,7 @@ def parse_idmc_taskflow(path: str) -> COR:
     cor = COR(name=_clean(p.stem), source_platform="idmc_taskflow")
     for f in files:
         try:
-            doc = json.loads(f.read_text(errors="replace"))
+            doc = json.loads(f.read_text(errors="replace", encoding="utf-8"))
         except (json.JSONDecodeError, OSError):
             continue
         body = doc.get("taskflow", doc) if isinstance(doc, dict) else None
@@ -1024,7 +1024,7 @@ def parse_dbtcloud(path: str) -> COR:
     cor = COR(name=_clean(p.stem), source_platform="dbtcloud")
     for f in files:
         try:
-            doc = json.loads(f.read_text(errors="replace"))
+            doc = json.loads(f.read_text(errors="replace", encoding="utf-8"))
         except (json.JSONDecodeError, OSError):
             continue
         docs = doc if isinstance(doc, list) else [doc]
@@ -1073,7 +1073,7 @@ def parse_cron(path: str) -> COR:
     cor = COR(name=_clean(p.stem) or "crontab", source_platform="cron")
     for f in files:
         try:
-            text = f.read_text(errors="replace")
+            text = f.read_text(errors="replace", encoding="utf-8")
         except OSError:
             continue
         comment = ""

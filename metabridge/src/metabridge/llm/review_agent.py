@@ -117,15 +117,15 @@ def _generated_artifact(out: Path, target_format: str,
     if target_format == "dbt":
         for f in sorted((out / "dbt").rglob("*.sql")):
             if f.stem == m.name:
-                return str(f.relative_to(out)), f.read_text()
+                return str(f.relative_to(out)), f.read_text(encoding="utf-8")
     elif target_format in SQL_DIALECT_FORMATS:
         for f in sorted((out / "sql").glob("*.sql")):
             if f.stem.split("_", 1)[-1] == m.name:
-                return str(f.relative_to(out)), f.read_text()
+                return str(f.relative_to(out)), f.read_text(encoding="utf-8")
     elif target_format == "powercenter":
         xmls = sorted(out.glob("wf_*.xml")) or sorted(out.glob("*.xml"))
         if xmls:
-            text = xmls[0].read_text()
+            text = xmls[0].read_text(encoding="utf-8")
             start = text.find('<MAPPING NAME="%s"' % m.name)
             if start >= 0:
                 end = text.find("</MAPPING>", start)
@@ -135,7 +135,7 @@ def _generated_artifact(out: Path, target_format: str,
     elif target_format == "idmc":
         for f in sorted((out / "idmc").rglob("*.json")):
             if m.name.lower() in f.stem.lower():
-                return str(f.relative_to(out)), f.read_text()
+                return str(f.relative_to(out)), f.read_text(encoding="utf-8")
     return "", ""
 
 
@@ -528,7 +528,7 @@ def review_migration(pipeline: Pipeline, output_dir: str, target_format: str,
 def write_review(result: dict, output_dir: str) -> str:
     root = Path(output_dir) / "ai_review"
     root.mkdir(parents=True, exist_ok=True)
-    (root / "review.json").write_text(json.dumps(result, indent=2))
+    (root / "review.json").write_text(json.dumps(result, indent=2), encoding="utf-8")
     s = result["summary"]
     lines = [
         "# AI Migration Review — %s" % result["project"],
@@ -562,7 +562,7 @@ def write_review(result: dict, output_dir: str) -> str:
                       "-- proposed", c["proposed_code"], "```",
                       "_%s_" % c["rationale"]]
         lines.append("")
-    (root / "review.md").write_text("\n".join(lines) + "\n")
+    (root / "review.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
     return str(root / "review.md")
 
 
@@ -575,9 +575,9 @@ def _file_parses(path: Path, target_format: str, dialect: str) -> bool:
         if path.suffix == ".xml":
             ET.parse(str(path))
         elif path.suffix == ".json":
-            json.loads(path.read_text())
+            json.loads(path.read_text(encoding="utf-8"))
         elif path.suffix == ".sql":
-            text = path.read_text()
+            text = path.read_text(encoding="utf-8")
             if target_format == "dbt":
                 from ..validate.conversion_validator import _shield_jinja
                 text = _shield_jinja(text)
@@ -599,7 +599,7 @@ def apply_corrections(output_dir: str, approved_ids: List[str],
     review_file = out / "ai_review" / "review.json"
     if not review_file.exists():
         raise FileNotFoundError("No review found — run the AI review first")
-    review = json.loads(review_file.read_text())
+    review = json.loads(review_file.read_text(encoding="utf-8"))
     by_id = {c["id"]: c for r in review["reviews"] for c in r["corrections"]}
 
     backups = out / "ai_review" / "backups"
@@ -615,7 +615,7 @@ def apply_corrections(output_dir: str, approved_ids: List[str],
             results.append({"id": c["id"], "status": "file_not_found",
                             "file": c["file"]})
             continue
-        text = target.read_text()
+        text = target.read_text(encoding="utf-8")
         n = text.count(c["current_code"])
         if n == 0:
             results.append({"id": c["id"], "status": "failed_not_found",
@@ -629,12 +629,12 @@ def apply_corrections(output_dir: str, approved_ids: List[str],
             continue
         archive = backups / (c["file"].replace("/", "__") + ".orig")
         if not archive.exists():
-            archive.write_text(text)          # first-touch original
+            archive.write_text(text, encoding="utf-8")          # first-touch original
         pre_image = text
         target.write_text(text.replace(c["current_code"],
-                                       c["proposed_code"], 1))
+                                       c["proposed_code"], 1), encoding="utf-8")
         if not _file_parses(target, target_format, dialect):
-            target.write_text(pre_image)      # never leave broken output
+            target.write_text(pre_image, encoding="utf-8")      # never leave broken output
             results.append({"id": c["id"], "status": "reverted_syntax_error",
                             "file": c["file"],
                             "detail": "proposed code broke the file — "
@@ -644,10 +644,10 @@ def apply_corrections(output_dir: str, approved_ids: List[str],
         results.append({"id": c["id"], "status": "applied",
                         "file": c["file"]})
 
-    review_file.write_text(json.dumps(review, indent=2))
+    review_file.write_text(json.dumps(review, indent=2), encoding="utf-8")
     audit_file = out / "ai_review" / "applied.json"
-    audit = json.loads(audit_file.read_text()) if audit_file.exists() else []
+    audit = json.loads(audit_file.read_text(encoding="utf-8")) if audit_file.exists() else []
     audit.extend(results)
-    audit_file.write_text(json.dumps(audit, indent=2))
+    audit_file.write_text(json.dumps(audit, indent=2), encoding="utf-8")
     return {"applied": sum(1 for r in results if r["status"] == "applied"),
             "results": results}

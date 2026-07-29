@@ -560,7 +560,7 @@ def run_live_validation(tests_path: str, key: str, params: Dict[str, str],
     A test passes when its expectation is met (violations == 0 style) or,
     for comparison tests without a legacy connection, its value is
     recorded for the reconciliation pair."""
-    doc = json.loads(Path(tests_path).read_text())
+    doc = json.loads(Path(tests_path).read_text(encoding="utf-8"))
     if key != "snowflake":
         return {"ok": False, "error": "live validation supports snowflake "
                                       "first; '%s' pending" % key}

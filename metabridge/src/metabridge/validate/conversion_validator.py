@@ -83,7 +83,7 @@ def _layer_status(findings: List[dict]) -> str:
 
 def _parse_sql_file(path: Path, dialect: str) -> Optional[str]:
     """None when the file parses; otherwise the error text."""
-    text = path.read_text()
+    text = path.read_text(encoding="utf-8")
     if not text.strip():
         return None
     try:
@@ -142,7 +142,7 @@ def _layer1_syntax(out: Path, target_format: str, dialect: str) -> List[dict]:
                              "No IDMC bundle found in the output")]
         for f in files:
             try:
-                json.loads(f.read_text())
+                json.loads(f.read_text(encoding="utf-8"))
             except Exception as e:  # noqa: BLE001
                 findings.append(_finding("ERROR", "JSON_INVALID", str(e),
                                          obj=str(f.relative_to(out))))
@@ -154,7 +154,7 @@ def _layer1_syntax(out: Path, target_format: str, dialect: str) -> List[dict]:
             return [_finding("ERROR", "ARTIFACT_MISSING",
                              "No dbt project found in the output")]
         for f in sqls:
-            shielded = _shield_jinja(f.read_text())
+            shielded = _shield_jinja(f.read_text(encoding="utf-8"))
             err = None
             try:
                 sqlglot.parse(shielded,
@@ -166,7 +166,7 @@ def _layer1_syntax(out: Path, target_format: str, dialect: str) -> List[dict]:
                                          obj=str(f.relative_to(out))))
         for f in sorted(root.rglob("*.yml")):
             try:
-                yaml.safe_load(f.read_text())
+                yaml.safe_load(f.read_text(encoding="utf-8"))
             except Exception as e:  # noqa: BLE001
                 findings.append(_finding("ERROR", "YAML_INVALID", str(e),
                                          obj=str(f.relative_to(out))))
@@ -251,7 +251,7 @@ def _layer2_dependencies(pipeline: Pipeline, out: Path,
         declared_sources = set()
         for yml in (out / "dbt").rglob("*.yml"):
             try:
-                doc = yaml.safe_load(yml.read_text()) or {}
+                doc = yaml.safe_load(yml.read_text(encoding="utf-8")) or {}
             except Exception:  # noqa: BLE001
                 continue
             for s in doc.get("sources", []) or []:
@@ -259,7 +259,7 @@ def _layer2_dependencies(pipeline: Pipeline, out: Path,
                     declared_sources.add((str(s.get("name", "")).lower(),
                                           str(t.get("name", "")).lower()))
         for f in (out / "dbt").rglob("*.sql"):
-            body = f.read_text()
+            body = f.read_text(encoding="utf-8")
             for ref in re.findall(r"ref\(\s*'([^']+)'\s*\)", body):
                 if ref not in model_names:
                     findings.append(_finding(
@@ -434,7 +434,7 @@ def _layer4_reconciliation(pipeline: Pipeline, out: Path,
     findings: List[dict] = []
     tests_file = out / "validation_tests" / "tests.json"
     if tests_file.exists():
-        doc = json.loads(tests_file.read_text())
+        doc = json.loads(tests_file.read_text(encoding="utf-8"))
     else:
         from ..report.testgen import generate_tests
         doc = generate_tests(pipeline, target_format=target_format)
@@ -509,11 +509,11 @@ def _generated_snippet(out: Path, target_format: str, m: Mapping) -> str:
             list((out / "dbt").rglob("int_*%s*.sql" % m.name)) or \
             list((out / "dbt").rglob("*%s*.sql" % m.name))
         if hits:
-            return hits[0].read_text()[:2500]
+            return hits[0].read_text(encoding="utf-8")[:2500]
     if target_format in SQL_DIALECT_FORMATS:
         hits = sorted((out / "sql").rglob("*%s*.sql" % m.name))
         if hits:
-            return hits[0].read_text()[:2500]
+            return hits[0].read_text(encoding="utf-8")[:2500]
     # PowerCenter / IDMC: a structural summary reads better than raw XML
     lines = []
     for t in m.transformations:
@@ -654,7 +654,7 @@ def write_validation_report(result: dict, out_dir: str) -> str:
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
     (out / "migration_validation_report.json").write_text(
-        json.dumps(result, indent=2))
+        json.dumps(result, indent=2), encoding="utf-8")
 
     t = result["totals"]
     lines = [
@@ -689,5 +689,5 @@ def write_validation_report(result: dict, out_dir: str) -> str:
                             f["message"],
                             (" — %s" % f["detail"]) if f["detail"] else ""))
     path = out / "migration_validation_report.md"
-    path.write_text("\n".join(lines) + "\n")
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return str(path)

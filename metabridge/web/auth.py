@@ -103,14 +103,14 @@ class AuthStore:
     def _load(self, f: Path) -> dict:
         if f.exists():
             try:
-                return json.loads(f.read_text())
+                return json.loads(f.read_text(encoding="utf-8"))
             except Exception:  # noqa: BLE001
                 return {}
         return {}
 
     def _save(self, f: Path, doc: dict) -> None:
         tmp = f.with_suffix(".tmp")
-        tmp.write_text(json.dumps(doc, indent=2))
+        tmp.write_text(json.dumps(doc, indent=2), encoding="utf-8")
         try:
             import os
             os.chmod(tmp, 0o600)         # sessions/reset files carry tokens

@@ -802,7 +802,7 @@ def _read_raw_texts(paths: Optional[List[str]]) -> list:
         for f in files[:2000]:
             try:
                 out.append({"name": f.name,
-                            "text": f.read_text(errors="ignore")})
+                            "text": f.read_text(errors="ignore", encoding="utf-8")})
             except OSError:
                 pass
     return out

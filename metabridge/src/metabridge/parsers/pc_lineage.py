@@ -335,7 +335,7 @@ def build_repository_lineage(model: PCRepository) -> dict:
 def write_port_lineage(doc: dict, out_dir: str) -> str:
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
-    (out / "port_lineage.json").write_text(_json.dumps(doc, indent=2))
+    (out / "port_lineage.json").write_text(_json.dumps(doc, indent=2), encoding="utf-8")
     lines = ["# Port-level lineage — %s" % doc.get("repository",
                                                    doc.get("mapping", "")),
              ""]
@@ -364,5 +364,5 @@ def write_port_lineage(doc: dict, out_dir: str) -> str:
                                               f["target_column"])],
                       "```", ""]
     path = out / "port_lineage.md"
-    path.write_text("\n".join(lines) + "\n")
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return str(out / "port_lineage.json")

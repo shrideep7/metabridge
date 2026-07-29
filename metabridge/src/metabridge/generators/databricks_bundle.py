@@ -156,12 +156,12 @@ def generate_databricks_bundle(pipeline: Pipeline, bundle_root: Path,
         "include": ["resources/jobs/*.yml"],
         "targets": {"dev": {"mode": "development", "default": True},
                     "prod": {"mode": "production"}},
-    }, sort_keys=False))
+    }, sort_keys=False), encoding="utf-8")
 
     # staging: plain Delta DDL per source
     for s in pipeline.sources:
         fname = "stg_%s.sql" % _safe(s.name).lower()
-        (root / "src" / "sql" / "staging" / fname).write_text(_delta_ddl(s))
+        (root / "src" / "sql" / "staging" / fname).write_text(_delta_ddl(s), encoding="utf-8")
 
     # transformations / marts by the deterministic plan
     sql_paths: Dict[str, str] = {}
@@ -178,7 +178,7 @@ def generate_databricks_bundle(pipeline: Pipeline, bundle_root: Path,
                   "-- CIR mapping: %s\n"
                   % (m.origin or m.name,
                      m.properties.get("folder", "-"), m.name))
-        (root / rel).write_text(header + stmt)
+        (root / rel).write_text(header + stmt, encoding="utf-8")
         sql_paths[m.name] = "../%s" % rel
 
     # workflow definitions -> Asset Bundle job resources
@@ -199,19 +199,19 @@ def generate_databricks_bundle(pipeline: Pipeline, bundle_root: Path,
             (root / "resources" / "jobs" /
              ("%s.job.yml" % _safe(dag["workflow"]))).write_text(
                 yaml.safe_dump({"resources": {"jobs": {
-                    _safe(dag["workflow"]): spec}}}, sort_keys=False))
+                    _safe(dag["workflow"]): spec}}}, sort_keys=False), encoding="utf-8")
 
     # recommendations — separate, never applied
     recs = build_recommendations(pipeline)
     (root / "recommendations.json").write_text(
-        json.dumps(recs, indent=2) + "\n")
-    (root / "recommendations.md").write_text(_recommendations_md(recs))
+        json.dumps(recs, indent=2) + "\n", encoding="utf-8")
+    (root / "recommendations.md").write_text(_recommendations_md(recs), encoding="utf-8")
 
     (root / "tests" / "README.md").write_text(
         "Validation tests for every mapping are generated in "
         "`validation/` (synced from the conversion's validation_tests "
         "suite: schema, data, transformation and SCD checks plus "
-        "reconciliation SQL).\n")
+        "reconciliation SQL).\n", encoding="utf-8")
 
 
 def sync_conversion_artifacts(out_dir: Path) -> None:

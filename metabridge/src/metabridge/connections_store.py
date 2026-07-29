@@ -38,14 +38,14 @@ def _load() -> List[dict]:
     if not p.exists():
         return []
     try:
-        return json.loads(p.read_text()) or []
+        return json.loads(p.read_text(encoding="utf-8")) or []
     except (json.JSONDecodeError, OSError):
         return []
 
 
 def _write(rows: List[dict]) -> None:
     p = _store_path()
-    p.write_text(json.dumps(rows, indent=2))
+    p.write_text(json.dumps(rows, indent=2), encoding="utf-8")
     try:
         os.chmod(p, 0o600)
     except OSError:
@@ -330,7 +330,7 @@ def record_inventory(conn_id: str, report: dict) -> None:
                   if v.get("name")],
     }
     p = _inventory_path(conn_id)
-    p.write_text(json.dumps(inv, indent=1))
+    p.write_text(json.dumps(inv, indent=1), encoding="utf-8")
     try:
         os.chmod(p, 0o600)
     except OSError:
@@ -342,7 +342,7 @@ def get_inventory(conn_id: str) -> Optional[dict]:
     if not p.exists():
         return None
     try:
-        return json.loads(p.read_text())
+        return json.loads(p.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError):
         return None
 

@@ -48,7 +48,7 @@ def _load_license(dd: Path):
     trust = dd / "commercial" / "trust_key"
     if lic.exists() and trust.exists():
         try:
-            return load_license_file(str(lic), trust.read_text().strip())
+            return load_license_file(str(lic), trust.read_text(encoding="utf-8").strip())
         except (LicenseError, OSError):
             return None                       # unusable license => no entitlements
     return None

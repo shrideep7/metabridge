@@ -78,7 +78,7 @@ class FunctionRegistry:
         self._load()
 
     def _load(self) -> None:
-        doc = yaml.safe_load(self._path.read_text()) or {}
+        doc = yaml.safe_load(self._path.read_text(encoding="utf-8")) or {}
         for name, spec in doc.items():
             mappings: Dict[str, PlatformMapping] = {}
             for platform, value in (spec.get("platforms") or {}).items():

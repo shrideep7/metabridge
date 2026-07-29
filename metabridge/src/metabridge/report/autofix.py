@@ -205,7 +205,7 @@ def apply_fixes(input_path: str, output_dir: str, meta: dict,
     }
     import json
     (Path(output_dir) / "conversion_report.json").write_text(
-        json.dumps(report, indent=2))
+        json.dumps(report, indent=2), encoding="utf-8")
     return report
 
 
@@ -241,7 +241,7 @@ def _write_drafts(stmt_items: List[dict], meta: dict, output_dir: str) -> List[s
         body = "%s%s\n\n/* ORIGINAL:\n%s\n*/\n" % (header, draft.strip(),
                                                    original.strip()[:6000])
         fname = "draft_%03d_%s.sql" % (i, _safe(item.get("object") or "stmt"))
-        (out / fname).write_text(body)
+        (out / fname).write_text(body, encoding="utf-8")
         written.append("manual_drafts/" + fname)
     return written
 

@@ -48,7 +48,7 @@ class VersionRegistry:
     def _overrides(self) -> dict:
         if self._file.exists():
             try:
-                d = json.loads(self._file.read_text())
+                d = json.loads(self._file.read_text(encoding="utf-8"))
                 return d if isinstance(d, dict) else {}
             except (ValueError, OSError):
                 return {}

@@ -53,12 +53,12 @@ def generate_idmc(pipeline: Pipeline, out_dir: str, assist: AssistFn = None) -> 
     for m in pipeline.mappings:
         doc = _mapping_doc(m, dialect, assist)
         fname = "mappings/m_%s.json" % m.name
-        (root / fname).write_text(json.dumps(doc, indent=2))
+        (root / fname).write_text(json.dumps(doc, indent=2), encoding="utf-8")
         index.append({"name": "m_" + m.name, "path": fname, "type": "mapping"})
 
     taskflow = _taskflow_doc(pipeline)
     (root / ("taskflow_%s.json" % _safe(pipeline.name))).write_text(
-        json.dumps(taskflow, indent=2))
+        json.dumps(taskflow, indent=2), encoding="utf-8")
     index.append({"name": "tf_" + pipeline.name,
                   "path": "taskflow_%s.json" % _safe(pipeline.name), "type": "taskflow"})
 
@@ -73,7 +73,7 @@ def generate_idmc(pipeline: Pipeline, out_dir: str, assist: AssistFn = None) -> 
         },
         "objects": index,
     }
-    (root / "manifest.json").write_text(json.dumps(manifest, indent=2))
+    (root / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
 
 
 def _safe(name: str) -> str:

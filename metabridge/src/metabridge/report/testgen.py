@@ -1032,9 +1032,9 @@ def write_tests(doc: dict, out_dir: str) -> str:
     root = Path(out_dir) / "validation_tests"
     recon = root / "reconciliation"
     recon.mkdir(parents=True, exist_ok=True)
-    (root / "tests.json").write_text(json.dumps(doc, indent=2))
+    (root / "tests.json").write_text(json.dumps(doc, indent=2), encoding="utf-8")
     (Path(out_dir) / "validation_plan.json").write_text(
-        json.dumps(build_validation_plan(doc), indent=2))
+        json.dumps(build_validation_plan(doc), indent=2), encoding="utf-8")
 
     sp, tp = doc["source_platform"], doc["target_platform"]
     for pm in doc["mappings"]:
@@ -1049,10 +1049,10 @@ def write_tests(doc: dict, out_dir: str) -> str:
                   "before running.\n\n" % name)
         (recon / ("%s.legacy_%s.sql" % (name, sp))).write_text(
             header % ("LEGACY environment (%s)" % sp)
-            + "\n".join(_recon_sections(tests, "legacy")))
+            + "\n".join(_recon_sections(tests, "legacy")), encoding="utf-8")
         (recon / ("%s.migrated_%s.sql" % (name, tp))).write_text(
             header % ("MIGRATED environment (%s)" % tp)
-            + "\n".join(_recon_sections(tests, "migrated")))
+            + "\n".join(_recon_sections(tests, "migrated")), encoding="utf-8")
         cross = [t for t in tests if t["test_type"] in
                  ("column_level_comparison", "pk_uniqueness",
                   "business_rule_validation", "referential_integrity",
@@ -1064,16 +1064,16 @@ def write_tests(doc: dict, out_dir: str) -> str:
                              for t in cross)
             (recon / ("%s.checks_%s.sql" % (name, tp))).write_text(
                 "-- MetaBridge AI data-quality checks — %s (run on %s)\n\n%s"
-                % (name, tp, body))
+                % (name, tp, body), encoding="utf-8")
 
-    (root / "README.md").write_text(_readme(doc))
+    (root / "README.md").write_text(_readme(doc), encoding="utf-8")
 
     if doc.get("dbt"):
         dbt_dir = root / "dbt"
         (dbt_dir / "tests").mkdir(parents=True, exist_ok=True)
-        (dbt_dir / "schema.yml").write_text(doc["dbt"]["schema_yml"])
+        (dbt_dir / "schema.yml").write_text(doc["dbt"]["schema_yml"], encoding="utf-8")
         for fname, sql in doc["dbt"]["custom_tests"].items():
-            (dbt_dir / "tests" / fname).write_text(sql)
+            (dbt_dir / "tests" / fname).write_text(sql, encoding="utf-8")
     return str(root)
 
 

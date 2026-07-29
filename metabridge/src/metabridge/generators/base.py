@@ -102,7 +102,7 @@ class PowerCenterGenerator(BaseTargetGenerator):
         from .powercenter_generator import generate_powercenter
         xml = generate_powercenter(ir)
         xml_file = out / ("wf_%s.xml" % _safe(ir.name))
-        xml_file.write_text(xml)
+        xml_file.write_text(xml, encoding="utf-8")
         validation = validate_powercenter_xml(str(xml_file)).to_dict()
         return GenerationResult(
             format=self.format_name, output_dir=str(out),

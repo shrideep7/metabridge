@@ -33,7 +33,7 @@ SEMANTIC_RISKS = ("none", "low", "medium", "high")
 class InfaFunctionRegistry:
     def __init__(self, path: Optional[Path] = None):
         self._doc: Dict[str, dict] = yaml.safe_load(
-            (path or _FILE).read_text()) or {}
+            (path or _FILE).read_text(encoding="utf-8")) or {}
 
     def all(self) -> Dict[str, dict]:
         return dict(self._doc)

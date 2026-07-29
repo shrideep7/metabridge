@@ -662,7 +662,7 @@ def detect_sap(path: str) -> dict:
     for f in files:
         suf = f.suffix.lower()
         try:
-            head = f.read_text(errors="replace")[:4000]
+            head = f.read_text(errors="replace", encoding="utf-8")[:4000]
         except OSError:
             continue
         if suf in (".ddls", ".cds", ".asddls") and "define view" in \

@@ -47,7 +47,7 @@ def parse_idmc(path: str) -> Pipeline:
     taskflows: List[dict] = []
     for f in sorted(p.rglob("*.json")) if p.is_dir() else [p]:
         try:
-            doc = json.loads(f.read_text())
+            doc = json.loads(f.read_text(encoding="utf-8"))
         except Exception:  # noqa: BLE001
             continue
         if doc.get("@type") == "mapping" or "transformations" in doc:

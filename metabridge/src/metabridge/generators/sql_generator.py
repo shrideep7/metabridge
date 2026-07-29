@@ -66,7 +66,7 @@ def generate_sql_scripts(pipeline: Pipeline, out_dir: str, format_name: str,
     if pipeline.sources:
         ddl = _sources_ddl(pipeline, dialect)
         if ddl:
-            (out / "00_sources_ddl.sql").write_text(ddl)
+            (out / "00_sources_ddl.sql").write_text(ddl, encoding="utf-8")
             files.append("00_sources_ddl.sql")
 
     import re
@@ -122,7 +122,7 @@ def generate_sql_scripts(pipeline: Pipeline, out_dir: str, format_name: str,
             stmt = "%s\n\n-- post-SQL (from the Source Qualifier)\n%s;\n" \
                 % (stmt.rstrip("\n"), post.rstrip(";"))
         fname = "%02d_%s.sql" % (i, _safe(m.name))
-        (out / fname).write_text(stmt)
+        (out / fname).write_text(stmt, encoding="utf-8")
         files.append(fname)
         statements[m.name] = stmt
 
@@ -138,19 +138,19 @@ def generate_sql_scripts(pipeline: Pipeline, out_dir: str, format_name: str,
         (out / "shared").mkdir(exist_ok=True)
         for name in shared:
             (out / "shared" / ("mapplet_%s_template.sql" % _safe(name))
-             ).write_text(render_sql_template(comps[name]))
+             ).write_text(render_sql_template(comps[name]), encoding="utf-8")
 
     header = ("-- MetaBridge AI deployment script — %s (%s dialect)\n"
               "-- Statements are ordered by pipeline dependencies.\n\n"
               % (pipeline.name, format_name))
     def _chunk(f: str) -> str:
-        body = (out / f).read_text().rstrip()
+        body = (out / f).read_text(encoding="utf-8").rstrip()
         if body and not body.endswith(";"):
             body += ";"   # a missing terminator would merge into the next file
         return "-- @%s\n%s\n" % (f, body)
 
     (out / "deploy_all.sql").write_text(
-        header + "\n".join(_chunk(f) for f in files))
+        header + "\n".join(_chunk(f) for f in files), encoding="utf-8")
 
     # workflow orchestration specs (module 25) — Databricks Workflows job
     # JSON, or an engine-neutral DAG spec for every other warehouse
@@ -205,7 +205,7 @@ def _native_extras(pipeline: Pipeline, ordered: List[Mapping], out: Path,
                 lines.append("OPTIMIZE %s;" % m.name)
         lines.append("-- Partition recommendation: partition large fact "
                      "tables by their date column (PARTITIONED BY (dt)).")
-        (out / "90_delta_maintenance.sql").write_text("\n".join(lines) + "\n")
+        (out / "90_delta_maintenance.sql").write_text("\n".join(lines) + "\n", encoding="utf-8")
         files.append("90_delta_maintenance.sql")
 
     if format_name == "snowflake":
@@ -214,7 +214,7 @@ def _native_extras(pipeline: Pipeline, ordered: List[Mapping], out: Path,
             for m, key in keyed:
                 lines.append("ALTER TABLE %s CLUSTER BY (%s);" % (m.name, key))
             (out / "90_clustering_recommendations.sql").write_text(
-                "\n".join(lines) + "\n")
+                "\n".join(lines) + "\n", encoding="utf-8")
             files.append("90_clustering_recommendations.sql")
         if incremental:
             lines = ["-- Optional automation: stream + task per incremental "
@@ -237,7 +237,7 @@ def _native_extras(pipeline: Pipeline, ordered: List[Mapping], out: Path,
                     "  CALL SYSTEM$WAIT(0);  -- replace with the MERGE body",
                     "", ]
             (out / "91_streams_tasks_template.sql").write_text(
-                "\n".join(lines) + "\n")
+                "\n".join(lines) + "\n", encoding="utf-8")
             files.append("91_streams_tasks_template.sql")
 
     recs = {
@@ -257,7 +257,7 @@ def _native_extras(pipeline: Pipeline, ordered: List[Mapping], out: Path,
             advice = tpl % ((key, key) if tpl.count("%s") == 2 else key)
             lines.append("-- %s: %s" % (m.name, advice))
         (out / "90_physical_design_recommendations.sql").write_text(
-            "\n".join(lines) + "\n")
+            "\n".join(lines) + "\n", encoding="utf-8")
         files.append("90_physical_design_recommendations.sql")
     return files
 

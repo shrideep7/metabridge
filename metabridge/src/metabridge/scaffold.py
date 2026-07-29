@@ -188,7 +188,7 @@ def load_table_manifest(tables_file: str):
     mapping. A file that is recognizably something ELSE (a connection
     profile, a dbt_project.yml) gets an error saying what it is and what
     a manifest looks like. -> (tables, notes)"""
-    text = Path(tables_file).read_text()
+    text = Path(tables_file).read_text(encoding="utf-8")
     try:
         docs = [d for d in yaml.safe_load_all(text) if d is not None]
     except yaml.YAMLError as e:
@@ -310,28 +310,28 @@ def scaffold(source_key: str, target_key: str, tables_file: str, out_dir: str,
     generate_dbt_project(pipeline, str(out / "dbt"))
     if target.dbt_adapter:
         (out / "dbt" / "profiles.yml").write_text(
-            dbt_profile(target, target_params or {}, _safe(project)))
+            dbt_profile(target, target_params or {}, _safe(project)), encoding="utf-8")
 
     # 2. Informatica assets
     from .generators.idmc_generator import generate_idmc
     from .generators.powercenter_generator import generate_powercenter
     generate_idmc(pipeline, str(out / "idmc"))
-    (out / ("wf_%s.xml" % _safe(project))).write_text(generate_powercenter(pipeline))
+    (out / ("wf_%s.xml" % _safe(project))).write_text(generate_powercenter(pipeline), encoding="utf-8")
 
     # 3. connection artifacts (secrets as env-var references only)
     conns = out / "connections"
     conns.mkdir(exist_ok=True)
     import json as _json
     (conns / ("idmc_%s.json" % source.key)).write_text(_json.dumps(
-        idmc_connection(source, source_params or {}, "conn_" + source.key), indent=2))
+        idmc_connection(source, source_params or {}, "conn_" + source.key), indent=2), encoding="utf-8")
     (conns / ("idmc_%s.json" % target.key)).write_text(_json.dumps(
-        idmc_connection(target, target_params or {}, "conn_" + target.key), indent=2))
+        idmc_connection(target, target_params or {}, "conn_" + target.key), indent=2), encoding="utf-8")
     (conns / "powercenter_connections.sh").write_text(
         "#!/bin/sh\n" +
         powercenter_connection(source, source_params or {}, "conn_" + source.key) +
         "\n" +
         powercenter_connection(target, target_params or {}, "conn_" + target.key) +
-        "\n")
+        "\n", encoding="utf-8")
 
     # 4. reports: conversion + governance
     from .report.reporter import write_report

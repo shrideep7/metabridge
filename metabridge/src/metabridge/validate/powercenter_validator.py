@@ -95,7 +95,7 @@ _KNOWN_TX_TYPES = {
 def validate_powercenter_xml(xml_path: str, dtd_path: str = "") -> ValidationResult:
     result = ValidationResult()
     path = Path(xml_path)
-    text = path.read_text()
+    text = path.read_text(encoding="utf-8")
 
     if "<!DOCTYPE POWERMART" not in text.split("\n", 3)[0] + text.split("\n", 3)[1]:
         result.add("WARNING", "MISSING_DOCTYPE",

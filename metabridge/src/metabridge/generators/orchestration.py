@@ -225,21 +225,21 @@ def write_orchestration(out_dir, dags: List[dict], format_name: str,
             import yaml
             spec = dbt_job_spec(dag, model_names or {})
             fname = "%s_job.yml" % safe
-            (out / fname).write_text(yaml.safe_dump(spec, sort_keys=False))
+            (out / fname).write_text(yaml.safe_dump(spec, sort_keys=False), encoding="utf-8")
         elif format_name == "databricks":
             fname = "%s_job.json" % safe
             (out / fname).write_text(json.dumps(
-                databricks_job_spec(dag, sql_files), indent=2) + "\n")
+                databricks_job_spec(dag, sql_files), indent=2) + "\n", encoding="utf-8")
             for wl in _wl_dags(dag):        # worklets become their own jobs
                 wf = "%s_job.json" % "".join(
                     c if c.isalnum() or c == "_" else "_"
                     for c in wl["workflow"])
                 (out / wf).write_text(json.dumps(
-                    databricks_job_spec(wl, sql_files), indent=2) + "\n")
+                    databricks_job_spec(wl, sql_files), indent=2) + "\n", encoding="utf-8")
                 written.append("orchestration/" + wf)
         else:
             fname = "%s_workflow.json" % safe
             (out / fname).write_text(json.dumps(
-                generic_workflow_spec(dag, format_name), indent=2) + "\n")
+                generic_workflow_spec(dag, format_name), indent=2) + "\n", encoding="utf-8")
         written.append("orchestration/" + fname)
     return written

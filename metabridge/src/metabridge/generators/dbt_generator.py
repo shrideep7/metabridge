@@ -80,8 +80,8 @@ def generate_dbt_project(pipeline: Pipeline, out_dir: str,
         (root / "models" / layer).mkdir(parents=True, exist_ok=True)
     for aux in ("macros", "tests", "snapshots"):
         (root / aux).mkdir(exist_ok=True)
-    (root / "macros" / ".gitkeep").write_text("")
-    (root / "tests" / ".gitkeep").write_text("")
+    (root / "macros" / ".gitkeep").write_text("", encoding="utf-8")
+    (root / "tests" / ".gitkeep").write_text("", encoding="utf-8")
 
     proj = {
         "name": _safe(pipeline.name), "version": "1.0.0", "config-version": 2,
@@ -94,7 +94,7 @@ def generate_dbt_project(pipeline: Pipeline, out_dir: str,
             "marts": {"+materialized": "table"},
         }},
     }
-    (root / "dbt_project.yml").write_text(yaml.safe_dump(proj, sort_keys=False))
+    (root / "dbt_project.yml").write_text(yaml.safe_dump(proj, sort_keys=False), encoding="utf-8")
 
     if pipeline.sources:
         _write_sources_yaml(pipeline, root)
@@ -149,7 +149,7 @@ def generate_dbt_project(pipeline: Pipeline, out_dir: str,
                            "source so the model projects explicit columns."))
         body = "%s\nfrom {{ source('%s', '%s') }}\n" % (
             select, _source_name(s), s.name)
-        (root / "models" / "staging" / (name + ".sql")).write_text(body)
+        (root / "models" / "staging" / (name + ".sql")).write_text(body, encoding="utf-8")
         schema_models.append({
             "name": name,
             "description": "Staging view over source %s.%s"
@@ -214,7 +214,7 @@ def generate_dbt_project(pipeline: Pipeline, out_dir: str,
             else:
                 snap = _safe(m.name)
                 (root / "snapshots" / (snap + ".sql")).write_text(
-                    render_snapshot_sql(m, pipeline, names))
+                    render_snapshot_sql(m, pipeline, names), encoding="utf-8")
                 entry["dbt_objects"].append(
                     {"name": snap, "role": "snapshot",
                      "path": "snapshots/%s.sql" % snap})
@@ -227,7 +227,7 @@ def generate_dbt_project(pipeline: Pipeline, out_dir: str,
             config="{{ config(materialized='view') }}\n\n" if split
             else None)
         (root / "models" / int_dir / (p["int"] + ".sql")
-         ).write_text(int_sql)
+         ).write_text(int_sql, encoding="utf-8")
         entry["dbt_objects"].append(
             {"name": p["int"], "role": "transformation_logic",
              "path": "models/%s/%s.sql" % (int_dir, p["int"])})
@@ -247,7 +247,7 @@ def generate_dbt_project(pipeline: Pipeline, out_dir: str,
             mart_sql = (_config_block(m) +
                         "select * from {{ ref('%s') }}\n" % p["int"])
             (root / "models" / "marts" / (p["mart"] + ".sql")
-             ).write_text(mart_sql)
+             ).write_text(mart_sql, encoding="utf-8")
             entry["dbt_objects"].append(
                 {"name": p["mart"], "role": "mart",
                  "path": "models/marts/%s.sql" % p["mart"]})
@@ -259,7 +259,7 @@ def generate_dbt_project(pipeline: Pipeline, out_dir: str,
             schema_models.append(mart_entry)
 
     (root / "models" / "schema.yml").write_text(
-        yaml.safe_dump({"version": 2, "models": schema_models}, sort_keys=False))
+        yaml.safe_dump({"version": 2, "models": schema_models}, sort_keys=False), encoding="utf-8")
 
     import json as _json
     (root / "migration_manifest.json").write_text(_json.dumps(
@@ -267,7 +267,7 @@ def generate_dbt_project(pipeline: Pipeline, out_dir: str,
          "source_platform": platform_label,
          "target_platform": str(pipeline.metadata.get("target_platform", "")
                                  or pipeline.metadata.get("dialect", "")),
-         "objects": manifest}, indent=2) + "\n")
+         "objects": manifest}, indent=2) + "\n", encoding="utf-8")
 
     # workflow orchestration: model dependencies live in dbt's own DAG;
     # everything dbt cannot express becomes a job spec (module 25)
@@ -285,7 +285,7 @@ def generate_dbt_project(pipeline: Pipeline, out_dir: str,
         from ..parsers.pc_mapplet import render_dbt_macro
         for name in shared:
             (root / "macros" / ("mapplet_%s.sql" % _safe(name))
-             ).write_text(render_dbt_macro(comps[name]))
+             ).write_text(render_dbt_macro(comps[name]), encoding="utf-8")
 
 
 def _safe(name: str) -> str:
@@ -358,7 +358,7 @@ def _write_sources_yaml(pipeline: Pipeline, root: Path) -> None:
         src_entries.append(entry)
     (root / "models" / "staging").mkdir(parents=True, exist_ok=True)
     (root / "models" / "staging" / "sources.yml").write_text(
-        yaml.safe_dump({"version": 2, "sources": src_entries}, sort_keys=False))
+        yaml.safe_dump({"version": 2, "sources": src_entries}, sort_keys=False), encoding="utf-8")
 
 
 # ---------------------------------------------------------------------------

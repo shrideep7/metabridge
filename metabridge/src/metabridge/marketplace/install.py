@@ -52,13 +52,13 @@ class InstallManager:
     def _load(self) -> dict:
         if self._state_file.exists():
             try:
-                return json.loads(self._state_file.read_text())
+                return json.loads(self._state_file.read_text(encoding="utf-8"))
             except (ValueError, OSError):
                 return {}
         return {}
 
     def _save(self, state: dict) -> None:
-        self._state_file.write_text(json.dumps(state, indent=1))
+        self._state_file.write_text(json.dumps(state, indent=1), encoding="utf-8")
 
     def installed(self) -> dict:
         return self._load()
@@ -238,7 +238,7 @@ class InstallManager:
                                            "install directory: %s"
                                            % (item.id, name))
                 target.parent.mkdir(parents=True, exist_ok=True)
-                target.write_text(str(content))
+                target.write_text(str(content), encoding="utf-8")
             if item.payload.get("plugin") and (dest / "plugin.yml").exists():
                 plugin = self._plugins().load_from_file(
                     str(dest / "plugin.yml"), replace=True)

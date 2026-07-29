@@ -84,7 +84,7 @@ class ControlPlaneClient:
     def _config(self) -> dict:
         if self._cfg_path.exists():
             try:
-                return json.loads(self._cfg_path.read_text())
+                return json.loads(self._cfg_path.read_text(encoding="utf-8"))
             except (ValueError, OSError):
                 return {}
         return {}
@@ -148,7 +148,7 @@ class ControlPlaneClient:
     def _read_ent_cache(self) -> Optional[dict]:
         if self._ent_cache.exists():
             try:
-                doc = json.loads(self._ent_cache.read_text())
+                doc = json.loads(self._ent_cache.read_text(encoding="utf-8"))
                 if isinstance(doc, dict) and "fetched_at" in doc:
                     return doc
             except (ValueError, OSError):

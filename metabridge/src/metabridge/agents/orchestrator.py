@@ -90,12 +90,12 @@ class TaskOrchestrator:
         kf = self._base / "audit_key"
         if kf.exists():
             try:
-                return bytes.fromhex(kf.read_text().strip())
+                return bytes.fromhex(kf.read_text(encoding="utf-8").strip())
             except (ValueError, OSError):
                 pass
         key = os.urandom(32)
         try:
-            kf.write_text(key.hex())
+            kf.write_text(key.hex(), encoding="utf-8")
             os.chmod(kf, 0o600)
         except OSError:
             pass
@@ -241,7 +241,7 @@ class TaskOrchestrator:
         if not safe:
             return
         (self._runs_dir / ("%s.json" % safe)).write_text(
-            json.dumps(report, indent=1, default=str))
+            json.dumps(report, indent=1, default=str), encoding="utf-8")
 
     def get_run(self, run_id: str) -> Optional[dict]:
         safe = "".join(c for c in run_id if c.isalnum() or c in "._-")
@@ -249,7 +249,7 @@ class TaskOrchestrator:
         if not f.exists():
             return None
         try:
-            r = json.loads(f.read_text())
+            r = json.loads(f.read_text(encoding="utf-8"))
         except (ValueError, OSError):
             return None
         # NEVER trust the persisted 'intact' flag — reconstruct the chain
@@ -276,7 +276,7 @@ class TaskOrchestrator:
         if not f.exists():
             return None
         try:
-            r = json.loads(f.read_text())
+            r = json.loads(f.read_text(encoding="utf-8"))
         except (ValueError, OSError):
             return None
         trail = AuditTrail.from_events((r.get("audit") or {}).get("events", []),
@@ -299,7 +299,7 @@ class TaskOrchestrator:
         out = []
         for f in sorted(self._runs_dir.glob("*.json")):
             try:
-                r = json.loads(f.read_text())
+                r = json.loads(f.read_text(encoding="utf-8"))
             except (ValueError, OSError):
                 continue
             out.append({"run_id": r.get("run_id"), "project": r.get("project"),

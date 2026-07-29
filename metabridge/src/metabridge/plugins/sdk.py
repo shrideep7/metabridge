@@ -104,14 +104,14 @@ def scaffold_plugin(out_dir: str, plugin_type: str, name: str,
     out.mkdir(parents=True, exist_ok=True)
     (out / "plugin.yml").write_text(_MANIFEST_TEMPLATE.format(
         id=pid, name=name, type=plugin_type,
-        caps="\n".join("  - %s" % c for c in caps)))
+        caps="\n".join("  - %s" % c for c in caps)), encoding="utf-8")
     funcs = "\n\n".join(
         'def _%s(*args, **kwargs):\n    """Capability: %s."""\n'
         '    return {"capability": "%s", "args": args, "kwargs": kwargs}'
         % (c, c, c) for c in caps)
     bindings = ", ".join('"%s": _%s' % (c, c) for c in caps)
     (out / "impl.py").write_text(_IMPL_TEMPLATE.format(
-        type=plugin_type, funcs=funcs, bindings=bindings))
+        type=plugin_type, funcs=funcs, bindings=bindings), encoding="utf-8")
     return {"manifest": str(out / "plugin.yml"),
             "module": str(out / "impl.py"), "id": pid,
             "api_version": METABRIDGE_API_VERSION}

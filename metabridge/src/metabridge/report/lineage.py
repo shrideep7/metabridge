@@ -279,7 +279,7 @@ def write_lineage(doc: dict, out_dir: str) -> str:
     from pathlib import Path
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
-    (out / "lineage.json").write_text(json.dumps(doc, indent=2))
+    (out / "lineage.json").write_text(json.dumps(doc, indent=2), encoding="utf-8")
     lines = ["# Data lineage — %s" % doc["project"], "",
              "## Table-level lineage", "", "```mermaid",
              doc["mermaid"]["table_lineage"], "```", ""]
@@ -293,5 +293,5 @@ def write_lineage(doc: dict, out_dir: str) -> str:
             for path in c["paths"][:3]:
                 lines.append("  - `%s`" % " -> ".join(path))
         lines.append("")
-    (out / "lineage.md").write_text("\n".join(lines) + "\n")
+    (out / "lineage.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
     return str(out / "lineage.json")

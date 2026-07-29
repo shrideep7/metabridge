@@ -33,7 +33,7 @@ def atomic_write_json(path: Path, obj) -> None:
     tmp = path.with_name("%s.%d.%s.tmp" % (path.name, os.getpid(),
                                            uuid.uuid4().hex))
     try:
-        tmp.write_text(json.dumps(obj, indent=1))
+        tmp.write_text(json.dumps(obj, indent=1), encoding="utf-8")
         os.replace(tmp, path)
     finally:
         if tmp.exists():

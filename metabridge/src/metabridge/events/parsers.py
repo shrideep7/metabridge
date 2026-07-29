@@ -802,13 +802,13 @@ def detect_event_platform(path: str) -> dict:
 
     for f in files:
         try:
-            head = f.read_text(errors="replace")[:65536]
+            head = f.read_text(errors="replace", encoding="utf-8")[:65536]
         except OSError:
             continue
         suf = f.suffix.lower()
         if suf == ".json":
             try:
-                doc = json.loads(f.read_text(errors="replace"))
+                doc = json.loads(f.read_text(errors="replace", encoding="utf-8"))
             except (json.JSONDecodeError, OSError):
                 continue
             if not isinstance(doc, dict):

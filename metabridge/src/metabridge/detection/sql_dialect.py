@@ -185,7 +185,7 @@ def detect_sql_dialect_files(paths) -> dict:
     corpus = []
     for p in paths:
         try:
-            corpus.append(Path(p).read_text(errors="replace")[:200_000])
+            corpus.append(Path(p).read_text(errors="replace", encoding="utf-8")[:200_000])
         except OSError:
             continue
     return detect_sql_dialect("\n".join(corpus))

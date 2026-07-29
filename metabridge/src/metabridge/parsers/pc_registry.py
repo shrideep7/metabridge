@@ -41,7 +41,7 @@ _UNKNOWN = {
 class PCTransformationRegistry:
     def __init__(self, path: Optional[Path] = None):
         self._doc: Dict[str, dict] = yaml.safe_load(
-            (path or _FILE).read_text()) or {}
+            (path or _FILE).read_text(encoding="utf-8")) or {}
         self._by_alias: Dict[str, str] = {}
         for key, row in self._doc.items():
             self._by_alias[key.lower()] = key

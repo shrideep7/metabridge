@@ -104,7 +104,7 @@ class PluginRegistry:
 
     # -- hot loading --------------------------------------------------------
     def load_manifest(self, yml_path: str) -> PluginManifest:
-        return PluginManifest.from_yaml(Path(yml_path).read_text())
+        return PluginManifest.from_yaml(Path(yml_path).read_text(encoding="utf-8"))
 
     def load_from_file(self, yml_path: str,
                        replace: bool = False) -> Plugin:

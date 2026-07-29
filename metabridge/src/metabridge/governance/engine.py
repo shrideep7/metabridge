@@ -267,7 +267,7 @@ class PolicyFinding:
 def load_policy(path: str = "") -> dict:
     if not path:
         return DEFAULT_POLICY
-    return yaml.safe_load(Path(path).read_text()) or DEFAULT_POLICY
+    return yaml.safe_load(Path(path).read_text(encoding="utf-8")) or DEFAULT_POLICY
 
 
 def _match(pattern: str, category: str) -> bool:
@@ -405,8 +405,8 @@ def govern(pipeline: Pipeline, policy_path: str = "", source_region: str = "",
 def write_governance_report(result: dict, out_dir: str) -> None:
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
-    (out / "governance_report.json").write_text(json.dumps(result, indent=2))
-    (out / "governance_report.html").write_text(render_html(result))
+    (out / "governance_report.json").write_text(json.dumps(result, indent=2), encoding="utf-8")
+    (out / "governance_report.html").write_text(render_html(result), encoding="utf-8")
 
 
 def render_html(r: dict) -> str:

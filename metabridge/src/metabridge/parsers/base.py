@@ -254,7 +254,7 @@ class PowerCenterParser(BaseSourceParser):
         from .powercenter_parser import parse_powercenter
         with tempfile.TemporaryDirectory() as td:
             f = Path(td) / ("%s.xml" % name)
-            f.write_text(content)
+            f.write_text(content, encoding="utf-8")
             return parse_powercenter(str(f))
 
 
@@ -270,7 +270,7 @@ class IDMCParser(BaseSourceParser):
         from .idmc_parser import parse_idmc
         with tempfile.TemporaryDirectory() as td:
             f = Path(td) / ("%s.json" % name)
-            f.write_text(content)
+            f.write_text(content, encoding="utf-8")
             return parse_idmc(str(f))
 
 
@@ -286,7 +286,7 @@ class SqlScriptParser(BaseSourceParser):
         from .sql_parser import parse_sql_scripts
         with tempfile.TemporaryDirectory() as td:
             f = Path(td) / ("%s.sql" % name)
-            f.write_text(content)
+            f.write_text(content, encoding="utf-8")
             return parse_sql_scripts(str(f), self.format_name, self.dialect)
 
 
@@ -341,7 +341,7 @@ class _EtlParser(BaseSourceParser):
     def parse_asset(self, content: str, name: str = "asset") -> Pipeline:
         with tempfile.TemporaryDirectory() as td:
             f = Path(td) / (name + self.asset_suffix)
-            f.write_text(content)
+            f.write_text(content, encoding="utf-8")
             return self.parse_project(td)
 
 

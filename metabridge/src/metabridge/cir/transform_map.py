@@ -21,7 +21,7 @@ VALID_STATUS = ("native", "heuristic", "manual")
 class TransformationMap:
     def __init__(self, path: Optional[Path] = None):
         self._doc: Dict[str, dict] = yaml.safe_load(
-            (path or _FILE).read_text()) or {}
+            (path or _FILE).read_text(encoding="utf-8")) or {}
 
     def sources(self) -> List[str]:
         return sorted(self._doc)

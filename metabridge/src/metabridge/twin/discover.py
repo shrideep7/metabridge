@@ -314,7 +314,7 @@ def add_jobs(twin: DigitalTwin, jobs_dir: Path) -> int:
         if not meta_f.exists():
             continue
         try:
-            meta = json.loads(meta_f.read_text())
+            meta = json.loads(meta_f.read_text(encoding="utf-8"))
         except json.JSONDecodeError:
             continue
         src = "job:%s" % meta.get("id", job.name)
@@ -324,7 +324,7 @@ def add_jobs(twin: DigitalTwin, jobs_dir: Path) -> int:
             try:
                 from ..events.cer import cer_from_dict
                 add_event_estate(twin, cer_from_dict(
-                    json.loads(cer_f.read_text())), src)
+                    json.loads(cer_f.read_text(encoding="utf-8"))), src)
                 handled = True
             except Exception:  # noqa: BLE001
                 pass
@@ -333,7 +333,7 @@ def add_jobs(twin: DigitalTwin, jobs_dir: Path) -> int:
             try:
                 from ..orchestration.cor import cor_from_dict
                 add_orchestration(twin, cor_from_dict(
-                    json.loads(cor_f.read_text())), src)
+                    json.loads(cor_f.read_text(encoding="utf-8"))), src)
                 handled = True
             except Exception:  # noqa: BLE001
                 pass

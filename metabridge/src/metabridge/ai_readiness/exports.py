@@ -180,7 +180,7 @@ def export_pdf(a: dict, path: str) -> None:
 
 
 def export_json(a: dict, path: str) -> None:
-    Path(path).write_text(json.dumps(a, indent=2))
+    Path(path).write_text(json.dumps(a, indent=2), encoding="utf-8")
 
 
 MEDIA = {

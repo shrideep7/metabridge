@@ -20,7 +20,7 @@ _CATS = ("orphan_datasets", "unused_tables", "unused_columns", "dead_etl",
 
 
 def export_json(d: dict, path: str) -> None:
-    Path(path).write_text(json.dumps(d, indent=2))
+    Path(path).write_text(json.dumps(d, indent=2), encoding="utf-8")
 
 
 def export_xlsx(d: dict, path: str) -> None:

@@ -707,7 +707,7 @@ def _load_settings_doc() -> dict:
     f = _settings_file()
     if f.exists():
         try:
-            return json.loads(f.read_text()) or {}
+            return json.loads(f.read_text(encoding="utf-8")) or {}
         except Exception:  # noqa: BLE001
             return {}
     return {}
@@ -753,7 +753,7 @@ async def put_workspace_settings(request: Request):
     doc["workspace"] = ws
     f = _settings_file()
     f.parent.mkdir(parents=True, exist_ok=True)
-    f.write_text(json.dumps(doc, indent=2))
+    f.write_text(json.dumps(doc, indent=2), encoding="utf-8")
     try:
         os.chmod(f, 0o600)
     except OSError:
@@ -1002,18 +1002,18 @@ def _new_job(kind: str) -> Path:
     (job_dir / "output").mkdir(parents=True)
     meta = {"id": job_id, "kind": kind, "status": "running",
             "created": datetime.datetime.now().isoformat(timespec="seconds")}
-    (job_dir / "meta.json").write_text(json.dumps(meta))
+    (job_dir / "meta.json").write_text(json.dumps(meta), encoding="utf-8")
     return job_dir
 
 
 def _finish_job(job_dir: Path, **extra) -> dict:
-    meta = json.loads((job_dir / "meta.json").read_text())
+    meta = json.loads((job_dir / "meta.json").read_text(encoding="utf-8"))
     meta.update(extra)
     meta["status"] = extra.get("status", "done")
     # record a finish timestamp so observability can MEASURE job wall-clock
     meta.setdefault("finished",
                     datetime.datetime.now().isoformat(timespec="seconds"))
-    (job_dir / "meta.json").write_text(json.dumps(meta, indent=2))
+    (job_dir / "meta.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
     return meta
 
 
@@ -1119,7 +1119,7 @@ def list_jobs():
     jobs = []
     for meta_file in JOBS_DIR.glob("*/meta.json"):
         try:
-            jobs.append(json.loads(meta_file.read_text()))
+            jobs.append(json.loads(meta_file.read_text(encoding="utf-8")))
         except Exception:  # noqa: BLE001
             continue
     jobs.sort(key=lambda j: j.get("created", ""), reverse=True)
@@ -1131,7 +1131,7 @@ def get_job(job_id: str):
     """Current job state + job-scoped artifacts and report links — powers the
     console refresh button AND the job-detail view."""
     job_dir = _job_dir(job_id)
-    meta = json.loads((job_dir / "meta.json").read_text())
+    meta = json.loads((job_dir / "meta.json").read_text(encoding="utf-8"))
     meta["artifacts"] = _job_artifacts(job_id, job_dir)
     meta["reports"] = _job_reports(job_id, job_dir)
     meta["download_url"] = "/api/jobs/%s/download" % job_id
@@ -1420,7 +1420,7 @@ def _write_inline_files(files, dest: Path) -> Path:
         name = Path(str(f.get("name", "script.sql"))).name  # no traversal
         if not name:
             name = "script.sql"
-        (dest / name).write_text(str(f.get("content", "")))
+        (dest / name).write_text(str(f.get("content", "")), encoding="utf-8")
     return dest
 
 
@@ -1506,7 +1506,7 @@ async def legacy_sql_convert(request: Request):
     source = str(body.get("source_format", "") or "auto")
     return await _convert_impl(
         file=None, from_job=json.loads(
-            (upload / "meta.json").read_text())["id"],
+            (upload / "meta.json").read_text(encoding="utf-8"))["id"],
         target=target,
         source="" if source == "auto" else source,
         dialect="", llm_assist=False, model_list=None, override_map=None,
@@ -1616,7 +1616,7 @@ async def etl_convert(request: Request):
     }
     return await _convert_impl(
         file=None, from_job=json.loads(
-            (upload / "meta.json").read_text())["id"],
+            (upload / "meta.json").read_text(encoding="utf-8"))["id"],
         target=target, source=source,
         dialect="", llm_assist=False, model_list=None, override_map=None,
         options=options)
@@ -1678,7 +1678,7 @@ async def assessment_run(request: Request):
                                     % (result.get("error") or "unknown"))
             root = job_dir / "input"
             root.mkdir(parents=True, exist_ok=True)
-            (root / "tables.yml").write_text(result.get("manifest_yaml", ""))
+            (root / "tables.yml").write_text(result.get("manifest_yaml", ""), encoding="utf-8")
             source = ""
         elif body.get("from_job"):
             root = _job_input_root(_job_dir(str(body["from_job"])))
@@ -1718,7 +1718,7 @@ def assessment_get(assessment_id: str):
     f = _job_dir(assessment_id) / "output" / "assessment.json"
     if not f.exists():
         raise HTTPException(404, "Not an assessment")
-    return json.loads(f.read_text())
+    return json.loads(f.read_text(encoding="utf-8"))
 
 
 @app.get("/api/assessment/{assessment_id}/export")
@@ -1774,7 +1774,7 @@ async def ai_readiness_run(request: Request):
             root = job_dir / "input"
             root.mkdir(parents=True, exist_ok=True)
             (root / "tables.yml").write_text(
-                result.get("manifest_yaml", ""))
+                result.get("manifest_yaml", ""), encoding="utf-8")
             source = ""
         elif body.get("from_job"):
             root = _job_input_root(_job_dir(str(body["from_job"])))
@@ -1794,7 +1794,7 @@ async def ai_readiness_run(request: Request):
         twin = None
         if _TWIN_FILE.exists():
             try:
-                twin = json.loads(_TWIN_FILE.read_text())
+                twin = json.loads(_TWIN_FILE.read_text(encoding="utf-8"))
             except (ValueError, OSError):
                 twin = None
         a = assess_ai_readiness(str(root), source, twin=twin)
@@ -1818,7 +1818,7 @@ def ai_readiness_get(assessment_id: str):
     f = _job_dir(assessment_id) / "output" / "ai_readiness.json"
     if not f.exists():
         raise HTTPException(404, "Not an AI readiness assessment")
-    return json.loads(f.read_text())
+    return json.loads(f.read_text(encoding="utf-8"))
 
 
 @app.get("/api/ai-readiness/{assessment_id}/export")
@@ -1875,7 +1875,7 @@ async def tech_debt_run(request: Request):
         twin = None
         if _TWIN_FILE.exists():
             try:
-                twin = json.loads(_TWIN_FILE.read_text())
+                twin = json.loads(_TWIN_FILE.read_text(encoding="utf-8"))
             except (ValueError, OSError):
                 twin = None
         if twin is None and paths:
@@ -1904,7 +1904,7 @@ def tech_debt_get(debt_id: str):
     if not f.exists():
         raise HTTPException(404, "Not a tech-debt analysis")
     try:
-        return json.loads(f.read_text())
+        return json.loads(f.read_text(encoding="utf-8"))
     except (ValueError, OSError):
         raise HTTPException(422, "Analysis output is corrupt or "
                                  "incomplete — re-run the analysis")
@@ -1965,7 +1965,7 @@ async def finops_run(request: Request):
         twin = None
         if _TWIN_FILE.exists():
             try:
-                twin = json.loads(_TWIN_FILE.read_text())
+                twin = json.loads(_TWIN_FILE.read_text(encoding="utf-8"))
             except (ValueError, OSError):
                 twin = None
         if twin is None and paths:
@@ -1994,7 +1994,7 @@ def finops_get(finops_id: str):
     if not f.exists():
         raise HTTPException(404, "Not a FinOps analysis")
     try:
-        return json.loads(f.read_text())
+        return json.loads(f.read_text(encoding="utf-8"))
     except (ValueError, OSError):
         raise HTTPException(422, "Analysis output is corrupt or "
                                  "incomplete — re-run the analysis")
@@ -2054,7 +2054,7 @@ async def security_run(request: Request):
         twin = None
         if _TWIN_FILE.exists():
             try:
-                twin = json.loads(_TWIN_FILE.read_text())
+                twin = json.loads(_TWIN_FILE.read_text(encoding="utf-8"))
             except (ValueError, OSError):
                 twin = None
         if twin is None and paths:
@@ -2083,7 +2083,7 @@ def security_get(security_id: str):
     if not f.exists():
         raise HTTPException(404, "Not a security analysis")
     try:
-        return json.loads(f.read_text())
+        return json.loads(f.read_text(encoding="utf-8"))
     except (ValueError, OSError):
         raise HTTPException(422, "Analysis output is corrupt or "
                                  "incomplete — re-run the analysis")
@@ -2328,8 +2328,8 @@ async def plugins_scaffold(request: Request):
     except PluginError as e:
         raise HTTPException(422, str(e))
     return {"id": res["id"], "api_version": res["api_version"],
-            "plugin_yml": Path(res["manifest"]).read_text(),
-            "impl_py": Path(res["module"]).read_text()}
+            "plugin_yml": Path(res["manifest"]).read_text(encoding="utf-8"),
+            "impl_py": Path(res["module"]).read_text(encoding="utf-8")}
 
 
 @app.post("/api/plugins/load")
@@ -2359,9 +2359,9 @@ async def plugins_load(request: Request):
                       for c in manifest.id)
     dest = _PLUGIN_DIR / safe_id
     dest.mkdir(parents=True, exist_ok=True)
-    (dest / "plugin.yml").write_text(yml)
+    (dest / "plugin.yml").write_text(yml, encoding="utf-8")
     if impl is not None:
-        (dest / ("%s.py" % mod_name)).write_text(str(impl))
+        (dest / ("%s.py" % mod_name)).write_text(str(impl), encoding="utf-8")
     try:
         p = get_registry().load_from_file(str(dest / "plugin.yml"),
                                           replace=True)
@@ -2985,7 +2985,7 @@ def _write_tree_files(files, dest: Path) -> Path:
         target = dest.joinpath(*parts)
         try:
             target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text(str(f.get("content", "")))
+            target.write_text(str(f.get("content", "")), encoding="utf-8")
         except OSError:
             # a name that collides with an existing file/dir path —
             # skip it rather than 500 the whole upload
@@ -2998,7 +2998,7 @@ def _twin_load():
     if not _TWIN_FILE.exists():
         raise HTTPException(404, "No digital twin built yet — POST "
                                  "/api/twin/build first")
-    return twin_from_dict(json.loads(_TWIN_FILE.read_text()))
+    return twin_from_dict(json.loads(_TWIN_FILE.read_text(encoding="utf-8")))
 
 
 async def _json_object(request: Request) -> dict:
@@ -3018,7 +3018,7 @@ def _write_twin(doc: dict) -> None:
     can carry connection metadata, so it follows the same 0600
     convention as other connection-derived state."""
     tmp = _TWIN_FILE.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(doc, indent=1))
+    tmp.write_text(json.dumps(doc, indent=1), encoding="utf-8")
     try:
         os.chmod(tmp, 0o600)
     except OSError:
@@ -3079,7 +3079,7 @@ async def twin_build(request: Request):
             root = _write_tree_files(body["files"], job_dir / "input")
             for i, f in enumerate(sorted(root.rglob("estate*.y*ml"))):
                 try:
-                    doc = _yaml.safe_load(f.read_text())
+                    doc = _yaml.safe_load(f.read_text(encoding="utf-8"))
                 except _yaml.YAMLError:
                     doc = None
                 if isinstance(doc, dict):
@@ -3108,7 +3108,7 @@ async def twin_build(request: Request):
         doc = twin.to_dict()
         out = job_dir / "output"
         out.mkdir(parents=True, exist_ok=True)
-        (out / "twin.json").write_text(json.dumps(doc, indent=1))
+        (out / "twin.json").write_text(json.dumps(doc, indent=1), encoding="utf-8")
         _write_twin(doc)
         meta = _finish_job(job_dir)
         return {"twin_id": meta["id"], **doc}
@@ -3124,7 +3124,7 @@ def twin_get():
     if not _TWIN_FILE.exists():
         raise HTTPException(404, "No digital twin built yet — POST "
                                  "/api/twin/build first")
-    return json.loads(_TWIN_FILE.read_text())
+    return json.loads(_TWIN_FILE.read_text(encoding="utf-8"))
 
 
 @app.get("/api/twin/graph")
@@ -3215,7 +3215,7 @@ def _events_load(event_id: str):
     f = job_dir / "output" / "cer.json"
     if not f.exists():
         raise HTTPException(404, "Not an event import")
-    return job_dir, cer_from_dict(json.loads(f.read_text()))
+    return job_dir, cer_from_dict(json.loads(f.read_text(encoding="utf-8")))
 
 
 @app.post("/api/events/analyze")
@@ -3236,7 +3236,7 @@ async def events_analyze(request: Request):
     intelligence = event_intelligence(cer, validation)
     out = job_dir / "output"
     out.mkdir(parents=True, exist_ok=True)
-    (out / "cer.json").write_text(json.dumps(cer.to_dict(), indent=1))
+    (out / "cer.json").write_text(json.dumps(cer.to_dict(), indent=1), encoding="utf-8")
     meta = _finish_job(job_dir, source_format=cer.source_platform)
     inv = cer.inventory()
     return {
@@ -3291,14 +3291,14 @@ async def events_convert(request: Request):
     manifest = generate_events(cer, target, str(out / "generated"))
     validation = validate_cer(cer, target)
     intelligence = event_intelligence(cer, validation)
-    (out / "cer.json").write_text(json.dumps(cer.to_dict(), indent=1))
+    (out / "cer.json").write_text(json.dumps(cer.to_dict(), indent=1), encoding="utf-8")
     (out / "event_lineage.json").write_text(
-        json.dumps(event_lineage(cer), indent=1))
-    (out / "event_flow.mmd").write_text(to_mermaid(cer))
+        json.dumps(event_lineage(cer), indent=1), encoding="utf-8")
+    (out / "event_flow.mmd").write_text(to_mermaid(cer), encoding="utf-8")
     (out / "event_validation.json").write_text(
-        json.dumps(validation, indent=1))
+        json.dumps(validation, indent=1), encoding="utf-8")
     (out / "event_intelligence.json").write_text(
-        json.dumps(intelligence, indent=1))
+        json.dumps(intelligence, indent=1), encoding="utf-8")
     meta = _finish_job(job_dir, source_format=cer.source_platform,
                        target_format=target)
     return {"event_id": meta["id"],
@@ -3330,13 +3330,13 @@ async def events_intelligence(request: Request):
         out = job_dir / "output"
         out.mkdir(parents=True, exist_ok=True)
         (out / "cer.json").write_text(json.dumps(cer.to_dict(),
-                                                 indent=1))
+                                                 indent=1), encoding="utf-8")
         _finish_job(job_dir, source_format=cer.source_platform)
     intel = analyze_event_intelligence(cer)
     (job_dir / "output" / "event_intelligence_layer.json").write_text(
-        json.dumps(intel, indent=1))
+        json.dumps(intel, indent=1), encoding="utf-8")
     (job_dir / "output" / "event_executive_report.md").write_text(
-        intel["executive_report"])
+        intel["executive_report"], encoding="utf-8")
     return {"event_id": job_dir.name, **intel}
 
 
@@ -3509,7 +3509,7 @@ async def sap_convert(request: Request):
     }
     result = await _convert_impl(
         file=None, from_job=json.loads(
-            (upload / "meta.json").read_text())["id"],
+            (upload / "meta.json").read_text(encoding="utf-8"))["id"],
         target=target, source="sap",
         dialect="", llm_assist=False, model_list=None, override_map=None,
         options=options)
@@ -3542,7 +3542,7 @@ def sap_lineage(migration_id: str):
     stored = job_dir / "output" / "sap_business_lineage.json"
     base = get_migration_lineage(migration_id)
     if stored.exists():
-        base["business_lineage"] = json.loads(stored.read_text())
+        base["business_lineage"] = json.loads(stored.read_text(encoding="utf-8"))
     return base
 
 
@@ -3562,7 +3562,7 @@ def _orch_load(orch_id: str):
     f = job_dir / "output" / "cor.json"
     if not f.exists():
         raise HTTPException(404, "Not an orchestration import")
-    return job_dir, cor_from_dict(json.loads(f.read_text()))
+    return job_dir, cor_from_dict(json.loads(f.read_text(encoding="utf-8")))
 
 
 def _orch_analyze_payload(cor, validation, intelligence) -> dict:
@@ -3608,11 +3608,11 @@ async def orchestration_analyze(request: Request):
     intelligence = migration_intelligence(cor, validation)
     out = job_dir / "output"
     out.mkdir(parents=True, exist_ok=True)
-    (out / "cor.json").write_text(json.dumps(cor.to_dict(), indent=1))
+    (out / "cor.json").write_text(json.dumps(cor.to_dict(), indent=1), encoding="utf-8")
     (out / "orchestration_validation.json").write_text(
-        json.dumps(validation, indent=1))
+        json.dumps(validation, indent=1), encoding="utf-8")
     (out / "orchestration_intelligence.json").write_text(
-        json.dumps(intelligence, indent=1))
+        json.dumps(intelligence, indent=1), encoding="utf-8")
     meta = _finish_job(job_dir, source_format=cor.source_platform)
     return {"orchestration_id": meta["id"],
             **_orch_analyze_payload(cor, validation, intelligence)}
@@ -3656,22 +3656,22 @@ async def orchestration_convert(request: Request):
     manifest = generate_orchestration(cor, target, str(out / "generated"))
     validation = validate_cor(cor)
     intelligence = migration_intelligence(cor, validation)
-    (out / "cor.json").write_text(json.dumps(cor.to_dict(), indent=1))
+    (out / "cor.json").write_text(json.dumps(cor.to_dict(), indent=1), encoding="utf-8")
     graphs = {}
     for wf in cor.workflows:
         graphs[wf.name] = execution_graph(wf)
-        (out / ("graph_%s.mmd" % wf.name)).write_text(to_mermaid(wf))
-        (out / ("graph_%s.graphml" % wf.name)).write_text(to_graphml(wf))
+        (out / ("graph_%s.mmd" % wf.name)).write_text(to_mermaid(wf), encoding="utf-8")
+        (out / ("graph_%s.graphml" % wf.name)).write_text(to_graphml(wf), encoding="utf-8")
     (out / "execution_graphs.json").write_text(json.dumps(graphs,
-                                                          indent=1))
+                                                          indent=1), encoding="utf-8")
     (out / "orchestration_lineage.json").write_text(
-        json.dumps(orchestration_lineage(cor), indent=1))
+        json.dumps(orchestration_lineage(cor), indent=1), encoding="utf-8")
     (out / "orchestration_validation.json").write_text(
-        json.dumps(validation, indent=1))
+        json.dumps(validation, indent=1), encoding="utf-8")
     (out / "orchestration_intelligence.json").write_text(
-        json.dumps(intelligence, indent=1))
+        json.dumps(intelligence, indent=1), encoding="utf-8")
     (out / "execution_documentation.md").write_text(
-        generate_execution_doc(cor, intelligence, validation))
+        generate_execution_doc(cor, intelligence, validation), encoding="utf-8")
     meta = _finish_job(job_dir, source_format=cor.source_platform,
                        target_format=target)
     return {"orchestration_id": meta["id"],
@@ -3732,7 +3732,7 @@ async def orchestration_edit_dependencies(orch_id: str, request: Request):
                                           str(ad.get("condition", ""))))
     validation = validate_cor(cor)
     (job_dir / "output" / "cor.json").write_text(
-        json.dumps(cor.to_dict(), indent=1))
+        json.dumps(cor.to_dict(), indent=1), encoding="utf-8")
     return {"workflow": wf.name,
             "dependencies": [d.to_dict() for d in wf.dependencies],
             "execution_order": wf.execution_order(),
@@ -3783,7 +3783,7 @@ def orchestration_report(orch_id: str, format: str = "json"):
 
 def _migration_dir(migration_id: str) -> tuple:
     job_dir = _job_dir(migration_id)
-    meta = json.loads((job_dir / "meta.json").read_text())
+    meta = json.loads((job_dir / "meta.json").read_text(encoding="utf-8"))
     if meta.get("kind") != "convert":
         raise HTTPException(404, "Not a migration (job kind: %s)"
                             % meta.get("kind"))
@@ -3802,7 +3802,7 @@ async def api_validate(request: Request):
     job_dir, meta = _migration_dir(mid)
     stored = job_dir / "output" / "migration_validation_report.json"
     if not body.get("rerun") and stored.exists():
-        return json.loads(stored.read_text())
+        return json.loads(stored.read_text(encoding="utf-8"))
     from metabridge.engine import parse_input
     from metabridge.validate.conversion_validator import (
         validate_conversion, write_validation_report,
@@ -3863,7 +3863,7 @@ def get_migration(migration_id: str):
     mr = job_dir / "output" / "migration_report.json"
     if mr.exists():
         try:
-            exec_summary = json.loads(mr.read_text())["sections"][
+            exec_summary = json.loads(mr.read_text(encoding="utf-8"))["sections"][
                 "executive_summary"]
         except Exception:  # noqa: BLE001
             pass
@@ -3884,7 +3884,7 @@ def get_migration_lineage(migration_id: str):
     job_dir, meta = _migration_dir(migration_id)
     cached = job_dir / "output" / "lineage.json"
     if cached.exists():
-        return json.loads(cached.read_text())
+        return json.loads(cached.read_text(encoding="utf-8"))
     from metabridge.engine import parse_input
     from metabridge.report.lineage import build_lineage, write_lineage
     dialect = str((meta.get("options") or {}).get("dialect", "") or "")
@@ -3907,16 +3907,16 @@ def get_migration_report(migration_id: str, format: str = "json"):
         f = out / "migration_report.html"
         if not f.exists():
             raise HTTPException(404, "Migration report not generated")
-        return HTMLResponse(f.read_text())
+        return HTMLResponse(f.read_text(encoding="utf-8"))
     if format == "md":
         f = out / "migration_report.md"
         if not f.exists():
             raise HTTPException(404, "Migration report not generated")
-        return PlainTextResponse(f.read_text())
+        return PlainTextResponse(f.read_text(encoding="utf-8"))
     f = out / "migration_report.json"
     if not f.exists():
         raise HTTPException(404, "Migration report not generated")
-    return json.loads(f.read_text())
+    return json.loads(f.read_text(encoding="utf-8"))
 
 
 def _report_not_ready_html(job_id: str, meta: dict) -> str:
@@ -3950,11 +3950,11 @@ def job_report(job_id: str):
     for name, _label in _REPORT_HTML:
         f = out / name
         if f.exists():
-            return HTMLResponse(f.read_text())
+            return HTMLResponse(f.read_text(encoding="utf-8"))
     # No HTML report for this job kind — a clear 'not generated' state
     # (styled HTML), never a raw 404/blank page.
     try:
-        meta = json.loads((job_dir / "meta.json").read_text())
+        meta = json.loads((job_dir / "meta.json").read_text(encoding="utf-8"))
     except (ValueError, OSError):
         meta = {}
     return HTMLResponse(_report_not_ready_html(job_id, meta), status_code=200)
@@ -3965,7 +3965,7 @@ def job_report_json(job_id: str):
     for name in ("conversion_report.json", "governance_report.json"):
         f = _job_dir(job_id) / "output" / name
         if f.exists():
-            return json.loads(f.read_text())
+            return json.loads(f.read_text(encoding="utf-8"))
     raise HTTPException(404, "Report not found")
 
 
@@ -3974,7 +3974,7 @@ def job_migration_report(job_id: str) -> str:
     """The client-facing 15-section Migration Report (HTML)."""
     f = _job_dir(job_id) / "output" / "migration_report.html"
     if f.exists():
-        return f.read_text()
+        return f.read_text(encoding="utf-8")
     raise HTTPException(404, "Migration report not found for this job")
 
 
@@ -3983,7 +3983,7 @@ def job_govreport(job_id: str) -> str:
     f = _job_dir(job_id) / "output" / "governance_report.html"
     if not f.exists():
         raise HTTPException(404, "Governance report not found")
-    return f.read_text()
+    return f.read_text(encoding="utf-8")
 
 
 @app.get("/api/jobs/{job_id}/download")
@@ -3995,7 +3995,7 @@ def job_download(job_id: str):
     out_dir = job_dir / "output"
     slug = "job"
     try:
-        meta = json.loads((job_dir / "meta.json").read_text())
+        meta = json.loads((job_dir / "meta.json").read_text(encoding="utf-8"))
         slug = _safe_name(str(meta.get("project", "") or meta.get("kind", ""))) \
             or "job"
     except (ValueError, OSError):
@@ -4020,7 +4020,7 @@ def _job_source_root(job_dir: Path, meta: dict) -> Path:
 
 def _review_context(job_id: str):
     job_dir = _job_dir(job_id)
-    meta = json.loads((job_dir / "meta.json").read_text())
+    meta = json.loads((job_dir / "meta.json").read_text(encoding="utf-8"))
     if meta.get("kind") != "convert":
         raise HTTPException(422, "AI review applies to conversion jobs")
     return job_dir, meta
@@ -4059,7 +4059,7 @@ def job_ai_review_get(job_id: str):
     if not f.exists():
         raise HTTPException(404, "No review yet — POST to this endpoint "
                                  "to run one")
-    return json.loads(f.read_text())
+    return json.loads(f.read_text(encoding="utf-8"))
 
 
 @app.post("/api/jobs/{job_id}/ai-review/apply")
@@ -4085,7 +4085,7 @@ def autofix_plan(job_id: str):
     from metabridge.engine import parse_input
     from metabridge.report.autofix import plan_fixes
     job_dir = _job_dir(job_id)
-    meta = json.loads((job_dir / "meta.json").read_text())
+    meta = json.loads((job_dir / "meta.json").read_text(encoding="utf-8"))
     if meta.get("kind") != "convert":
         raise HTTPException(422, "Auto-fix applies to conversion jobs")
     report = job_report_json(job_id)
@@ -4108,7 +4108,7 @@ async def autofix_apply(job_id: str, request: Request):
     if not accepted:
         raise HTTPException(422, "No fix groups approved")
     job_dir = _job_dir(job_id)
-    meta = json.loads((job_dir / "meta.json").read_text())
+    meta = json.loads((job_dir / "meta.json").read_text(encoding="utf-8"))
     report = job_report_json(job_id)
 
     # full originals for statement drafts come from the stored report
@@ -4394,7 +4394,7 @@ async def v1_ai_ask(request: Request):
         try:
             job_dir = _job_dir(mid)
             rep = json.loads(
-                (job_dir / "output" / "conversion_report.json").read_text())
+                (job_dir / "output" / "conversion_report.json").read_text(encoding="utf-8"))
             issues = [i for m in rep.get("mappings", [])
                       for i in m.get("issues", [])
                       if i.get("severity") in ("MANUAL", "WARNING", "ERROR")]
@@ -4517,7 +4517,7 @@ def estate_stats(system: str = ""):
 
 def _job_kind_is(meta_file: Path, kind: str) -> bool:
     try:
-        data = json.loads(meta_file.read_text())
+        data = json.loads(meta_file.read_text(encoding="utf-8"))
         return isinstance(data, dict) and data.get("kind") == kind
     except Exception:  # noqa: BLE001 — a corrupt/partial meta must never 500 the scan
         return False

@@ -72,7 +72,7 @@ class TypeWarning:
 
 class TypeMappingEngine:
     def __init__(self, path: Optional[Path] = None):
-        doc = yaml.safe_load((path or _TYPES_FILE).read_text()) or {}
+        doc = yaml.safe_load((path or _TYPES_FILE).read_text(encoding="utf-8")) or {}
         self._spec: Dict[str, dict] = doc
         # reverse index: (platform, native_base) -> canonical name.
         # Alias order follows CANONICAL_TYPES order; first claim wins, so

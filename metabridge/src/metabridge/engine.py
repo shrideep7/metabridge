@@ -360,7 +360,7 @@ def convert(input_path: str, output_dir: str, source_format: str = "",
         assist = make_assist(llm_assist, "to_infa")
         xml = generate_powercenter(pipeline, assist=assist)
         xml_file = out / ("wf_%s.xml" % _safe(pipeline.name))
-        xml_file.write_text(xml)
+        xml_file.write_text(xml, encoding="utf-8")
         from .validate.powercenter_validator import validate_powercenter_xml
         validation = validate_powercenter_xml(str(xml_file)).to_dict()
     elif target_format == "idmc":
@@ -439,7 +439,7 @@ def convert(input_path: str, output_dir: str, source_format: str = "",
     report["conversion_output"] = build_conversion_output(
         pipeline, report, str(out), migration_id)
 
-    (out / "conversion_report.json").write_text(json.dumps(report, indent=2))
+    (out / "conversion_report.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
     return report
 
 

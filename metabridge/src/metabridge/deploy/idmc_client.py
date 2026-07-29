@@ -169,7 +169,7 @@ class IDMCClient:
 def deploy_bundle(bundle_dir: str, username: str = "", password: str = "",
                   login_url: str = DEFAULT_LOGIN_URL,
                   dry_run: bool = True) -> DeployResult:
-    manifest = json.loads((Path(bundle_dir) / "manifest.json").read_text())
+    manifest = json.loads((Path(bundle_dir) / "manifest.json").read_text(encoding="utf-8"))
     objects = ["%s (%s)" % (o["name"], o["type"]) for o in manifest.get("objects", [])]
     zip_path = package_bundle(bundle_dir)
     result = DeployResult(ok=True, dry_run=dry_run, package=zip_path, objects=objects)

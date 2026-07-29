@@ -152,7 +152,7 @@ def cir(
     project = build_cir(pipeline)
     doc = project.to_dict()
     if output:
-        Path(output).write_text(json.dumps(doc, indent=2))
+        Path(output).write_text(json.dumps(doc, indent=2), encoding="utf-8")
         typer.echo("CIR written to %s" % output)
     if full and not output:
         typer.echo(json.dumps(doc, indent=2))
@@ -422,7 +422,7 @@ def impact(
     catalog = None
     if reports:
         import yaml as _yaml
-        doc = _yaml.safe_load(Path(reports).read_text()) or {}
+        doc = _yaml.safe_load(Path(reports).read_text(encoding="utf-8")) or {}
         catalog = doc.get("reports", doc) if isinstance(doc, dict) else doc
     try:
         pipeline = parse_input(input_path, source, dialect)
@@ -477,7 +477,7 @@ def pc_model_cmd(
         typer.echo("  %-26s %d" % (k.replace("_", " "), v))
     if output:
         Path(output).parent.mkdir(parents=True, exist_ok=True)
-        Path(output).write_text(json.dumps(model.to_dict(), indent=2))
+        Path(output).write_text(json.dumps(model.to_dict(), indent=2), encoding="utf-8")
         typer.echo("\nfull model written to %s" % output)
 
 

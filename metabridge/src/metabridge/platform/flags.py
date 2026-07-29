@@ -60,7 +60,7 @@ class FeatureFlags:
         stored = {}
         if self._file.exists():
             try:
-                stored = json.loads(self._file.read_text()) or {}
+                stored = json.loads(self._file.read_text(encoding="utf-8")) or {}
             except (ValueError, OSError):
                 stored = {}
         # merge seeded defaults so a fresh instance has the known flags
@@ -90,7 +90,7 @@ class FeatureFlags:
             stored = {}
             if self._file.exists():
                 try:
-                    stored = json.loads(self._file.read_text()) or {}
+                    stored = json.loads(self._file.read_text(encoding="utf-8")) or {}
                 except (ValueError, OSError):
                     stored = {}
             if not isinstance(stored, dict):

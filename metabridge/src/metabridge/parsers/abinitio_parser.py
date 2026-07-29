@@ -160,9 +160,9 @@ class _AbInitioProject:
         root = p if p.is_dir() else p.parent
         mps = [p] if p.is_file() and p.suffix == ".mp" else \
             sorted(root.rglob("*.mp"))
-        dmls = {f.name: parse_dml(f.read_text(errors="replace"))
+        dmls = {f.name: parse_dml(f.read_text(errors="replace", encoding="utf-8"))
                 for f in sorted(root.rglob("*.dml"))}
-        xfrs = {f.name: parse_xfr(f.read_text(errors="replace"))
+        xfrs = {f.name: parse_xfr(f.read_text(errors="replace", encoding="utf-8"))
                 for f in sorted(root.rglob("*.xfr"))}
         pipeline = Pipeline(name=_clean(root.stem),
                             source_format="abinitio")
@@ -174,7 +174,7 @@ class _AbInitioProject:
                 "No Ab Initio artifacts (.mp/.dml/.xfr) under %s" % path)
 
         for f in sorted(root.rglob("*.pset")):
-            for line in f.read_text(errors="replace").splitlines():
+            for line in f.read_text(errors="replace", encoding="utf-8").splitlines():
                 m = re.match(r"\s*([\w.]+)\s*:\s*(.*)$", line)
                 if m and not m.group(1).startswith("#"):
                     params.append({"name": m.group(1), "scope": f.stem,
@@ -418,7 +418,7 @@ class _AbInitioProject:
         nodes = [{"task_key": "Start__" + _clean(f.stem), "task": "Start",
                   "type": "start"}]
         edges: List[dict] = []
-        text = f.read_text(errors="replace")
+        text = f.read_text(errors="replace", encoding="utf-8")
         for m in re.finditer(r'task\s+"([^"]+)"\s+runs\s+"([^"]+)"', text):
             graph = _clean(Path(m.group(2)).stem).lower()
             nodes.append({

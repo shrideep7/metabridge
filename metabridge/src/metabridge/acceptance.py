@@ -126,5 +126,5 @@ def run_acceptance(input_path: str, out_dir: str) -> dict:
     import json
     out.mkdir(parents=True, exist_ok=True)
     (out / "acceptance_report.json").write_text(
-        json.dumps(result, indent=2, default=str))
+        json.dumps(result, indent=2, default=str), encoding="utf-8")
     return result

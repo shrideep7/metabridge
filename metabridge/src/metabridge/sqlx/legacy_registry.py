@@ -19,7 +19,7 @@ TARGETS = ("snowflake", "databricks", "bigquery", "redshift",
 
 class LegacyFunctionRegistry:
     def __init__(self, path: Optional[Path] = None):
-        doc = yaml.safe_load((path or _FN_FILE).read_text()) or {}
+        doc = yaml.safe_load((path or _FN_FILE).read_text(encoding="utf-8")) or {}
         self._rows: List[dict] = doc.get("functions", [])
 
     def all(self) -> List[dict]:
@@ -59,7 +59,7 @@ class LegacyFunctionRegistry:
 
 class LegacyDatatypeRegistry:
     def __init__(self, path: Optional[Path] = None):
-        doc = yaml.safe_load((path or _DT_FILE).read_text()) or {}
+        doc = yaml.safe_load((path or _DT_FILE).read_text(encoding="utf-8")) or {}
         self.canonical_types: List[str] = doc.get("canonical_types", [])
         self._maps: Dict[str, Dict[str, dict]] = doc.get("mappings", {})
 

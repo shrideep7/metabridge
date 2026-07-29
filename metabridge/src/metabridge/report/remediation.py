@@ -56,7 +56,7 @@ def build_workbook(pipeline: Pipeline, report: dict, out_dir: str,
         skeleton = _skeleton_for(item, mapping, target_format)
         fname = "%03d_%s_%s.sql" % (i, _safe(item.get("object") or "project"),
                                     item["code"].lower())
-        (wb / fname).write_text(_render_item(i, item, skeleton, effort))
+        (wb / fname).write_text(_render_item(i, item, skeleton, effort), encoding="utf-8")
         rows.append({
             "item": i, "file": fname, "severity": item["severity"],
             "rule": item["code"], "object": item.get("object", ""),
@@ -73,7 +73,7 @@ def build_workbook(pipeline: Pipeline, report: dict, out_dir: str,
     by_rule = {}
     for r in rows:
         by_rule[r["rule"]] = by_rule.get(r["rule"], 0) + 1
-    (wb / "000_README.md").write_text(_render_readme(rows, by_rule, total_effort))
+    (wb / "000_README.md").write_text(_render_readme(rows, by_rule, total_effort), encoding="utf-8")
     return {"items": len(rows), "estimated_hours": round(total_effort, 1),
             "by_rule": dict(sorted(by_rule.items(), key=lambda x: -x[1]))}
 

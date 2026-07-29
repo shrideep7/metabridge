@@ -66,7 +66,7 @@ def _n(x) -> str:
 
 def _read_json(path: Path) -> Optional[dict]:
     try:
-        return json.loads(path.read_text()) if path.exists() else None
+        return json.loads(path.read_text(encoding="utf-8")) if path.exists() else None
     except Exception:  # noqa: BLE001
         return None
 
@@ -661,8 +661,8 @@ def render_html(doc: dict) -> str:
 def write_migration_report(doc: dict, out_dir: str) -> str:
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
-    (out / "migration_report.json").write_text(json.dumps(doc, indent=2))
-    (out / "migration_report.md").write_text(render_markdown(doc))
+    (out / "migration_report.json").write_text(json.dumps(doc, indent=2), encoding="utf-8")
+    (out / "migration_report.md").write_text(render_markdown(doc), encoding="utf-8")
     path = out / "migration_report.html"
-    path.write_text(render_html(doc))
+    path.write_text(render_html(doc), encoding="utf-8")
     return str(path)

@@ -587,7 +587,7 @@ def generate_orchestration(cor: COR, target: str, out_dir: str) -> dict:
     written: List[str] = []
 
     def w(name: str, content: str) -> None:
-        (out / name).write_text(content)
+        (out / name).write_text(content, encoding="utf-8")
         written.append(name)
 
     for wf in cor.workflows:

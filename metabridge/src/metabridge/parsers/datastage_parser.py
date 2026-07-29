@@ -186,7 +186,7 @@ class _DataStageProject:
         for f in files:
             try:
                 all_jobs += [dict(j, file=str(f)) for j in
-                             parse_dsx(f.read_text(errors="replace"))]
+                             parse_dsx(f.read_text(errors="replace", encoding="utf-8"))]
             except OSError as e:
                 _pipe_issue(pipeline, IssueSeverity.ERROR, "DSX_READ_ERROR",
                             "Could not read %s" % f.name, detail=str(e))

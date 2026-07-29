@@ -48,7 +48,7 @@ def parse_dbt_project(project_dir: str, dialect: str = "") -> Pipeline:
     proj_file = root / "dbt_project.yml"
     if not proj_file.exists():
         raise FileNotFoundError("Not a dbt project (no dbt_project.yml): %s" % project_dir)
-    project = yaml.safe_load(proj_file.read_text()) or {}
+    project = yaml.safe_load(proj_file.read_text(encoding="utf-8")) or {}
     name = project.get("name", root.name)
 
     pipeline = Pipeline(name=name, source_format="dbt")
@@ -74,7 +74,7 @@ def parse_dbt_project(project_dir: str, dialect: str = "") -> Pipeline:
 
     for f in model_files:
         model_name = f.stem
-        raw = f.read_text()
+        raw = f.read_text(encoding="utf-8")
         mapping = _convert_model(
             model_name, raw, pipeline, manifest, sources, model_schemas,
             materialization_defaults, f, root)
@@ -90,7 +90,7 @@ def parse_dbt_project(project_dir: str, dialect: str = "") -> Pipeline:
         if not base.exists():
             continue
         for f in sorted(base.rglob("*.sql")):
-            for match in _SNAPSHOT_RE.finditer(f.read_text()):
+            for match in _SNAPSHOT_RE.finditer(f.read_text(encoding="utf-8")):
                 pipeline.mappings.append(_convert_snapshot(
                     match.group(1), match.group(2), pipeline, sources,
                     model_schemas))
@@ -119,7 +119,7 @@ def _guess_dialect(root: Path) -> str:
     for cand in (root / "profiles.yml", root.parent / "profiles.yml"):
         if cand.exists():
             try:
-                prof = yaml.safe_load(cand.read_text()) or {}
+                prof = yaml.safe_load(cand.read_text(encoding="utf-8")) or {}
                 for v in prof.values():
                     if isinstance(v, dict) and "outputs" in v:
                         for out in v["outputs"].values():
@@ -137,7 +137,7 @@ def _load_manifest(root: Path) -> Optional[dict]:
     mf = root / "target" / "manifest.json"
     if mf.exists():
         try:
-            return json.loads(mf.read_text())
+            return json.loads(mf.read_text(encoding="utf-8"))
         except Exception:  # noqa: BLE001
             return None
     return None
@@ -179,7 +179,7 @@ def _parse_yaml_docs(root: Path, project: dict
             yml_files.extend(base.rglob("*.yaml"))
     for f in sorted(set(yml_files)):
         try:
-            doc = yaml.safe_load(f.read_text()) or {}
+            doc = yaml.safe_load(f.read_text(encoding="utf-8")) or {}
         except Exception:  # noqa: BLE001
             continue
         for src in doc.get("sources", []) or []:

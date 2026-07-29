@@ -355,7 +355,7 @@ def export_all(a: dict, out_dir: str) -> List[str]:
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
     written = []
-    (out / "assessment.json").write_text(json.dumps(a, indent=1))
+    (out / "assessment.json").write_text(json.dumps(a, indent=1), encoding="utf-8")
     written.append("assessment.json")
     for ext, fn in EXPORTERS.items():
         name = "assessment.%s" % ext
