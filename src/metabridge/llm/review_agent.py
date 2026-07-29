@@ -10,13 +10,14 @@ so the agent reasons over evidence, not vibes.
 Review dimensions (exactly these — findings are pinned to one of them):
 
     business_logic_preservation
-    missing_transformations
-    incorrect_function_conversions
-    datatype_risks
-    join_semantic_changes
-    filter_semantic_changes
-    aggregation_changes
-    window_function_changes
+    transformation_semantic_equivalence
+    null_semantics
+    join_semantics
+    lookup_semantics
+    router_multimatch_semantics
+    stateful_variable_handling
+    scd_logic_preservation
+    target_specific_risks
 
 Safety contract:
   * the reviewer NEVER writes to the generated output — it returns
@@ -111,6 +112,24 @@ def _norm_sql(s: str) -> str:
     return re.sub(r"\s+", " ", str(s)).strip().lower()
 
 
+def _predicates_in_generated(generated: str) -> set:
+    """Normalized WHERE predicates actually present in the generated SQL —
+    parsed via sqlglot's AST rather than the twin's node census, since a
+    re-parse of CTE SQL doesn't reconstruct FILTER-typed nodes the same way
+    the source parser does (round-trip type asymmetry, not a lost filter)."""
+    if not generated:
+        return set()
+    try:
+        from ..validate.conversion_validator import _shield_jinja
+        tree = sqlglot.parse_one(_shield_jinja(generated),
+                                 error_level=sqlglot.ErrorLevel.IGNORE)
+    except Exception:  # noqa: BLE001
+        return set()
+    if tree is None:
+        return set()
+    return {_norm_sql(w.this.sql()) for w in tree.find_all(sqlglot.exp.Where)}
+
+
 def _generated_artifact(out: Path, target_format: str,
                         m: Mapping) -> Tuple[str, str]:
     """(relative file path, content excerpt) of the generated artifact."""
@@ -196,9 +215,23 @@ def _deterministic_diff(m: Mapping, twin: Optional[Mapping],
                 out[t.type.value] = out.get(t.type.value, 0) + 1
             return out
         src_c, twin_c = census(m), census(twin)
+        # FILTER nodes need their own check: a re-parse of CTE SQL often
+        # folds a WHERE clause into the surrounding SELECT instead of a
+        # FILTER-typed node, so a census-only comparison misreads present
+        # predicates as lost transformations (round-trip type asymmetry).
+        # Watermark filters ($$-parametrized) are excluded — their rendered
+        # comment/jinja wrapping legitimately differs from the source text
+        # and they're already covered by the STATEFUL_VARIABLE issue path.
+        filter_conditions_present = (
+            {_norm_sql(f.properties.get("condition", ""))
+             for f in m.by_type(TransformationType.FILTER)
+             if "$$" not in str(f.properties.get("condition", ""))}
+            <= _predicates_in_generated(generated))
         for ttype, n in src_c.items():
             if twin_c.get(ttype, 0) < n and ttype not in (
                     "SOURCE", "TARGET", "EXPRESSION"):
+                if ttype == "FILTER" and filter_conditions_present:
+                    continue
                 ev["transformation_semantic_equivalence"].append(
                     "source has %d %s node(s), generated output shows %d"
                     % (n, ttype, twin_c.get(ttype, 0)))
@@ -220,7 +253,12 @@ def _deterministic_diff(m: Mapping, twin: Optional[Mapping],
               if "$$" not in str(f.properties.get("condition", ""))}
         tf = {_norm_sql(f.properties.get("condition", ""))
               for f in twin.by_type(TransformationType.FILTER)}
-        lost = sf - tf
+        # the twin's type census misses FILTER conditions the round-trip
+        # parser folded into a plain WHERE (CTE re-parse asymmetry) — before
+        # calling a predicate lost, check whether it's simply present as raw
+        # SQL in the generated output
+        lost = {c for c in (sf - tf)
+                if c not in _predicates_in_generated(generated)}
         if lost:
             ev["transformation_semantic_equivalence"].append(
                 "filter condition(s) not visible in generated output: %s"

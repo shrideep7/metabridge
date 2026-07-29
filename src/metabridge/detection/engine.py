@@ -420,7 +420,7 @@ def detect(path: str) -> DetectionResult:
     # weak SQL-dialect signal -> generic ANSI fallback (honest default)
     if winner in SQL_FORMATS and confidence < CONFIDENCE_FLOOR:
         return DetectionResult(
-            "sql", round(max(0.3, 1 - confidence), 2),
+            "sql", confidence,
             ["SQL syntax found, but no dialect fingerprint was strong enough "
              "(best guess %s at %.2f) — using generic ANSI SQL"
              % (winner, confidence)],

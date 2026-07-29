@@ -94,6 +94,29 @@ def _parse_sql_file(path: Path, dialect: str) -> Optional[str]:
         return str(e)
 
 
+def _unresolved_columns(sql: str, dialect: str = "") -> List[str]:
+    """Column-resolution errors sqlglot's syntax parser can't see —
+    e.g. an unqualified column ambiguous across a join. Assumes the caller
+    already confirmed `sql` parses; a genuine parse failure here is not
+    re-reported (layer 1's syntax check owns that)."""
+    from sqlglot.optimizer.qualify import qualify
+    errors: List[str] = []
+    try:
+        trees = sqlglot.parse(sql, read=dialect or None,
+                              error_level=sqlglot.ErrorLevel.RAISE)
+    except Exception:  # noqa: BLE001
+        return errors
+    for tree in trees:
+        if tree is None:
+            continue
+        try:
+            qualify(tree, dialect=dialect or None,
+                   validate_qualify_columns=True)
+        except Exception as e:  # noqa: BLE001
+            errors.append(str(e))
+    return errors
+
+
 def _target_table(m: Mapping) -> str:
     tgts = m.by_type(TransformationType.TARGET)
     return str(tgts[0].properties.get("table", m.name)) if tgts else m.name
@@ -164,6 +187,11 @@ def _layer1_syntax(out: Path, target_format: str, dialect: str) -> List[dict]:
             if err:
                 findings.append(_finding("ERROR", "SQL_SYNTAX", err,
                                          obj=str(f.relative_to(out))))
+            else:
+                for uerr in _unresolved_columns(shielded):
+                    findings.append(_finding(
+                        "ERROR", "SQL_COLUMN_UNRESOLVED", uerr,
+                        obj=str(f.relative_to(out))))
         for f in sorted(root.rglob("*.yml")):
             try:
                 yaml.safe_load(f.read_text(encoding="utf-8"))
@@ -185,6 +213,11 @@ def _layer1_syntax(out: Path, target_format: str, dialect: str) -> List[dict]:
                 sev = "WARNING" if f.name[:1] == "9" else "ERROR"
                 findings.append(_finding(sev, "SQL_SYNTAX", err,
                                          obj=str(f.relative_to(out))))
+            else:
+                for uerr in _unresolved_columns(f.read_text(encoding="utf-8"), wd):
+                    findings.append(_finding(
+                        "ERROR", "SQL_COLUMN_UNRESOLVED", uerr,
+                        obj=str(f.relative_to(out))))
     return findings
 
 

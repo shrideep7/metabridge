@@ -11,7 +11,7 @@ requires-python = ">=3.9"
 license = { text = "Proprietary" }
 authors = [{ name = "Metafor Data", email = "saachinmane@metafordata.com" }]
 dependencies = [
-    "sqlglot>=25.0",
+    "sqlglot>=25.0,<31",
     "PyYAML>=6.0",
     "typer>=0.9",
     "jinja2>=3.1",
@@ -38,7 +38,7 @@ connectors = ["snowflake-connector-python>=3.0", "psycopg2-binary>=2.9",
 # commercial control plane (multi-tenant; SQLite for dev/test, PostgreSQL in
 # production via CONTROLPLANE_DATABASE_URL — install psycopg2-binary for RDS)
 commercial = ["sqlalchemy>=2.0,<3"]
-dev = ["pytest>=8.0"]
+dev = ["pytest>=8.0", "httpx>=0.27"]
 
 [project.scripts]
 metabridge = "metabridge.cli:app"

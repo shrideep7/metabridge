@@ -335,6 +335,9 @@ def convert(input_path: str, output_dir: str, source_format: str = "",
             or src in SQL_DIALECT_FORMATS else "powercenter"
     if target_format == src:
         raise ValueError("Source and target format are both '%s'" % src)
+    compat = evaluate_compatibility(src, target_format)
+    if not compat["supported"]:
+        raise ValueError(compat["reason"])
 
     pipeline = parse_input(input_path, src, dialect)
     if dialect:

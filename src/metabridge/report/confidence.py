@@ -70,6 +70,13 @@ def node_confidence(t) -> int:
         score = min(score, 88)
     if t.properties.get("was_update_strategy"):
         score = min(score, 80)
+    override = t.properties.get("sql_override")
+    if override:
+        # a passthrough hides an entire unparsed query behind one node —
+        # cap by how much SQL got dumped raw instead of decomposed, so a
+        # harder query that defeated decomposition can't outscore a
+        # simpler one the engine actually understood
+        score = min(score, max(40, 80 - len(override) // 15))
     return score
 
 
