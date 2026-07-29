@@ -371,9 +371,38 @@ def reset_password_page() -> str:
     return (_TPL / "reset.html").read_text(encoding="utf-8")
 
 
+_CONSOLE_BUILD: dict = {"key": None, "id": ""}
+
+
+def _console_build_id() -> str:
+    """Short content hash of the console template — the BUILD STAMP. Shown in
+    the UI and returned by /api/v1/info so "which bytes is this browser
+    actually running?" is answerable at a glance (a stale cached page or an
+    image built from older code shows a different id)."""
+    f = _TPL / "console.html"
+    try:
+        st = f.stat()
+    except OSError:
+        return "unknown"
+    key = (st.st_mtime_ns, st.st_size)
+    if _CONSOLE_BUILD["key"] != key:
+        import hashlib
+        _CONSOLE_BUILD["id"] = hashlib.sha256(f.read_bytes()).hexdigest()[:8]
+        _CONSOLE_BUILD["key"] = key
+    return _CONSOLE_BUILD["id"]
+
+
 @app.get("/console", response_class=HTMLResponse)
-def console() -> str:
-    return (_TPL / "console.html").read_text(encoding="utf-8")
+def console() -> HTMLResponse:
+    # NEVER cache the console shell: browsers heuristically cache HTML served
+    # without cache headers, which pinned users to a stale build across
+    # rebuilds (sections rendering blank because their JS/HTML no longer
+    # matched the server).
+    html = (_TPL / "console.html").read_text(encoding="utf-8")
+    return HTMLResponse(html, headers={
+        "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+        "Pragma": "no-cache",
+        "X-MetaBridge-Build": _console_build_id()})
 
 
 # ---------------------------------------------------------------------------
@@ -914,7 +943,8 @@ def info():
     from metabridge.llm.assist import llm_available
     return {"product": "MetaBridge AI", "version": __version__,
             "auth_required": bool(API_KEY), "formats": list(FORMATS),
-            "llm_available": llm_available(), "data_dir": str(DATA_DIR)}
+            "llm_available": llm_available(), "data_dir": str(DATA_DIR),
+            "console_build": _console_build_id()}
 
 
 # ---------------------------------------------------------------------------

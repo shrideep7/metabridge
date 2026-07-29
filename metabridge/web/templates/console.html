@@ -526,6 +526,14 @@
 </div>
 <main>
 
+<!-- Section-load guard: a section that fails to render must never leave a
+     silent blank page — this banner explains it and names the build. -->
+<div id="sectionErr" role="alert" style="display:none;background:#fdeeec;border:1px solid #f0b7ae;
+     border-radius:10px;padding:14px 16px;margin-bottom:14px;font-size:13.5px;color:#7c2d24">
+  <b id="sectionErrTitle">This section did not render.</b>
+  <div id="sectionErrBody" style="margin-top:4px;color:#8a3f34"></div>
+</div>
+
 <!-- ======================= OVERVIEW ======================= -->
 <div class="page visible" id="page-dashboard">
   <div style="display:flex;align-items:flex-start;gap:16px;flex-wrap:wrap">
@@ -1641,6 +1649,24 @@
 
 <script>
 const $ = s => document.querySelector(s);
+// --- section-container integrity (self-heal) --------------------------------
+// Every section must be a DIRECT child of <main>: only one is shown at a time
+// by toggling .visible, so a section nested inside another one is hidden
+// whenever its host is hidden — which renders it blank/"not visible" no matter
+// what the user clicks. A single unbalanced tag anywhere in the markup (a bad
+// merge, a hand edit, a truncated file) makes the browser nest every following
+// section inside the previous one. Rather than fail, re-parent them.
+let gPagesRepaired = 0;
+(function repairSectionContainers() {
+  const main = document.querySelector('main');
+  if (!main) return;
+  document.querySelectorAll('.page').forEach(p => {
+    if (p.parentElement !== main) { main.appendChild(p); gPagesRepaired++; }
+  });
+  if (gPagesRepaired)
+    console.warn('MetaBridge: repaired ' + gPagesRepaired + ' misnested section'
+      + ' container(s) — the page markup is malformed (rebuild recommended).');
+})();
 let apiKey = localStorage.getItem('mb_api_key') || '';
 
 async function api(url, opts = {}) {
@@ -1706,6 +1732,9 @@ function renderAvatar(el, user) {
     el.textContent = getUserInitials(getUserDisplayName(user));
   }
 }
+// fetch the build stamp early so a section-load failure can name it
+(async () => { try { gBuildId = (await api('/api/v1/info')).console_build || ''; }
+               catch (e) {} })();
 let gWorkspaces = [], gActiveWs = '';
 function renderWorkspaceSwitcher(d) {
   const sw = $('#wsSwitch'); if (!sw) return;
@@ -2092,12 +2121,56 @@ $('#navCollapse').onclick = () => {
 function withKey(url) { return apiKey ? url + (url.includes('?') ? '&' : '?') + 'api_key=' + encodeURIComponent(apiKey) : url; }
 
 /* navigation */
+let gBuildId = '';
+function sectionError(label, why, el) {
+  const box = $('#sectionErr');
+  if (!box) return;
+  let diag = '';
+  if (el) {
+    const host = el.parentElement;
+    diag = 'container: parent=' + esc(host ? (host.id || host.tagName) : 'none')
+      + ', height=' + el.offsetHeight
+      + ', children=' + el.children.length
+      + (el.offsetParent === null ? ', hidden by an ancestor' : '');
+  }
+  $('#sectionErrTitle').textContent = label + ' did not render.';
+  $('#sectionErrBody').innerHTML = esc(why)
+    + '<br>Most often this is a stale cached page: reload with '
+    + '<b>Ctrl+Shift+R</b> (Cmd+Shift+R on macOS). If it persists, rebuild the '
+    + 'server image (<code>docker compose up -d --build</code>) and reload.'
+    + (diag ? '<br><span style="font-size:12px;opacity:.8">' + diag + '</span>' : '')
+    + '<br><span style="font-size:12px;opacity:.8">console build '
+    + esc(gBuildId || 'unknown')
+    + (gPagesRepaired ? ' · repaired ' + gPagesRepaired + ' misnested section(s)' : '')
+    + '</span>';
+  box.style.display = 'block';
+}
 document.querySelectorAll('nav a[data-page]').forEach(a => a.onclick = () => {
   document.querySelectorAll('nav a').forEach(x => x.classList.remove('active'));
   a.classList.add('active');
   document.querySelectorAll('.page').forEach(p => p.classList.remove('visible'));
-  $('#page-' + a.dataset.page).classList.add('visible');
-  $('#crumb').innerHTML = 'Workspace / <b>' + (a.querySelector('.lbl') ? a.querySelector('.lbl').textContent : a.title) + '</b>';
+  const label = a.querySelector('.lbl') ? a.querySelector('.lbl').textContent : a.title;
+  const target = $('#page-' + a.dataset.page);
+  $('#sectionErr').style.display = 'none';
+  if (!target) {                     // section missing from this build
+    $('#crumb').innerHTML = 'Workspace / <b>' + label + '</b>';
+    sectionError(label, 'This section is not present in the page the browser loaded.');
+    return;
+  }
+  target.classList.add('visible');
+  // ...and verify it is actually on screen; a hidden/zero-height container is
+  // the blank-page symptom, so surface it instead of showing nothing. A
+  // misnested container is repaired here too, so a malformed page still works.
+  requestAnimationFrame(() => {
+    const main = document.querySelector('main');
+    if (target.offsetParent === null && main && target.parentElement !== main) {
+      main.appendChild(target);          // late self-heal, then re-measure
+      gPagesRepaired++;
+    }
+    if (target.offsetParent === null || target.offsetHeight === 0)
+      sectionError(label, 'The section is present but not visible.', target);
+  });
+  $('#crumb').innerHTML = 'Workspace / <b>' + label + '</b>';
   document.querySelector('main').classList.toggle('wide',
     ['estate', 'validation', 'reports', 'observability', 'system'].includes(a.dataset.page));
   if (a.dataset.page === 'dashboard') loadDashboard();
@@ -6317,9 +6390,13 @@ async function loadSystemInfo() {
       ? 'No accounts or API key are configured, so this instance is open on this host. '
         + 'Creating the first account enables sign-in and role-based access.'
       : 'Sign-in is required; role-based permissions are enforced by the server.';
+    gBuildId = info.console_build || '';
     const rows = [
       ['Deployment', 'Self-hosted', ''],
       ['Version', 'v' + String(info.version), ''],
+      ['Console build', String(info.console_build || 'unknown'),
+       'Content stamp of the page this browser loaded. If it differs from the '
+       + 'server after a rebuild, you are on a cached page — hard-reload.'],
       ['System mode', mode, modeHint],
       ['API automation', info.auth_required
           ? 'API key required for programmatic access'
