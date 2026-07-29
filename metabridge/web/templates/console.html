@@ -526,6 +526,14 @@
 </div>
 <main>
 
+<!-- Section-load guard: a section that fails to render must never leave a
+     silent blank page — this banner explains it and names the build. -->
+<div id="sectionErr" role="alert" style="display:none;background:#fdeeec;border:1px solid #f0b7ae;
+     border-radius:10px;padding:14px 16px;margin-bottom:14px;font-size:13.5px;color:#7c2d24">
+  <b id="sectionErrTitle">This section did not render.</b>
+  <div id="sectionErrBody" style="margin-top:4px;color:#8a3f34"></div>
+</div>
+
 <!-- ======================= OVERVIEW ======================= -->
 <div class="page visible" id="page-dashboard">
   <div style="display:flex;align-items:flex-start;gap:16px;flex-wrap:wrap">
@@ -1680,6 +1688,9 @@ function renderAvatar(el, user) {
     el.textContent = getUserInitials(getUserDisplayName(user));
   }
 }
+// fetch the build stamp early so a section-load failure can name it
+(async () => { try { gBuildId = (await api('/api/v1/info')).console_build || ''; }
+               catch (e) {} })();
 let gWorkspaces = [], gActiveWs = '';
 function renderWorkspaceSwitcher(d) {
   const sw = $('#wsSwitch'); if (!sw) return;
@@ -2066,12 +2077,39 @@ $('#navCollapse').onclick = () => {
 function withKey(url) { return apiKey ? url + (url.includes('?') ? '&' : '?') + 'api_key=' + encodeURIComponent(apiKey) : url; }
 
 /* navigation */
+let gBuildId = '';
+function sectionError(label, why) {
+  const box = $('#sectionErr');
+  if (!box) return;
+  $('#sectionErrTitle').textContent = label + ' did not render.';
+  $('#sectionErrBody').innerHTML = esc(why)
+    + '<br>Most often this is a stale cached page: reload with '
+    + '<b>Ctrl+Shift+R</b> (Cmd+Shift+R on macOS). If it persists, rebuild the '
+    + 'server image (<code>docker compose up -d --build</code>) and reload.'
+    + (gBuildId ? '<br><span style="font-size:12px;opacity:.8">console build '
+      + esc(gBuildId) + '</span>' : '');
+  box.style.display = 'block';
+}
 document.querySelectorAll('nav a[data-page]').forEach(a => a.onclick = () => {
   document.querySelectorAll('nav a').forEach(x => x.classList.remove('active'));
   a.classList.add('active');
   document.querySelectorAll('.page').forEach(p => p.classList.remove('visible'));
-  $('#page-' + a.dataset.page).classList.add('visible');
-  $('#crumb').innerHTML = 'Workspace / <b>' + (a.querySelector('.lbl') ? a.querySelector('.lbl').textContent : a.title) + '</b>';
+  const label = a.querySelector('.lbl') ? a.querySelector('.lbl').textContent : a.title;
+  const target = $('#page-' + a.dataset.page);
+  $('#sectionErr').style.display = 'none';
+  if (!target) {                     // section missing from this build
+    $('#crumb').innerHTML = 'Workspace / <b>' + label + '</b>';
+    sectionError(label, 'This section is not present in the page the browser loaded.');
+    return;
+  }
+  target.classList.add('visible');
+  // ...and verify it is actually on screen; a hidden/zero-height container is
+  // the blank-page symptom, so surface it instead of showing nothing.
+  requestAnimationFrame(() => {
+    if (target.offsetParent === null || target.offsetHeight === 0)
+      sectionError(label, 'The section is present but not visible.');
+  });
+  $('#crumb').innerHTML = 'Workspace / <b>' + label + '</b>';
   document.querySelector('main').classList.toggle('wide',
     ['estate', 'validation', 'reports', 'observability', 'system'].includes(a.dataset.page));
   if (a.dataset.page === 'dashboard') loadDashboard();
@@ -6266,9 +6304,13 @@ async function loadSystemInfo() {
       ? 'No accounts or API key are configured, so this instance is open on this host. '
         + 'Creating the first account enables sign-in and role-based access.'
       : 'Sign-in is required; role-based permissions are enforced by the server.';
+    gBuildId = info.console_build || '';
     const rows = [
       ['Deployment', 'Self-hosted', ''],
       ['Version', 'v' + String(info.version), ''],
+      ['Console build', String(info.console_build || 'unknown'),
+       'Content stamp of the page this browser loaded. If it differs from the '
+       + 'server after a rebuild, you are on a cached page — hard-reload.'],
       ['System mode', mode, modeHint],
       ['API automation', info.auth_required
           ? 'API key required for programmatic access'
