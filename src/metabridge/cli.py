@@ -9,7 +9,12 @@ from typing import List
 import typer
 
 from . import __version__
-from .engine import FORMATS, analyze as run_analyze, convert as run_convert
+from .engine import (
+    FORMATS, PROJECT_FORMATS, WAREHOUSE_FORMATS,
+    analyze as run_analyze, convert as run_convert,
+)
+
+TARGET_FORMATS = PROJECT_FORMATS + WAREHOUSE_FORMATS
 
 app = typer.Typer(
     name="metabridge",
@@ -24,7 +29,7 @@ def convert(
     input_path: str = typer.Argument(..., help="dbt project dir, PowerCenter XML, or IDMC bundle"),
     output: str = typer.Option("./metabridge_out", "--output", "-o", help="Output directory"),
     source: str = typer.Option("", "--source", "-s", help="Source format: %s (auto-detected)" % ", ".join(FORMATS)),
-    target: str = typer.Option("", "--target", "-t", help="Target format: %s" % ", ".join(FORMATS)),
+    target: str = typer.Option("", "--target", "-t", help="Target format: %s" % ", ".join(TARGET_FORMATS)),
     dialect: str = typer.Option("", "--dialect", "-d", help="SQL dialect (snowflake, bigquery, redshift, postgres...)"),
     llm_assist: bool = typer.Option(False, "--llm-assist", help="Use Claude for expressions the rule engine can't convert (needs ANTHROPIC_API_KEY)"),
     models: str = typer.Option("", "--models", "-m", help="Comma-separated model names to convert (default: all)"),

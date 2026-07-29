@@ -16,7 +16,7 @@ tamper-evident audit trail — automation a regulated client's risk team will ac
 | | |
 |---|---|
 | **16** core engines | **9** common platform services |
-| **7** shared canonical models | **18** source formats |
+| **7** shared canonical models | **8** source platforms + **10** SQL dialects |
 | **50** connectors | **~1,745** automated tests |
 
 > **Architecture:** modular monolith — one deployable unit composing independent
@@ -33,7 +33,7 @@ tamper-evident audit trail — automation a regulated client's risk team will ac
 |---|---|
 | **Assess** | Enterprise Data Estate · Digital Twin · AI Readiness · Technical Debt · FinOps · Security Intelligence |
 | **Design** | Semantic Intelligence (parsed IR → platform-neutral CIR) · Pipeline Studio |
-| **Migrate** | Migration Engine — 18 source formats → cloud/dbt targets, with AI review + human approve-and-apply |
+| **Migrate** | Migration Engine — 8 source platforms + 10 SQL dialects → cloud/dbt targets, with AI review + human approve-and-apply |
 | **Validate** | Validation Engine — confidence scoring, lineage, reconciliation |
 | **Govern** | Governance Engine (PII/PHI classification, residency & masking policy) · tamper-evident Audit |
 | **Operate** | Observability (pipeline / agent / connector health, SLA, alerting) · Documentation (14 doc types) · Agent Orchestration |
@@ -105,7 +105,7 @@ so MetaBridge embeds into a delivery pipeline or runs headless.
 ```
 src/metabridge/
   ir/ cir/ sqlx/          canonical IR + CIR + SQL/expression transpiler
-  detection/ parsers/     format detection + source parsers (18 formats → IR/CIR)
+  detection/ parsers/     format detection + source parsers (8 platforms + 10 SQL dialects → IR/CIR)
   generators/             target-native generators (cloud / dbt / Informatica …)
   twin/                   Enterprise Data Estate + Digital Twin graph & analytics
   sap/ events/ orchestration/   SAP, streaming (CER), orchestration (COR)
