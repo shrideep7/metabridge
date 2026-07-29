@@ -428,12 +428,21 @@ def test_connection_analysis_table_count_does_not_crash(tmp_path):
     wh = t.find("Prod WH")
     assert wh is not None and wh.metadata.get("tables") == 42
 
-    # a real list of names/objects still expands into table nodes
+    # tables come from the persisted introspection INVENTORY (not a list in
+    # last_analysis) and expand into namespaced per-system table nodes
+    from metabridge import connections_store as cs
     (base / "connections.json").write_text(json.dumps([
         {"id": "c2", "connector": "postgres", "name": "PG",
-         "status": "active",
-         "last_analysis": {"tables": ["public.orders",
-                                      {"name": "public.users"}]}}]))
+         "status": "active"}]))
+    cs.record_inventory("c2", {
+        "connector": "postgres", "database": "d", "schema": "public",
+        "tables": [{"schema": "public", "name": "orders", "rows": 10,
+                    "columns": [{"name": "id"}]},
+                   {"schema": "public", "name": "users", "rows": 3,
+                    "columns": []}],
+        "views": [], "view_definitions": {}})
     t2 = build_twin(include_connections=True, name="e")
-    assert t2.find("public.orders") is not None
-    assert t2.find("public.users") is not None
+    assert t2.find("PG.public.orders") is not None
+    assert t2.find("PG.public.users") is not None
+    # per-system namespacing keeps the rows metadata off the table node
+    assert t2.find("PG.public.orders").metadata.get("rows") == 10

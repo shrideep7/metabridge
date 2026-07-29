@@ -3026,6 +3026,34 @@ def _write_twin(doc: dict) -> None:
     os.replace(tmp, _TWIN_FILE)
 
 
+def _ensure_connection_inventories() -> None:
+    """Best-effort: before building the twin, capture an object inventory for
+    any ACTIVE connection that has none yet — so 'Build digital twin'
+    discovers a connected system's tables even if the user never clicked
+    Analyze. Live and bounded; a slow or unreachable system is skipped, never
+    fatal."""
+    try:
+        from metabridge.connections_store import (
+            get_inventory, list_connections, record_inventory,
+            resolve_params)
+        from metabridge.livecheck import introspect, live_support
+    except Exception:                        # noqa: BLE001
+        return
+    for c in list_connections():
+        try:
+            cid = c.get("id", "")
+            if (c.get("status") != "active" or not cid
+                    or get_inventory(cid)):
+                continue
+            if not live_support(c.get("connector", "")).get("introspect"):
+                continue
+            rep = introspect(c.get("connector", ""), resolve_params(cid))
+            if rep.get("ok"):
+                record_inventory(cid, rep)
+        except Exception:                    # noqa: BLE001 - per-connection
+            continue
+
+
 @app.post("/api/twin/build")
 async def twin_build(request: Request):
     """{"files": [...], "estate_yaml": "...", "include_connections":
@@ -3066,10 +3094,14 @@ async def twin_build(request: Request):
                 paths = [str(p) for p in top]  # one system per folder
             elif top:
                 paths = [str(root)]
+        include_connections = bool(body.get("include_connections", True))
+        if include_connections:
+            # auto-discover tables from any connected-but-not-yet-analyzed
+            # system so the twin is populated on first build
+            _ensure_connection_inventories()
         twin = build_twin(
             paths=paths, estate_docs=estate_docs,
-            include_connections=bool(
-                body.get("include_connections", True)),
+            include_connections=include_connections,
             jobs_dir=str(JOBS_DIR) if body.get("include_jobs", True)
             else None,
             name=str(body.get("name", "") or "estate"))
@@ -4580,10 +4612,17 @@ def v1_connection_introspect(conn_id: str):
     report = introspect(row["connector"], params)
     report.pop("password", None)
     if report.get("ok"):
-        from metabridge.connections_store import record_analysis
+        from metabridge.connections_store import (record_analysis,
+                                                  record_inventory)
         record_analysis(conn_id, {**report.get("readiness", {}),
                                   "database": report.get("database", ""),
                                   "schema": report.get("schema", "")})
+        # persist the discovered object inventory (names + row/column counts
+        # + view SQL) so the Digital Twin can build real nodes and lineage
+        try:
+            record_inventory(conn_id, report)
+        except Exception:                    # noqa: BLE001 - best-effort
+            pass
     return report
 
 
