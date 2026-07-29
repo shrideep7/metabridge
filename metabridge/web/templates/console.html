@@ -3406,9 +3406,13 @@ async function fillModConnList() {
         + '<div style="font-size:11.5px;color:var(--muted);margin-top:2px">Analyzes the connected system and opens Pipeline Studio with its manifest.</div>'
       : 'No connectable systems yet — connect one that supports live introspection under Integrations.';
     $('#modConnList').querySelectorAll('[data-cid]').forEach(b => b.onclick = async () => {
+      const label = b.textContent;
       b.disabled = true; b.textContent = 'Analyzing…';
       try {
-        const d = await api('/api/v1/connections/' + b.dataset.cid + '/introspect', {method:'POST'});
+        // timeoutMs guarantees the click SETTLES even when the target system
+        // is unreachable (e.g. a security group silently dropping packets) —
+        // without it the button hung on "Analyzing…" indefinitely
+        const d = await api('/api/v1/connections/' + b.dataset.cid + '/introspect', {method:'POST', timeoutMs: 90000});
         if (!d.ok) throw new Error(d.error || 'analysis failed');
         const row = allConnections.find(x => x.id === b.dataset.cid);
         chosen.scafFile = new File([d.manifest_yaml], row.connector + '_manifest.yml', {type:'text/yaml'});
