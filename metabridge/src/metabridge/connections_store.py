@@ -216,6 +216,7 @@ def delete_connection(conn_id: str) -> bool:
     if len(keep) == len(rows):
         return False
     _write(keep)
+    delete_inventory(conn_id)     # drop the connection's persisted inventory
     return True
 
 
@@ -278,6 +279,79 @@ def record_analysis(conn_id: str, summary: dict) -> None:
             }
             _write(rows)
             return
+
+
+# --- introspected inventory ------------------------------------------------
+# last_analysis stores only counts; the Digital Twin needs the actual object
+# NAMES (tables, views, and each view's SQL for lineage). That inventory can
+# be large and is connection-derived, so it lives in a per-connection 0600
+# file beside connections.json rather than bloating the main store.
+
+_INV_MAX_TABLES = 5000
+_INV_MAX_VIEWS = 1000
+
+
+def _inventory_dir() -> Path:
+    d = _store_path().parent / "connection_inventory"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def _inventory_path(conn_id: str) -> Path:
+    safe = "".join(ch for ch in str(conn_id) if ch.isalnum() or ch in "-_")
+    return _inventory_dir() / ("%s.json" % (safe or "unknown"))
+
+
+def record_inventory(conn_id: str, report: dict) -> None:
+    """Persist the introspected object inventory (table/view names, row and
+    column counts, and each view's SQL) so the Digital Twin can build real
+    nodes and lineage from a connected system. Bounded and best-effort."""
+    tables = report.get("tables") or []
+    views = report.get("views") or []
+    vdefs = report.get("view_definitions") or {}
+    inv = {
+        "connector": report.get("connector", ""),
+        "database": report.get("database", ""),
+        "schema": report.get("schema", ""),
+        "at": datetime.datetime.now().isoformat(timespec="seconds"),
+        "tables": [{"schema": str(t.get("schema", "")),
+                    "name": str(t.get("name", "")),
+                    "type": str(t.get("type", "BASE TABLE")),
+                    "rows": int(t.get("rows", 0) or 0),
+                    "bytes": int(t.get("bytes", 0) or 0),
+                    "columns": len(t.get("columns", []) or [])}
+                   for t in tables[:_INV_MAX_TABLES]
+                   if t.get("name")],
+        "views": [{"schema": str(v.get("schema", "")),
+                   "name": str(v.get("name", "")),
+                   "definition": str(vdefs.get(v.get("name", ""), "")
+                                     or "")[:4000]}
+                  for v in views[:_INV_MAX_VIEWS]
+                  if v.get("name")],
+    }
+    p = _inventory_path(conn_id)
+    p.write_text(json.dumps(inv, indent=1))
+    try:
+        os.chmod(p, 0o600)
+    except OSError:
+        pass
+
+
+def get_inventory(conn_id: str) -> Optional[dict]:
+    p = _inventory_path(conn_id)
+    if not p.exists():
+        return None
+    try:
+        return json.loads(p.read_text())
+    except (json.JSONDecodeError, OSError):
+        return None
+
+
+def delete_inventory(conn_id: str) -> None:
+    try:
+        _inventory_path(conn_id).unlink(missing_ok=True)
+    except OSError:
+        pass
 
 
 def resolve_params(conn_id: str) -> Dict[str, str]:

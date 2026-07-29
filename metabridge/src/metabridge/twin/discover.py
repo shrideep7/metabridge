@@ -177,38 +177,128 @@ def add_orchestration(twin: DigitalTwin, cor, source: str = "") -> None:
 
 _WAREHOUSE_KEYS = {"snowflake", "bigquery", "databricks", "redshift",
                    "synapse"}
+_CONN_DIALECT = {"postgres": "postgres", "redshift": "redshift",
+                 "snowflake": "snowflake", "bigquery": "bigquery",
+                 "databricks": "databricks"}
+
+
+def _fqtn(system: str, schema: str, table: str) -> str:
+    """Fully-qualified label, namespaced by system so identically named
+    tables in different systems (e.g. PUBLIC.ORDERS in both Postgres and
+    Snowflake) stay DISTINCT nodes rather than silently merging."""
+    return ".".join(p for p in (system, schema, table) if p)
+
+
+def _view_sources(sql: str, dialect: Optional[str]) -> List[str]:
+    """Table/view names referenced by a view's SQL, lowercased as both
+    'schema.table' and bare 'table'. Best-effort via sqlglot with the real
+    engine dialect; returns [] on any parse error so lineage degrades
+    gracefully and never breaks a twin build."""
+    if not sql or not dialect:
+        return []
+    try:
+        import sqlglot
+        from sqlglot import exp
+        tree = sqlglot.parse_one(sql, read=dialect)
+        out = set()
+        for tbl in tree.find_all(exp.Table):
+            name = (tbl.name or "").strip()
+            if not name:
+                continue
+            schema = (tbl.db or "").strip()
+            if schema:
+                out.add(("%s.%s" % (schema, name)).lower())
+            out.add(name.lower())
+        return sorted(out)
+    except Exception:  # noqa: BLE001 — lineage is best-effort
+        return []
 
 
 def add_connections(twin: DigitalTwin) -> int:
+    """Each saved connection becomes a system node; its introspected
+    inventory (persisted on Analyze) becomes real table/view nodes with row,
+    byte and column metadata, plus intra-system lineage parsed from view
+    SQL. Without an inventory yet, the system still appears with its analyzed
+    object COUNT as metadata (so the estate is never empty)."""
     try:
-        from ..connections_store import list_connections
+        from ..connections_store import get_inventory, list_connections
         conns = list_connections()
     except Exception:  # noqa: BLE001 — store optional in tests
         return 0
     for c in conns:
-        kind = "warehouse" if c.get("connector") in _WAREHOUSE_KEYS \
-            else "database"
-        n = twin.add_node(kind, c.get("name", c.get("connector", "")),
-                          "connection:%s" % c.get("id", ""),
-                          technology=str(c.get("connector", "")),
-                          metadata={"status": c.get("status", "")})
+        cid = c.get("id", "")
+        csrc = "connection:%s" % cid
+        connector = str(c.get("connector", ""))
+        kind = "warehouse" if connector in _WAREHOUSE_KEYS else "database"
         analysis = c.get("last_analysis") or {}
-        tables = analysis.get("tables")
-        # last_analysis stores a table COUNT (int), not names — the UI's
-        # analyze step only records counts. Only expand into table nodes
-        # when a real list of names/objects is present; otherwise keep the
-        # count as node metadata.
-        if isinstance(tables, (int, float)) and not isinstance(tables, bool):
-            n.metadata["tables"] = int(tables)
-        elif isinstance(tables, list):
-            for t in tables[:500]:
-                tname = t if isinstance(t, str) else (
-                    t.get("name", "") if isinstance(t, dict) else "")
-                if tname:
-                    tn = twin.add_node("table", tname,
-                                       "connection:%s" % c.get("id", ""))
-                    twin.add_edge(n.id, tn.id, "contains",
-                                  "connection:%s" % c.get("id", ""))
+        sys_meta = {"status": c.get("status", "")}
+        if analysis.get("database"):
+            sys_meta["database"] = analysis["database"]
+        n = twin.add_node(kind, c.get("name", connector) or connector, csrc,
+                          technology=connector, metadata=sys_meta)
+
+        try:
+            inv = get_inventory(cid)
+        except Exception:  # noqa: BLE001
+            inv = None
+        if not inv:
+            # no inventory captured yet — keep the analyzed count visible
+            cnt = analysis.get("tables")
+            if isinstance(cnt, (int, float)) and not isinstance(cnt, bool):
+                n.metadata["tables"] = int(cnt)
+            continue
+
+        system = n.name
+        dialect = _CONN_DIALECT.get(connector)
+        by_qual: dict = {}      # 'schema.table' / 'table' -> node id
+        total_rows = 0
+        tables = inv.get("tables") or []
+        for t in tables:
+            tname = str(t.get("name", "")).strip()
+            if not tname:
+                continue
+            schema = str(t.get("schema", ""))
+            rows = int(t.get("rows", 0) or 0)
+            total_rows += rows
+            tn = twin.add_node(
+                "table", _fqtn(system, schema, tname), csrc,
+                technology=connector,
+                metadata={"schema": schema, "rows": rows,
+                          "bytes": int(t.get("bytes", 0) or 0),
+                          "columns": int(t.get("columns", 0) or 0),
+                          "object_type": str(t.get("type", "BASE TABLE")),
+                          "system": system})
+            twin.add_edge(n.id, tn.id, "contains", csrc)
+            if schema:
+                by_qual.setdefault(("%s.%s" % (schema, tname)).lower(), tn.id)
+            by_qual.setdefault(tname.lower(), tn.id)
+
+        views = inv.get("views") or []
+        for v in views:
+            vname = str(v.get("name", "")).strip()
+            if not vname:
+                continue
+            vschema = str(v.get("schema", ""))
+            vn = twin.add_node(
+                "table", _fqtn(system, vschema, vname), csrc,
+                technology=connector,
+                metadata={"schema": vschema, "object_type": "VIEW",
+                          "system": system})
+            twin.add_edge(n.id, vn.id, "contains", csrc)
+            if vschema:
+                by_qual.setdefault(("%s.%s" % (vschema, vname)).lower(), vn.id)
+            by_qual.setdefault(vname.lower(), vn.id)
+            for ref in _view_sources(v.get("definition", ""), dialect):
+                src_id = by_qual.get(ref) or by_qual.get(ref.split(".")[-1])
+                if src_id and src_id != vn.id:
+                    # a base table/view FEEDS this view (real lineage)
+                    twin.add_edge(src_id, vn.id, "feeds", csrc,
+                                  inferred=True)
+
+        n.metadata["tables"] = sum(1 for t in tables if t.get("name"))
+        if views:
+            n.metadata["views"] = len(views)
+        n.metadata["rows"] = total_rows
     return len(conns)
 
 
@@ -341,6 +431,12 @@ def infer_domains(twin: DigitalTwin) -> None:
     groups: dict = {}
     for n in list(twin.nodes.values()):
         if n.domain or n.kind in ("domain", "owner", "connection"):
+            continue
+        # connection-derived objects are namespaced by system (system.schema.
+        # table), so their name-prefix is the system, not a business domain —
+        # inferring one would just re-create the system. They take a domain
+        # only from an authoritative estate.yml assignment.
+        if n.metadata.get("system"):
             continue
         prefix = re.split(r"[._/\-]", n.name.lower())[0]
         if len(prefix) < 3 or prefix.isdigit():

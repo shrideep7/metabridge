@@ -337,10 +337,6 @@ async def auth_logout(request: Request):
 #     one on the server host: `metabridge auth reset-link <email>`.
 # The token secret is never logged and never returned by /auth/forgot.
 
-def _smtp_configured() -> bool:
-    return bool(os.environ.get("METABRIDGE_SMTP_HOST"))
-
-
 def _public_base(request: Request, trust_request: bool):
     """Base URL for building absolute reset links. On an UNAUTHENTICATED
     path (the emailed link from /auth/forgot) the request Host header is
@@ -370,34 +366,6 @@ def _reset_link(request: Request, token: str,
     return "%s/reset-password#token=%s" % (base, quote(token))
 
 
-def _send_reset_email(to_addr: str, link: str) -> None:
-    import smtplib
-    from email.message import EmailMessage
-    host = os.environ["METABRIDGE_SMTP_HOST"]
-    port = int(os.environ.get("METABRIDGE_SMTP_PORT", "587"))
-    user = os.environ.get("METABRIDGE_SMTP_USER", "")
-    password = os.environ.get("METABRIDGE_SMTP_PASSWORD", "")
-    sender = os.environ.get("METABRIDGE_SMTP_FROM",
-                            user or "metabridge@localhost")
-    msg = EmailMessage()
-    msg["Subject"] = "Reset your MetaBridge password"
-    msg["From"] = sender
-    msg["To"] = to_addr
-    msg.set_content(
-        "A password reset was requested for your MetaBridge account.\n\n"
-        "Choose a new password here (the link works once and expires in "
-        "60 minutes):\n\n  %s\n\nIf you did not request this, you can "
-        "ignore this message — your password is unchanged." % link)
-    starttls = os.environ.get("METABRIDGE_SMTP_STARTTLS", "1").lower() \
-        not in ("0", "false", "no")
-    with smtplib.SMTP(host, port, timeout=15) as s:
-        if starttls:
-            s.starttls()
-        if user:
-            s.login(user, password)
-        s.send_message(msg)
-
-
 def _mask_email(email: str) -> str:
     local, _, domain = email.partition("@")
     if len(local) <= 2:
@@ -424,6 +392,97 @@ def _notify_admins_of_reset_request(email: str) -> None:
         pass
 
 
+# -- outbound notification service (email via SES / SMTP) -------------------
+# `metabridge.notify` is the single outbound gateway. These thin wrappers
+# gather the recipient, workspace name and safe absolute links from the
+# request/identity layer and hand off to it. EVERY call is best-effort: a mail
+# failure (or an unconfigured relay) never breaks the API action that
+# triggered it — the action already succeeded before we try to notify.
+
+def _nc():
+    """The in-app notification feed, or None if unavailable (best-effort)."""
+    try:
+        return _os().notifications
+    except Exception:                        # noqa: BLE001
+        return None
+
+
+def _workspace_name() -> str:
+    return ((_load_settings_doc().get("workspace", {}) or {}).get("name")
+            or "MetaBridge")
+
+
+def _abs_url(request: Request, path: str, trust_request: bool) -> str:
+    """Absolute URL for an email link, or "" when no trustworthy base is
+    known (mirrors _reset_link's Host-spoofing safeguard)."""
+    base = _public_base(request, trust_request)
+    return "%s/%s" % (base.rstrip("/"), path.lstrip("/")) if base else ""
+
+
+def _actor_name(request: Request) -> str:
+    u = _request_user(request) or {}
+    return u.get("name") or u.get("email") or "An administrator"
+
+
+def _public_link(path: str) -> str:
+    """Absolute link built only from METABRIDGE_PUBLIC_URL — for notifications
+    raised outside an HTTP request (e.g. approval fan-out). Returns "" when the
+    public URL isn't configured, so templates simply omit the button."""
+    base = os.environ.get("METABRIDGE_PUBLIC_URL", "").rstrip("/")
+    return "%s/%s" % (base, path.lstrip("/")) if base else ""
+
+
+def _owner_admin_emails() -> list:
+    """Recipients for broadcast/operational alerts: the workspace owners and
+    admins (the people accountable for compliance and operations)."""
+    return [u["email"] for u in AUTH.list_users()
+            if u.get("role") in ("owner", "admin")]
+
+
+def _maybe_page_observability(rep: dict) -> None:
+    """Email owners/admins about CRITICAL observability alerts, DEDUPED against
+    the unseen in-app feed so simply viewing the dashboard doesn't re-page on
+    every load (one notice per distinct condition until it's marked seen).
+    Best-effort — never affects the report response."""
+    try:
+        from metabridge import notify
+        if not notify.email_enabled():
+            return
+        alerts = ((rep or {}).get("alerting", {}) or {}).get("alerts") or []
+        crit = [a for a in alerts if a.get("severity") == "critical"]
+        if not crit:
+            return
+        nc = _nc()
+        already = set()
+        if nc is not None:
+            try:
+                already = {n.get("title") for n in
+                           nc.recent(limit=200, topic="observability",
+                                     unseen_only=True)}
+            except Exception:                # noqa: BLE001
+                already = set()
+        fresh = [a for a in crit if a.get("message") not in already]
+        if not fresh:
+            return
+        if nc is not None:                   # record so it won't re-page
+            for a in fresh:
+                try:
+                    nc.notify("observability",
+                              a.get("message", "Critical alert"),
+                              body="monitor: %s" % a.get("monitor", ""),
+                              severity="critical")
+                except Exception:            # noqa: BLE001
+                    pass
+        notify.observability_alert(
+            _owner_admin_emails(),
+            "%d critical operational alert(s)" % len(fresh),
+            [a.get("message", "") for a in fresh],
+            url=_public_link("console#observability"),
+            critical=True, center=None)      # feed already updated above
+    except Exception:                        # noqa: BLE001 - best-effort
+        pass
+
+
 @app.post("/auth/forgot")
 async def auth_forgot(request: Request):
     """Start a password reset. Answers identically whether or not the email
@@ -432,25 +491,23 @@ async def auth_forgot(request: Request):
     email = str(body.get("email", "")).strip().lower()
     if not email or "@" not in email:
         raise HTTPException(422, "Enter the email address of your account")
-    # Email delivery needs a trustworthy absolute base URL. Because this is
-    # an UNAUTHENTICATED request, we never build the link from the (spoofable)
-    # Host header — if METABRIDGE_PUBLIC_URL is unset we fall through to the
-    # admin-notification path rather than email an attacker-controlled link.
-    can_email = _smtp_configured() and _public_base(request, False) is not None
+    # Email the reset link whenever outbound email is configured. The link's
+    # base URL is METABRIDGE_PUBLIC_URL when set (authoritative — the spoofable
+    # Host header is ignored, the recommended setup behind a reverse proxy);
+    # when it is NOT set we fall back to the request origin so a directly
+    # accessed self-hosted deployment sends a working link out of the box.
+    # (Only when NO relay is configured do we fall through to notifying the
+    # workspace admins so a locked-out user still has a path back in.)
+    from metabridge import notify
+    can_email = notify.email_enabled()
     if can_email:
         token = AUTH.create_reset_token(email)   # None when no such account
         if token:
-            # deliver off-request so response timing is identical whether
-            # or not the account exists (no enumeration via latency)
-            link = _reset_link(request, token, trust_request=False)
-            import threading
-
-            def _deliver():
-                try:
-                    _send_reset_email(email, link)
-                except Exception:        # noqa: BLE001 - never leak details
-                    pass                 # (and never confirm/deny delivery)
-            threading.Thread(target=_deliver, daemon=True).start()
+            # the service delivers off-request, so response timing is
+            # identical whether or not the account exists (no enumeration
+            # via latency) and delivery is never confirmed/denied
+            link = _reset_link(request, token, trust_request=True)
+            notify.reset_link(email, "", link)
         return {"ok": True, "delivery": "email",
                 "detail": "If that email has an account here, a reset link "
                           "is on its way. It works once and expires in 60 "
@@ -479,11 +536,22 @@ async def auth_reset_validate(request: Request):
 @app.post("/auth/reset")
 async def auth_reset(request: Request):
     body = await _json_object(request)
+    token = str(body.get("token", ""))
+    # resolve the account BEFORE the reset burns the token, so we can send the
+    # security confirmation to the right address afterwards
+    account = AUTH.peek_reset_token(token)
     try:
-        AUTH.reset_password(str(body.get("token", "")),
-                            str(body.get("password", "")))
+        AUTH.reset_password(token, str(body.get("password", "")))
     except ValueError as e:
         raise HTTPException(422, str(e))
+    if account:
+        try:
+            from metabridge import notify
+            notify.password_changed(
+                account, "",
+                login_url=_abs_url(request, "login", False), center=_nc())
+        except Exception:                    # noqa: BLE001 - best-effort
+            pass
     return {"ok": True, "detail": "Password updated — sign in with your "
                                   "new password."}
 
@@ -755,7 +823,26 @@ async def create_user(request: Request):
                                 role=role)
     except ValueError as e:
         raise HTTPException(422, str(e))
-    return user
+    # Invite email: rather than mail a plaintext password, mint a one-time
+    # reset link so the new member sets their own — best practice, and the
+    # admin-entered password still works as a fallback. Best-effort; only
+    # touches token state when email is actually configured.
+    emailed = False
+    try:
+        from metabridge import notify
+        if notify.email_enabled():
+            token = AUTH.create_reset_token(user["email"])
+            reset_url = _reset_link(request, token, trust_request=True) \
+                if token else ""
+            res = notify.member_invited(
+                user["email"], user.get("name", ""), _workspace_name(),
+                user.get("role", ""), _actor_name(request),
+                login_url=_abs_url(request, "login", True),
+                reset_url=reset_url, center=_nc())
+            emailed = bool(res.get("ok") or res.get("queued"))
+    except Exception:                        # noqa: BLE001 - best-effort
+        pass
+    return {**user, "invite_emailed": emailed}
 
 
 @app.patch("/api/users/{email}")
@@ -776,9 +863,19 @@ async def change_role(email: str, request: Request):
         _require_owner_for_owner_role(
             request, "Only an owner can grant or revoke the owner role")
     try:
-        return AUTH.set_role(email, new_role)
+        updated = AUTH.set_role(email, new_role)
     except ValueError as e:
         raise HTTPException(422, str(e))
+    if new_role != target["role"]:          # only on an actual change
+        try:
+            from metabridge import notify
+            notify.role_changed(
+                email_norm, updated.get("name", ""), new_role,
+                _actor_name(request),
+                login_url=_abs_url(request, "login", True), center=_nc())
+        except Exception:                    # noqa: BLE001 - best-effort
+            pass
+    return updated
 
 
 @app.delete("/api/users/{email}")
@@ -796,6 +893,13 @@ async def delete_user(email: str, request: Request):
         AUTH.remove_user(email)
     except ValueError as e:
         raise HTTPException(422, str(e))
+    try:
+        from metabridge import notify
+        notify.member_removed(
+            email_norm, (target or {}).get("name", ""), _workspace_name(),
+            _actor_name(request), center=_nc())
+    except Exception:                        # noqa: BLE001 - best-effort
+        pass
     return {"removed": email}
 
 
@@ -819,8 +923,21 @@ async def mint_reset_link(email: str, request: Request):
         raise HTTPException(404, "No account with that email")
     # authenticated admin, minting in their own browser: the same-origin
     # request URL is a fine base when METABRIDGE_PUBLIC_URL isn't configured
+    link = _reset_link(request, token, trust_request=True)
+    # If email is configured, also send the link directly to the member (the
+    # link is still returned so the admin can hand it over out-of-band too).
+    emailed = False
+    try:
+        from metabridge import notify
+        if notify.email_enabled():
+            res = notify.reset_link(email.strip().lower(),
+                                    (target or {}).get("name", ""), link,
+                                    minted_by_admin=True, center=_nc())
+            emailed = bool(res.get("ok") or res.get("queued"))
+    except Exception:                        # noqa: BLE001 - best-effort
+        pass
     return {"email": email.strip().lower(),
-            "reset_link": _reset_link(request, token, trust_request=True),
+            "reset_link": link, "emailed": emailed,
             "expires_in_minutes": RESET_TOKEN_TTL_SECONDS // 60,
             "one_time": True}
 
@@ -2509,6 +2626,26 @@ def _notify_approvals(title: str, body: str, severity: str) -> None:
         pass
 
 
+def _notify_requester_of_decision(rec: dict, decision: str, approver: str,
+                                  note: str) -> None:
+    """Email the person who requested an action that it was approved/rejected.
+    Skipped when the requester decided it themselves (withdrawing their own
+    request) — they don't need to be told what they just did."""
+    requester = (rec.get("requested_by") or "").strip().lower()
+    if not requester or requester == (approver or "").strip().lower():
+        return
+    try:
+        from metabridge import notify
+        notify.approval_decided(
+            requester,
+            "%s (run %s)" % (rec.get("agent_id", "action"),
+                             rec.get("run_id", "")),
+            decision, approver, note=note,
+            url=_public_link("console#approvals"))
+    except Exception:                        # noqa: BLE001 - best-effort
+        pass
+
+
 def _announce_pending_approvals(run_id: str, requester: str) -> None:
     """Tell the workspace a run is waiting on sign-off — this is how
     approvers other than the requester learn there is work for them."""
@@ -2524,6 +2661,18 @@ def _announce_pending_approvals(run_id: str, requester: str) -> None:
             "Review it under Governance → Approval queue." % (run_id,
                                                               requester),
             "warning")
+        # email the eligible approvers so they learn there is work for them
+        try:
+            from metabridge import notify
+            notify.approval_requested(
+                eligible,
+                "%d agent action(s) from run %s" % (len(pending), run_id),
+                requester,
+                detail="Requested by %s — sign-off is needed from a "
+                       "different approver." % requester,
+                url=_public_link("console#approvals"))
+        except Exception:                    # noqa: BLE001 - best-effort
+            pass
     else:
         _notify_approvals(
             "Approvals blocked — no eligible approver",
@@ -2579,6 +2728,8 @@ async def agents_approve(request: Request):
     _notify_approvals("%s approved" % rec.get("agent_id", aid),
                       "Run %s: approved by %s." % (rec.get("run_id", ""),
                                                    approver), "success")
+    _notify_requester_of_decision(rec, "approve", approver,
+                                  str(body.get("note", "") or ""))
     return _approval_view(rec, user)
 
 
@@ -2630,6 +2781,8 @@ async def agents_reject(request: Request):
     _notify_approvals("%s rejected" % rec.get("agent_id", aid),
                       "Run %s: rejected by %s." % (rec.get("run_id", ""),
                                                    approver), "info")
+    _notify_requester_of_decision(rec, "reject", approver,
+                                  str(body.get("note", "") or ""))
     return _approval_view(rec, user)
 
 
@@ -2659,7 +2812,9 @@ def observability_report():
     alerting, composite health score, performance trends and historical
     analytics, plus the ten monitors."""
     from metabridge.observability import observe
-    return observe(str(DATA_DIR), as_of=_today())
+    rep = observe(str(DATA_DIR), as_of=_today())
+    _maybe_page_observability(rep)
+    return rep
 
 
 @app.get("/api/observability/export")
@@ -2754,6 +2909,40 @@ async def system_notifications_seen(request: Request):
     return {"marked_seen": marked}
 
 
+@app.get("/api/settings/notifications/email")
+def get_email_notifications(request: Request):
+    """Non-secret health of the outbound-email transport (owner/admin). Shows
+    provider, From identity and readiness so an operator can verify SES setup
+    without sending — the password is never returned."""
+    _require_owner(request)
+    from metabridge import notify
+    return notify.email_status()
+
+
+@app.post("/api/settings/notifications/email/test")
+async def test_email_notifications(request: Request):
+    """Send a test message to the signed-in operator's own address (never an
+    arbitrary one) and return the REAL send result, so SES/SMTP config can be
+    verified end-to-end. Owner/admin only."""
+    _require_owner(request)
+    from metabridge import notify
+    user = _request_user(request) or {}
+    to = user.get("email", "")
+    if not to:
+        raise HTTPException(422, "Sign in with an email account to send a "
+                                 "test message.")
+    st = notify.email_status()
+    if not st["ready"]:
+        raise HTTPException(422, "Outbound email isn't ready: %s"
+                            % (st["notes"][0] if st["notes"]
+                               else "configure METABRIDGE_SMTP_*"))
+    res = notify.send_test(to, actor=user.get("name") or to, sync=True)
+    if not res.get("ok"):
+        raise HTTPException(502, "Send failed: %s"
+                            % res.get("error", "unknown error"))
+    return {"ok": True, "sent_to": to, "provider": st["provider"]}
+
+
 # ---------------------------------------------------------------------------
 # Digital Twin — ONE typed graph of the whole estate, discovered from
 # uploads, saved connections, prior jobs and the estate.yml descriptor.
@@ -2837,6 +3026,34 @@ def _write_twin(doc: dict) -> None:
     os.replace(tmp, _TWIN_FILE)
 
 
+def _ensure_connection_inventories() -> None:
+    """Best-effort: before building the twin, capture an object inventory for
+    any ACTIVE connection that has none yet — so 'Build digital twin'
+    discovers a connected system's tables even if the user never clicked
+    Analyze. Live and bounded; a slow or unreachable system is skipped, never
+    fatal."""
+    try:
+        from metabridge.connections_store import (
+            get_inventory, list_connections, record_inventory,
+            resolve_params)
+        from metabridge.livecheck import introspect, live_support
+    except Exception:                        # noqa: BLE001
+        return
+    for c in list_connections():
+        try:
+            cid = c.get("id", "")
+            if (c.get("status") != "active" or not cid
+                    or get_inventory(cid)):
+                continue
+            if not live_support(c.get("connector", "")).get("introspect"):
+                continue
+            rep = introspect(c.get("connector", ""), resolve_params(cid))
+            if rep.get("ok"):
+                record_inventory(cid, rep)
+        except Exception:                    # noqa: BLE001 - per-connection
+            continue
+
+
 @app.post("/api/twin/build")
 async def twin_build(request: Request):
     """{"files": [...], "estate_yaml": "...", "include_connections":
@@ -2877,10 +3094,14 @@ async def twin_build(request: Request):
                 paths = [str(p) for p in top]  # one system per folder
             elif top:
                 paths = [str(root)]
+        include_connections = bool(body.get("include_connections", True))
+        if include_connections:
+            # auto-discover tables from any connected-but-not-yet-analyzed
+            # system so the twin is populated on first build
+            _ensure_connection_inventories()
         twin = build_twin(
             paths=paths, estate_docs=estate_docs,
-            include_connections=bool(
-                body.get("include_connections", True)),
+            include_connections=include_connections,
             jobs_dir=str(JOBS_DIR) if body.get("include_jobs", True)
             else None,
             name=str(body.get("name", "") or "estate"))
@@ -3980,6 +4201,19 @@ async def api_govern(
                             % (type(e).__name__, str(e)[:300]))
     meta = _finish_job(job_dir, project=result["project"],
                        summary=result["summary"], regions=result["regions"])
+    # A governance scan that surfaces policy VIOLATIONs is a compliance event:
+    # alert the owners/admins accountable for sign-off (best-effort).
+    try:
+        summ = result.get("summary", {}) or {}
+        violations = int(summ.get("violations", 0) or 0)
+        if violations > 0:
+            from metabridge import notify
+            notify.governance_alert(
+                _owner_admin_emails(), result.get("project", "a project"),
+                violations, int(summ.get("warnings", 0) or 0),
+                url=_public_link("console#reports"), center=_nc())
+    except Exception:                        # noqa: BLE001 - best-effort
+        pass
     return {**meta, "result": result,
             "report_url": "/api/jobs/%s/govreport" % meta["id"],
             "download_url": "/api/jobs/%s/download" % meta["id"]}
@@ -4378,10 +4612,17 @@ def v1_connection_introspect(conn_id: str):
     report = introspect(row["connector"], params)
     report.pop("password", None)
     if report.get("ok"):
-        from metabridge.connections_store import record_analysis
+        from metabridge.connections_store import (record_analysis,
+                                                  record_inventory)
         record_analysis(conn_id, {**report.get("readiness", {}),
                                   "database": report.get("database", ""),
                                   "schema": report.get("schema", "")})
+        # persist the discovered object inventory (names + row/column counts
+        # + view SQL) so the Digital Twin can build real nodes and lineage
+        try:
+            record_inventory(conn_id, report)
+        except Exception:                    # noqa: BLE001 - best-effort
+            pass
     return report
 
 

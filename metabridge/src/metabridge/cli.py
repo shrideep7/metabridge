@@ -1107,6 +1107,23 @@ def deploy(
         typer.echo("  %s" % msg)
     if result.job_id:
         typer.echo("  job: %s -> %s" % (result.job_id, result.job_state))
+    # A real (executed) deployment succeeding or failing is broadcast-worthy:
+    # email the addresses in METABRIDGE_DEPLOY_NOTIFY (comma-separated), if
+    # set and outbound email is configured. Best-effort; never blocks the CLI.
+    if execute:
+        import os as _os
+        recips = [e.strip() for e in
+                  _os.environ.get("METABRIDGE_DEPLOY_NOTIFY", "").split(",")
+                  if e.strip()]
+        if recips:
+            try:
+                from . import notify
+                if notify.email_enabled():
+                    notify.deploy_result(
+                        recips, result.package, result.ok,
+                        detail="; ".join(result.messages[:5]), sync=True)
+            except Exception:            # noqa: BLE001 - best-effort
+                pass
     raise typer.Exit(0 if result.ok else 1)
 
 
