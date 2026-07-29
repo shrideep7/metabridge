@@ -3117,6 +3117,238 @@ def system_health():
     return _os().health()
 
 
+def _iso_age_days(stamp: str) -> Optional[float]:
+    try:
+        dt = datetime.datetime.fromisoformat(stamp)
+        return (datetime.datetime.now() - dt).total_seconds() / 86400.0
+    except (ValueError, TypeError):
+        return None
+
+
+@app.get("/api/system/insights")
+def system_insights(request: Request):
+    """The System command center: ONE workspace-scoped answer to "is my
+    platform healthy, what happened recently, and what needs my attention?"
+    Everything is assembled from real state (jobs, connections, approvals,
+    notifications, engine health, provider readiness) — deterministic, no
+    fabricated metrics."""
+    now = datetime.datetime.now()
+    attention: list = []
+    components: list = []
+
+    def note(severity, title, detail, page="", sec=""):
+        item = {"severity": severity, "title": title, "detail": detail}
+        if page:
+            item["page"] = page
+        if sec:
+            item["sec"] = sec
+        attention.append(item)
+
+    # -- engines / platform services -----------------------------------------
+    try:
+        hs = (_os().health() or {}).get("summary", {}) or {}
+        n_err = int(hs.get("error", 0) or 0)
+        n_deg = int(hs.get("degraded", 0) or 0)
+        comp = {"name": "Platform engines",
+                "status": "err" if n_err else ("warn" if n_deg else "ok"),
+                "detail": "%d available" % int(hs.get("available", 0) or 0)}
+        if n_err:
+            comp["detail"] += " · %d error" % n_err
+            note("critical", "%d platform engine(s) reporting errors" % n_err,
+                 "See Platform internals below for the failing engine.",
+                 page="system")
+        elif n_deg:
+            comp["detail"] += " · %d degraded" % n_deg
+        components.append(comp)
+    except Exception:                        # noqa: BLE001
+        components.append({"name": "Platform engines", "status": "warn",
+                           "detail": "health unavailable"})
+
+    # -- connections -----------------------------------------------------------
+    conn_stats = {"total": 0, "connected": 0, "failed": 0,
+                  "needs_credential": 0, "stopped": 0, "untested": 0}
+    try:
+        from metabridge.connections_store import list_connections
+        conns = list_connections()
+        conn_stats["total"] = len(conns)
+        for c in conns:
+            st = c.get("state", "")
+            if st == "connected":
+                conn_stats["connected"] += 1
+            elif st == "failed":
+                conn_stats["failed"] += 1
+                note("critical", "Connection failing: %s" % c.get("name", ""),
+                     (c.get("last_test") or {}).get("error")
+                     or "The last connection test did not pass.",
+                     page="marketplace")
+            elif st == "needs_credential":
+                conn_stats["needs_credential"] += 1
+                note("warning",
+                     "Credential needed: %s" % c.get("name", ""),
+                     "Add a password (or set the MB_%s_PASSWORD env var) to "
+                     "connect." % str(c.get("connector", "")).upper(),
+                     page="marketplace")
+            elif st == "stopped":
+                conn_stats["stopped"] += 1
+            else:
+                conn_stats["untested"] += 1
+        detail = "%d of %d connected" % (conn_stats["connected"],
+                                         conn_stats["total"]) \
+            if conn_stats["total"] else "none configured"
+        components.append({
+            "name": "Connections",
+            "status": "err" if conn_stats["failed"] else
+                      ("warn" if conn_stats["needs_credential"] else "ok"),
+            "detail": detail})
+    except Exception:                        # noqa: BLE001
+        pass
+
+    # -- jobs: activity + 7/30-day usage ---------------------------------------
+    jobs = []
+    for meta_file in _jobs_dir().glob("*/meta.json"):
+        try:
+            jobs.append(json.loads(meta_file.read_text()))
+        except Exception:                    # noqa: BLE001
+            continue
+    jobs.sort(key=lambda j: j.get("created", ""), reverse=True)
+    activity = []
+    for j in jobs[:12]:
+        entry = {"id": j.get("id", ""), "kind": j.get("kind", ""),
+                 "status": j.get("status", ""),
+                 "created": j.get("created", "")}
+        try:
+            a = datetime.datetime.fromisoformat(j["created"])
+            b = datetime.datetime.fromisoformat(j["finished"])
+            entry["seconds"] = max(0, int((b - a).total_seconds()))
+        except (KeyError, ValueError, TypeError):
+            pass
+        activity.append(entry)
+    j7 = [j for j in jobs
+          if (_iso_age_days(j.get("created", "")) or 999) <= 7]
+    j30 = [j for j in jobs
+           if (_iso_age_days(j.get("created", "")) or 999) <= 30]
+    done7 = sum(1 for j in j7 if j.get("status") == "done")
+    fail7 = sum(1 for j in j7 if j.get("status") == "failed")
+    by_kind7: dict = {}
+    for j in j7:
+        k = j.get("kind", "other")
+        by_kind7[k] = by_kind7.get(k, 0) + 1
+    if fail7:
+        note("warning", "%d job(s) failed in the last 7 days" % fail7,
+             "Open the job history to see what failed and re-run.",
+             page="reports")
+    finished7 = done7 + fail7
+    components.append({
+        "name": "Jobs (7 days)",
+        "status": "warn" if fail7 > done7 else "ok",
+        "detail": ("%d run · %d%% success" % (len(j7),
+                   int(round(100.0 * done7 / finished7))
+                   if finished7 else 100)) if j7 else "no runs"})
+
+    # -- approvals --------------------------------------------------------------
+    pending_approvals = 0
+    try:
+        pending = _agents_queue().pending()
+        pending_approvals = len(pending)
+        if pending_approvals:
+            note("warning",
+                 "%d agent action(s) awaiting approval" % pending_approvals,
+                 "Governed actions stay blocked until someone signs off.",
+                 page="governance")
+    except Exception:                        # noqa: BLE001
+        pass
+
+    # -- notifications (unseen criticals surface here) ---------------------------
+    unseen = 0
+    try:
+        nc = _os().notifications
+        counts = nc.counts() or {}
+        unseen = int(counts.get("unseen", 0) or 0)
+        crit = [n for n in nc.recent(limit=50, unseen_only=True)
+                if n.get("severity") == "critical"]
+        for n in crit[:3]:
+            note("critical", n.get("title", "Critical alert"),
+                 n.get("body", ""), page="system")
+    except Exception:                        # noqa: BLE001
+        pass
+
+    # -- AI provider + outbound email (capability readiness) --------------------
+    try:
+        from metabridge.llm.assist import llm_available
+        ai_ok = bool(llm_available())
+        components.append({"name": "AI runtime",
+                           "status": "ok" if ai_ok else "warn",
+                           "detail": "configured" if ai_ok
+                           else "not configured"})
+        if not ai_ok:
+            note("info", "AI runtime not configured",
+                 "Auto Fix, expression translation and Ask MetaBridge AI are "
+                 "disabled until a provider is set.",
+                 page="settings", sec="ai")
+    except Exception:                        # noqa: BLE001
+        pass
+    try:
+        from metabridge import notify as _notify
+        st = _notify.email_status()
+        components.append({"name": "Email notifications",
+                           "status": "ok" if st.get("ready") else "warn",
+                           "detail": st.get("provider", "none")
+                           if st.get("ready") else "not configured"})
+        if not st.get("ready"):
+            note("info", "Outbound email not configured",
+                 "Invites, approvals and alerts stay in-app only until SMTP/"
+                 "SES is set.", page="settings", sec="notifications")
+    except Exception:                        # noqa: BLE001
+        pass
+
+    # -- estate snapshot (digital twin, if built) --------------------------------
+    estate = {"built": False, "systems": 0, "tables": 0, "rows": 0}
+    try:
+        tf = _twin_file()
+        if tf.exists():
+            doc = json.loads(tf.read_text())
+            counts = doc.get("counts", {}) or {}
+            estate["built"] = True
+            estate["systems"] = int(counts.get("warehouse", 0) or 0) + \
+                int(counts.get("database", 0) or 0)
+            estate["tables"] = int(counts.get("table", 0) or 0)
+            estate["rows"] = sum(
+                int((n.get("metadata") or {}).get("rows", 0) or 0)
+                for n in doc.get("nodes", []) if n.get("kind") == "table")
+    except Exception:                        # noqa: BLE001
+        pass
+
+    # -- workspace context --------------------------------------------------------
+    user = _request_user(request) or {}
+    wsid = user.get("workspace", "") or _active_ws_id_ctx()
+    ws = WS.get(wsid) or {}
+    members = len(WS.members(wsid)) if wsid else 0
+
+    sev_rank = {"critical": 0, "warning": 1, "info": 2}
+    attention.sort(key=lambda a: sev_rank.get(a["severity"], 9))
+    verdict = "DEGRADED" if any(a["severity"] == "critical"
+                                for a in attention) else \
+        ("ATTENTION" if any(a["severity"] == "warning"
+                            for a in attention) else "HEALTHY")
+    return {
+        "as_of": now.isoformat(timespec="seconds"),
+        "workspace": {"id": wsid, "name": ws.get("name", ""),
+                      "members": members},
+        "health": {"verdict": verdict, "components": components},
+        "attention": attention[:12],
+        "activity": activity,
+        "usage": {"jobs_7d": len(j7), "jobs_30d": len(j30),
+                  "success_rate_7d_pct":
+                      int(round(100.0 * done7 / finished7))
+                      if finished7 else None,
+                  "by_kind_7d": by_kind7,
+                  "connections": conn_stats,
+                  "estate": estate,
+                  "approvals_pending": pending_approvals,
+                  "notifications_unseen": unseen},
+    }
+
+
 @app.get("/api/system/commercial")
 def system_commercial_status():
     """Product-side view of whether Commercial Admin is enabled and reachable —
