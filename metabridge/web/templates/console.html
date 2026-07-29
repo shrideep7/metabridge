@@ -89,6 +89,7 @@
             gap:16px; padding:0 24px; position:sticky; top:0; z-index:30; }
   .topbar .crumb { font-size:13px; color:var(--muted); white-space:nowrap; }
   .topbar .crumb b { color:var(--ink); font-weight:600; }
+  #wsBtn:hover { background:var(--header-bg); border-color:#B7C2CF; }
   .topbar .gsearch { position:relative; margin-left:auto; }
   .topbar .gsearch input { width:340px; height:32px; padding:0 10px; border:1px solid var(--border);
             border-radius:var(--radius-sm); font-family:inherit; font-size:13px; background:var(--bg); color:var(--ink); }
@@ -457,7 +458,6 @@
   <div class="group lbl-g">PLATFORM</div>
   <a data-page="system" title="System"><svg fill="none" stroke-width="1.8"><use href="#i-overview"/></svg><span class="lbl">System</span></a>
   <a data-page="marketplace" title="Integrations"><svg fill="none" stroke-width="1.8"><use href="#i-blocks"/></svg><span class="lbl">Integrations</span></a>
-  <a href="/docs" target="_blank" title="API & Developers"><svg fill="none" stroke-width="1.8"><use href="#i-code"/></svg><span class="lbl">API &amp; Developers</span></a>
   <a id="navCommercial" href="/commercial/" target="_blank" title="Commercial Admin (staff)" style="display:none"><svg fill="none" stroke-width="1.8"><use href="#i-blocks"/></svg><span class="lbl">Commercial Admin</span></a>
   <a data-page="settings" title="Settings"><svg fill="none" stroke-width="1.8"><use href="#i-settings"/></svg><span class="lbl">Settings</span></a>
   <button class="collapse-btn" id="navCollapse" aria-label="Collapse sidebar">&#171; <span class="lbl">Collapse</span></button>
@@ -479,6 +479,15 @@
 <div class="workarea">
 <div class="topbar">
   <span class="crumb" id="crumb">Workspace / <b>Overview</b></span>
+  <div id="wsSwitch" style="position:relative;margin-left:14px;display:none">
+    <button id="wsBtn" aria-haspopup="menu" aria-expanded="false" title="Switch workspace"
+            style="display:flex;align-items:center;gap:7px;background:#fff;border:1px solid var(--border);border-radius:var(--radius-sm);padding:6px 11px;font-size:13px;font-weight:600;color:var(--ink2);cursor:pointer;max-width:230px">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg>
+      <span id="wsBtnName" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">Workspace</span>
+      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>
+    </button>
+    <div class="menu" id="wsMenu" role="menu" style="top:46px;left:0;min-width:250px;display:none"></div>
+  </div>
   <div class="gsearch">
     <input id="gSearch" type="search" name="mb-global-search" placeholder="Search assets, pipelines, migrations...  (&#8984;K)"
            aria-label="Global search" autocomplete="off" autocorrect="off"
@@ -963,23 +972,29 @@
   </div>
 </div>
 
-<!-- ======================= SYSTEM (OS) ======================= -->
+<!-- ======================= SYSTEM (command center) ======================= -->
 <div class="page" id="page-system">
   <div style="display:flex;align-items:flex-start;gap:16px;flex-wrap:wrap">
     <div style="flex:1;min-width:300px"><h1 id="osName">System</h1>
-    <div class="sub" id="osTagline">The MetaBridge operating system — modular engines and platform services over shared canonical models.</div></div>
+    <div class="sub" id="osTagline">Your workspace at a glance — platform health, what needs attention, and recent activity. Platform internals live at the bottom.</div></div>
     <button class="secondary" id="sysRefresh" style="margin-top:0">Refresh</button>
   </div>
   <div class="err" id="sysErr"></div>
-  <div class="mkt-metrics" id="sysMetrics" style="margin:10px 0 14px"></div>
 
-  <div class="sec-head"><h3>Core engines</h3><span class="cnt" id="sysEngCount"></span></div>
-  <div id="sysEngines"></div>
+  <!-- health banner: one verdict + per-component readiness chips -->
+  <div id="sysHealthBanner" class="panel" style="display:flex;align-items:center;gap:14px;flex-wrap:wrap;padding:14px 18px;margin:10px 0 14px">
+    <div id="sysVerdict" style="display:flex;align-items:center;gap:10px;font-weight:700;font-size:15px">—</div>
+    <div id="sysComponents" style="display:flex;gap:8px;flex-wrap:wrap;margin-left:auto"></div>
+  </div>
 
-  <div style="display:flex;gap:16px;flex-wrap:wrap;margin-top:8px">
-    <div class="panel" style="flex:1;min-width:320px">
-      <h3 style="margin-bottom:8px">Common platform services</h3>
-      <div id="sysServices"></div>
+  <!-- usage insight cards -->
+  <div class="mkt-metrics" id="sysMetrics" style="margin:0 0 14px"></div>
+
+  <div style="display:flex;gap:16px;flex-wrap:wrap;align-items:flex-start">
+    <div class="panel" style="flex:1.2;min-width:340px">
+      <h3 style="margin-bottom:4px">Needs attention</h3>
+      <div style="color:#889;font-size:12px;margin-bottom:8px">Actionable items assembled from live workspace state — fix them from here.</div>
+      <div id="sysAttention"></div>
     </div>
     <div class="panel" style="flex:1;min-width:320px">
       <h3 style="margin-bottom:8px">Shared canonical models</h3>
@@ -1665,6 +1680,55 @@ function renderAvatar(el, user) {
     el.textContent = getUserInitials(getUserDisplayName(user));
   }
 }
+let gWorkspaces = [], gActiveWs = '';
+function renderWorkspaceSwitcher(d) {
+  const sw = $('#wsSwitch'); if (!sw) return;
+  gWorkspaces = d.workspaces || [];
+  gActiveWs = d.active_workspace || '';
+  if (!gWorkspaces.length) { sw.style.display = 'none'; return; }
+  sw.style.display = '';
+  const active = gWorkspaces.find(w => w.id === gActiveWs) || gWorkspaces[0];
+  $('#wsBtnName').textContent = active ? active.name : 'Workspace';
+  let html = '<div style="padding:8px 12px 4px;font-size:11px;letter-spacing:.5px;color:#8a94a6;font-weight:700">WORKSPACES</div>'
+    + gWorkspaces.map(w =>
+      '<button role="menuitem" data-ws="' + esc(w.id) + '" style="display:flex;justify-content:space-between;gap:10px;width:100%;text-align:left">'
+      + '<span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(w.name)
+      + '<span style="color:#8a94a6;font-weight:400"> · ' + esc(w.role) + '</span></span>'
+      + (w.id === gActiveWs ? '<span style="color:var(--accent)">✓</span>' : '') + '</button>').join('');
+  if (d.can_create_workspace)
+    html += '<div style="border-top:1px solid #eceef3;margin-top:4px"></div>'
+      + '<button role="menuitem" id="wsCreate" style="width:100%;text-align:left;color:var(--accent);font-weight:600">+ New workspace</button>';
+  $('#wsMenu').innerHTML = html;
+  $('#wsMenu').querySelectorAll('button[data-ws]').forEach(b => b.onclick = async () => {
+    if (b.dataset.ws === gActiveWs) { $('#wsMenu').style.display = 'none'; return; }
+    try { await api('/api/workspaces/switch', {method: 'POST', body: JSON.stringify({workspace: b.dataset.ws})});
+          window.location.reload(); }
+    catch (e) { alert((e && e.message) || 'Could not switch workspace'); }
+  });
+  const cr = $('#wsCreate');
+  if (cr) cr.onclick = async () => {
+    const name = (prompt('Name your new workspace:') || '').trim();
+    if (!name) return;
+    try {
+      const w = await api('/api/workspaces', {method: 'POST', body: JSON.stringify({name})});
+      await api('/api/workspaces/switch', {method: 'POST', body: JSON.stringify({workspace: w.id})});
+      window.location.reload();
+    } catch (e) { alert((e && e.message) || 'Could not create workspace'); }
+  };
+  $('#wsBtn').onclick = (ev) => {
+    ev.stopPropagation();
+    const m = $('#wsMenu');
+    m.style.display = m.style.display === 'block' ? 'none' : 'block';
+    $('#wsBtn').setAttribute('aria-expanded', m.style.display === 'block');
+  };
+  if (!window._wsMenuBound) {
+    window._wsMenuBound = true;
+    document.addEventListener('click', ev => {
+      if (ev.target.closest('#wsSwitch')) return;
+      const m = $('#wsMenu'); if (m) m.style.display = 'none';
+    });
+  }
+}
 async function loadUser() {
   try {
     const d = await api('/api/v1/me');
@@ -1693,6 +1757,7 @@ async function loadUser() {
       $('#avRemove').style.display = hasPhoto ? '' : 'none';
       $('#avUploadLbl').textContent = hasPhoto ? 'Change photo' : 'Upload photo';
       $('#logoutBtn').onclick = async () => { await fetch('/auth/logout', {method:'POST'}); window.location.href = '/'; };
+      renderWorkspaceSwitcher(d);
     } else {
       $('#userName').textContent = 'Local workspace';
       $('#userRole').textContent = 'open mode';
@@ -3341,9 +3406,13 @@ async function fillModConnList() {
         + '<div style="font-size:11.5px;color:var(--muted);margin-top:2px">Analyzes the connected system and opens Pipeline Studio with its manifest.</div>'
       : 'No connectable systems yet — connect one that supports live introspection under Integrations.';
     $('#modConnList').querySelectorAll('[data-cid]').forEach(b => b.onclick = async () => {
+      const label = b.textContent;
       b.disabled = true; b.textContent = 'Analyzing…';
       try {
-        const d = await api('/api/v1/connections/' + b.dataset.cid + '/introspect', {method:'POST'});
+        // timeoutMs guarantees the click SETTLES even when the target system
+        // is unreachable (e.g. a security group silently dropping packets) —
+        // without it the button hung on "Analyzing…" indefinitely
+        const d = await api('/api/v1/connections/' + b.dataset.cid + '/introspect', {method:'POST', timeoutMs: 90000});
         if (!d.ok) throw new Error(d.error || 'analysis failed');
         const row = allConnections.find(x => x.id === b.dataset.cid);
         chosen.scafFile = new File([d.manifest_yaml], row.connector + '_manifest.yml', {type:'text/yaml'});
@@ -5533,17 +5602,94 @@ const SYS_HEALTH_COLOR = {available: 'var(--green)', external: '#2d6cdf',
   degraded: 'var(--amber)', error: 'var(--red)'};
 function sysHc(s) { return SYS_HEALTH_COLOR[s] || 'var(--ink3)'; }
 
+const SYS_KIND_LABELS = {convert: 'Modernization', analyze: 'Analysis', govern: 'Governance scan',
+  scaffold: 'Pipeline scaffold', twin: 'Digital twin build', assessment: 'Assessment',
+  ai_readiness: 'AI readiness', debt: 'Tech-debt scan', finops: 'FinOps', security: 'Security scan',
+  docs: 'Documentation', events: 'Event estate', sap: 'SAP analysis', orchestration: 'Orchestration',
+  agents: 'Agent run'};
+const SYS_VERDICTS = {
+  HEALTHY:   {c: '#1e8449', bg: '#eaf6ef', label: 'All systems healthy', icon: '●'},
+  ATTENTION: {c: '#c77d0a', bg: '#fdf6e9', label: 'Needs attention', icon: '●'},
+  DEGRADED:  {c: '#c0392b', bg: '#fdeeec', label: 'Action required', icon: '●'}};
+
+function sysNavigate(page, sec) {
+  const a = document.querySelector('nav a[data-page="' + page + '"]');
+  if (a) a.click();
+  if (sec) showSettings(sec, true);
+}
+
 async function loadSystem() {
   if (!$('#sysEngines')) return;
   const err = $('#sysErr'); err.style.display = 'none';
+
+  // 1) the command center — workspace health, attention, activity, usage
+  let ins = null;
+  try { ins = await api('/api/system/insights'); }
+  catch (e) { err.style.display = 'block'; err.textContent = e.message; }
+  if (ins) {
+    const wsName = (ins.workspace || {}).name;
+    $('#osName').textContent = 'System' + (wsName ? ' · ' + wsName : '');
+    const v = SYS_VERDICTS[(ins.health || {}).verdict] || SYS_VERDICTS.HEALTHY;
+    const banner = $('#sysHealthBanner');
+    banner.style.background = v.bg;
+    banner.style.border = '1px solid ' + v.c + '33';
+    $('#sysVerdict').innerHTML = '<span style="color:' + v.c + ';font-size:17px">' + v.icon + '</span>'
+      + '<span style="color:' + v.c + '">' + v.label + '</span>'
+      + '<span style="color:#68738a;font-weight:400;font-size:12px;margin-left:6px">as of ' + esc((ins.as_of || '').replace('T', ' ')) + '</span>';
+    $('#sysComponents').innerHTML = ((ins.health || {}).components || []).map(c => {
+      const col = c.status === 'err' ? '#c0392b' : c.status === 'warn' ? '#c77d0a' : '#1e8449';
+      return '<span style="display:inline-flex;align-items:center;gap:6px;background:#fff;border:1px solid #e2e6ee;border-radius:20px;padding:4px 12px;font-size:12px">'
+        + '<span style="width:8px;height:8px;border-radius:50%;background:' + col + '"></span>'
+        + '<b>' + esc(c.name) + '</b><span style="color:#68738a">' + esc(c.detail) + '</span></span>';
+    }).join('');
+
+    const u = ins.usage || {}, cs = u.connections || {}, es = u.estate || {};
+    $('#sysMetrics').innerHTML =
+      '<span><b>' + (u.jobs_7d || 0) + '</b> Jobs this week'
+      + (u.success_rate_7d_pct != null ? ' · <span style="color:' + (u.success_rate_7d_pct >= 90 ? '#1e8449' : '#c77d0a') + '">' + u.success_rate_7d_pct + '% success</span>' : '') + '</span>'
+      + '<span><b>' + (cs.connected || 0) + '/' + (cs.total || 0) + '</b> Connections healthy</span>'
+      + '<span><b>' + (es.built ? Number(es.tables || 0).toLocaleString() : '--') + '</b> Tables in estate'
+      + (es.built && es.rows ? ' · ' + Number(es.rows).toLocaleString() + ' rows' : (es.built ? '' : ' · build the Digital Twin')) + '</span>'
+      + '<span><b>' + (u.approvals_pending || 0) + '</b> Approvals pending</span>'
+      + '<span><b>' + ((ins.workspace || {}).members || 0) + '</b> Workspace members</span>';
+
+    const att = ins.attention || [];
+    $('#sysAttention').innerHTML = att.length ? att.map(a => {
+      const col = a.severity === 'critical' ? '#c0392b' : a.severity === 'warning' ? '#c77d0a' : '#68738a';
+      return '<div style="display:flex;gap:10px;align-items:flex-start;padding:9px 0;border-bottom:1px solid #f0f2f6">'
+        + '<span style="width:8px;height:8px;border-radius:50%;background:' + col + ';margin-top:5px;flex:none"></span>'
+        + '<div style="flex:1;min-width:0"><div style="font-weight:600;font-size:13px">' + esc(a.title) + '</div>'
+        + '<div style="font-size:12px;color:#68738a">' + esc(a.detail || '') + '</div></div>'
+        + (a.page ? '<button class="secondary sys-att-go" data-page="' + esc(a.page) + '" data-sec="' + esc(a.sec || '') + '" style="margin:0;padding:4px 12px;font-size:12px;flex:none">Open</button>' : '')
+        + '</div>';
+    }).join('')
+      : '<div style="display:flex;align-items:center;gap:10px;padding:14px 0;color:#1e8449;font-weight:600;font-size:13.5px">✓ All clear — nothing needs your attention.</div>';
+    $('#sysAttention').querySelectorAll('.sys-att-go').forEach(b =>
+      b.onclick = () => sysNavigate(b.dataset.page, b.dataset.sec));
+
+    const acts = ins.activity || [];
+    $('#sysActivity').innerHTML = acts.length ? acts.map(j => {
+      const col = j.status === 'done' ? '#1e8449' : j.status === 'failed' ? '#c0392b' : '#c77d0a';
+      const dur = (j.seconds != null) ? (j.seconds < 60 ? j.seconds + 's' : Math.round(j.seconds / 60) + 'm') : '';
+      return '<div class="sys-act-row" data-id="' + esc(j.id) + '" style="display:flex;gap:10px;align-items:center;padding:7px 0;border-bottom:1px solid #f0f2f6;cursor:pointer">'
+        + '<span style="width:8px;height:8px;border-radius:50%;background:' + col + ';flex:none"></span>'
+        + '<span style="font-weight:600;font-size:12.5px;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(SYS_KIND_LABELS[j.kind] || j.kind) + '</span>'
+        + '<span style="font-size:11.5px;color:' + col + '">' + esc(j.status) + '</span>'
+        + (dur ? '<span style="font-size:11.5px;color:#98a0ad">' + dur + '</span>' : '')
+        + '<span style="font-size:11.5px;color:#98a0ad;flex:none">' + esc(fmtAgo(j.created)) + '</span></div>';
+    }).join('')
+      : '<div style="color:#889;font-size:13px;padding:10px 0">No runs yet in this workspace — start in Modernize, Pipeline Studio or Governance.</div>';
+    $('#sysActivity').querySelectorAll('.sys-act-row').forEach(r =>
+      r.onclick = () => openJobDetail(r.dataset.id).catch(e => alert(e.message)));
+  }
+
+  // 2) platform internals (the OS manifest) — collapsed by default
   let d;
   try { d = await api('/api/system'); }
   catch (e) { err.style.display = 'block'; err.textContent = e.message; return; }
   const os = d.os || {};
-  $('#osName').textContent = os.name || 'System';
-  $('#osTagline').textContent = os.tagline || '';
   const hs = (d.health || {}).summary || {};
-  $('#sysMetrics').innerHTML =
+  $('#sysOsMetrics').innerHTML =
     '<span><b>' + (os.engine_count || 0) + '</b> Engines</span>'
     + '<span><b>' + (os.service_count || 0) + '</b> Platform services</span>'
     + '<span><b>' + (os.canonical_model_count || 0) + '</b> Canonical models</span>'

@@ -272,14 +272,36 @@ class AuthStore:
             else salt.encode(), _PBKDF2_ITERATIONS).hex()
 
     # -- sessions -----------------------------------------------------------
-    def create_session(self, email: str) -> str:
+    def create_session(self, email: str, workspace: str = "") -> str:
         with self._locked():
             sessions = self._prune(self._load(self.sessions_file))
             token = secrets.token_urlsafe(32)
             sessions[token] = {"email": email,
+                               "workspace": workspace,
                                "expires": time.time() + SESSION_TTL_SECONDS}
             self._save(self.sessions_file, sessions)
             return token
+
+    def session_workspace(self, token: str) -> str:
+        """The active workspace id stored on a live session (or "")."""
+        if not token:
+            return ""
+        s = self._load(self.sessions_file).get(token)
+        if not s or s["expires"] < time.time():
+            return ""
+        return s.get("workspace", "") or ""
+
+    def set_session_workspace(self, token: str, workspace: str) -> bool:
+        """Switch the active workspace on a live session. Returns False for
+        an unknown/expired token."""
+        with self._locked():
+            sessions = self._load(self.sessions_file)
+            s = sessions.get(token)
+            if not s or s.get("expires", 0) < time.time():
+                return False
+            s["workspace"] = workspace
+            self._save(self.sessions_file, sessions)
+            return True
 
     def session_user(self, token: str) -> Optional[dict]:
         if not token:
