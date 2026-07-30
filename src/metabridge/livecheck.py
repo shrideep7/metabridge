@@ -322,6 +322,22 @@ def _databricks_introspect(params: Dict[str, str],
             if key_ in tables:
                 tables[key_]["columns"].append(
                     {"name": str(r[2]), "type": r[3]})
+        # Row-count estimates from catalog statistics — best-effort.
+        # information_schema.table_statistics is populated after ANALYZE or
+        # whenever Databricks auto-collects stats. We fall back silently if
+        # the view isn't available or the table has never been analyzed.
+        try:
+            cur.execute(
+                "SELECT table_schema, table_name, row_count "
+                "FROM information_schema.table_statistics "
+                "WHERE table_schema = COALESCE(?, table_schema)",
+                [schema or None])
+            for r in cur.fetchall():
+                key_ = (r[0], r[1])
+                if key_ in tables and r[2] is not None:
+                    tables[key_]["rows"] = max(0, int(r[2]))
+        except Exception:  # noqa: BLE001 — stats are optional, never crash
+            pass
         views = []
         cur.execute(
             "SELECT table_schema, table_name, view_definition "
