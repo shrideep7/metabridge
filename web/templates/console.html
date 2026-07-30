@@ -1408,7 +1408,15 @@
         <div><label>Source system</label><select name="source" id="scafSource"></select></div>
         <div><label>Target platform</label><select name="target" id="scafTarget"></select></div>
       </div>
-      <div class="row">
+      <label style="display:inline-flex;align-items:center;gap:8px;margin:4px 0 2px;font-size:13.5px;cursor:pointer">
+        <input type="checkbox" id="scafGovern" checked style="width:auto;margin:0">
+        <span>Also generate a <b>governance report</b> (data classification &amp; residency)</span>
+      </label>
+      <div style="font-size:12px;color:var(--muted);margin:0 0 10px 24px">
+        Uncheck to generate pipelines only. Regions are needed for the residency
+        check, so they are asked for only when this is on.
+      </div>
+      <div class="row" id="scafRegionRow">
         <div><label>Source region</label><select name="source_region"><option value="on_prem">On-premises</option><option value="eu">EU</option><option value="us">US</option></select></div>
         <div><label>Target region</label><select name="target_region"><option value="eu">EU</option><option value="us">US</option><option value="apac">APAC</option></select></div>
       </div>
@@ -5373,12 +5381,25 @@ $('#orchGenerate').onclick = async () => {
   }
 };
 
+// The governance report is OPT-OUT. Source/target region only feed its
+// residency check, so the region row is shown only while it is enabled —
+// asking for regions you don't need is friction, not governance.
+function syncScafGovern() {
+  const on = $('#scafGovern').checked;
+  $('#scafRegionRow').style.display = on ? '' : 'none';
+}
+$('#scafGovern').onchange = syncScafGovern;
+syncScafGovern();
+
 $('#scafForm').onsubmit = async ev => {
   ev.preventDefault();
   const err = $('#scafErr'); err.style.display = 'none'; $('#scafResult').style.display = 'none';
   $('#scafBanner').style.display = 'none';
   if (!chosen.scafFile) { err.textContent = 'Choose a tables .yml first.'; err.style.display = 'block'; return; }
   const fd = new FormData(ev.target); fd.set('tables', chosen.scafFile);
+  const govOn = $('#scafGovern').checked;
+  fd.set('governance', govOn ? 'true' : 'false');
+  if (!govOn) { fd.delete('source_region'); fd.delete('target_region'); }
   // if a saved connection exists for the chosen source/target connector,
   // pass its id so generated dbt/IDMC/PowerCenter connection artifacts carry
   // that system's real connection settings (secrets stay as env-var refs)
@@ -5400,13 +5421,22 @@ $('#scafForm').onsubmit = async ev => {
       + '</div><div style="font-size:13px"><strong>Generated:</strong> '
       + (d.artifacts || []).map(esc).join(' · ') + '</div>'
       + ((d.manifest_notes && d.manifest_notes.length) ? '<div style="font-size:13px;color:var(--ink3)">' + d.manifest_notes.map(esc).join('; ') + '</div>' : '')
+      + (d.governance_enabled === false ? '<div style="font-size:13px;color:var(--ink3)">Governance report skipped — pipelines only.</div>' : '')
       + '<div style="font-size:13px;color:var(--ink3)">Also listed under Dashboard &rarr; recent jobs. Use the links below to open the reports or download everything.</div>';
     banner.style.display = 'block';
+    // with governance opted out there are no classification/violation numbers
+    // to show — report that honestly instead of printing a misleading 0
     $('#scafCards').innerHTML = card(d.summary.objects_total,'Scaffolded models')
       + card((d.artifacts || []).filter(a => /\/\s*\(/.test(a)).length || '3','Stacks emitted','var(--accent)')
-      + card(d.governance ? d.governance.classified_columns : 0,'Classified columns')
-      + card(d.governance ? d.governance.violations : 0,'Violations', d.governance && d.governance.violations ? 'var(--red)' : 'var(--green)');
-    $('#scafReport').href = withKey(d.report_url); $('#scafGov').href = withKey(d.gov_report_url);
+      + (d.governance
+        ? card(d.governance.classified_columns,'Classified columns')
+          + card(d.governance.violations,'Violations', d.governance.violations ? 'var(--red)' : 'var(--green)')
+        : card('--','Classified columns','var(--muted)')
+          + card('--','Violations','var(--muted)'));
+    $('#scafReport').href = withKey(d.report_url);
+    const govLink = $('#scafGov');
+    if (d.gov_report_url) { govLink.href = withKey(d.gov_report_url); govLink.style.display = ''; }
+    else { govLink.removeAttribute('href'); govLink.style.display = 'none'; }
     $('#scafDownload').href = withKey(d.download_url);
     $('#scafResult').style.display = 'block'; loadDashboard();
   } catch (e) { err.textContent = e.message; err.style.display = 'block'; }

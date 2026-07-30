@@ -4779,7 +4779,14 @@ async def api_scaffold(
     target_region: str = Form(""),
     source_conn: str = Form(""),
     target_conn: str = Form(""),
+    governance: bool = Form(True),
 ):
+    """Scaffold the target stacks from a table manifest.
+
+    ``governance`` is opt-out (default on). With it off the residency/
+    classification scan is skipped, no governance report is written, and no
+    gov_report_url is returned — the regions only feed that scan, so the
+    console hides them too."""
     from metabridge.scaffold import scaffold as run_scaffold
     job_dir = _new_job("scaffold")
     manifest = job_dir / "input" / "tables.yml"
@@ -4792,7 +4799,8 @@ async def api_scaffold(
                               target_params=_scaffold_conn_params(target_conn,
                                                                   target),
                               source_region=source_region,
-                              target_region=target_region)
+                              target_region=target_region,
+                              governance=governance)
     except (ValueError, FileNotFoundError) as e:
         _finish_job(job_dir, status="failed", error=str(e))
         raise HTTPException(422, str(e))
@@ -4812,13 +4820,17 @@ async def api_scaffold(
             artifacts.append("%s/ (%d files)" % (child.name, n))
         else:
             artifacts.append(child.name)
-    return {**meta,
-            "pipelines": [mm["name"] for mm in report.get("mappings", [])],
-            "artifacts": artifacts,
-            "manifest_notes": report.get("manifest_notes", []),
-            "report_url": "/api/jobs/%s/report" % meta["id"],
-            "gov_report_url": "/api/jobs/%s/govreport" % meta["id"],
-            "download_url": "/api/jobs/%s/download" % meta["id"]}
+    out = {**meta,
+           "pipelines": [mm["name"] for mm in report.get("mappings", [])],
+           "artifacts": artifacts,
+           "manifest_notes": report.get("manifest_notes", []),
+           "governance_enabled": bool(governance),
+           "report_url": "/api/jobs/%s/report" % meta["id"],
+           "download_url": "/api/jobs/%s/download" % meta["id"]}
+    # only advertise the governance report when one was actually written
+    if governance:
+        out["gov_report_url"] = "/api/jobs/%s/govreport" % meta["id"]
+    return out
 
 
 # ---------------------------------------------------------------------------

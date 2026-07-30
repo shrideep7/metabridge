@@ -277,7 +277,14 @@ def load_table_manifest(tables_file: str):
 def scaffold(source_key: str, target_key: str, tables_file: str, out_dir: str,
              project: str = "", source_params: Optional[Dict[str, str]] = None,
              target_params: Optional[Dict[str, str]] = None,
-             source_region: str = "", target_region: str = "") -> dict:
+             source_region: str = "", target_region: str = "",
+             governance: bool = True) -> dict:
+    """Generate the target stacks from a table manifest.
+
+    ``governance`` is opt-out: with it False the residency/classification scan
+    is skipped entirely — no governance report is written and the returned
+    report carries no ``governance`` key. The source/target REGIONS only feed
+    that scan, so they are irrelevant when it is off."""
     reg = get_registry()
     source = reg.get(source_key)
     target = reg.get(target_key)
@@ -338,11 +345,12 @@ def scaffold(source_key: str, target_key: str, tables_file: str, out_dir: str,
     report = write_report(pipeline, "scaffold (dbt + idmc + powercenter)", str(out))
     if manifest_notes:
         report["manifest_notes"] = manifest_notes
-    from .governance.engine import govern, write_governance_report
-    gov = govern(pipeline, source_region=source_region,
-                 target_region=target_region or _default_region(target))
-    write_governance_report(gov, str(out))
-    report["governance"] = gov["summary"]
+    if governance:
+        from .governance.engine import govern, write_governance_report
+        gov = govern(pipeline, source_region=source_region,
+                     target_region=target_region or _default_region(target))
+        write_governance_report(gov, str(out))
+        report["governance"] = gov["summary"]
     return report
 
 
