@@ -149,9 +149,9 @@
            font-weight:500; height:32px; padding:0 14px; border-radius:var(--radius-sm); cursor:pointer; margin-top:16px; }
   button:hover { background:var(--accent-hover); border-color:var(--accent-hover); }
   button.secondary { background:#fff; color:var(--ink2); border-color:#C7D0DA; }
-  button.secondary:hover { background:var(--header-bg); border-color:#9FACBB; }
-  button:focus-visible { outline:none; box-shadow:var(--ring); }
-  button:disabled { background:#9FACBB; border-color:#9FACBB; cursor:wait; }
+  button:disabled { opacity:0.55; cursor:not-allowed; }
+  button.secondary:disabled { background:#fff; color:#8a94a6; border-color:#dfe3ea; opacity:0.5; cursor:not-allowed; }
+  button.secondary:disabled:hover { background:#fff; border-color:#dfe3ea; cursor:not-allowed; }
   .cards { display:flex; gap:12px; flex-wrap:wrap; margin:6px 0 16px; }
   .card { background:#fff; border:1px solid var(--border); border-radius:var(--radius); padding:14px 16px; min-width:150px; box-shadow:var(--shadow); }
   .card .n { font-size:22px; font-weight:600; font-family:var(--mono); letter-spacing:-.02em; }
@@ -3304,13 +3304,10 @@ function renderPage(id, allRows, headerHtml, emptyHtml, noun, onRender, pageSize
   if (onRender) onRender();
 }
 function bindPager(id, rerender) {
-  // re-binds against whatever DOM nodes exist right now — safe even when a
-  // table's container is rebuilt from scratch on every load (e.g. members),
-  // since onclick assignment always replaces rather than stacking handlers
   const st = pagerState(id);
   const prev = $('#' + id + 'Prev'), next = $('#' + id + 'Next');
-  if (prev) prev.onclick = () => { st.page--; rerender(); };
-  if (next) next.onclick = () => { st.page++; rerender(); };
+  if (prev) prev.onclick = () => { st.page--; rerender(); document.querySelector('.workarea').scrollTo({ top: 0, behavior: 'smooth' }); };
+  if (next) next.onclick = () => { st.page++; rerender(); document.querySelector('.workarea').scrollTo({ top: 0, behavior: 'smooth' }); };
 }
 function pagerHtml(id) {
   return '<div id="' + id + 'Pager" style="display:none;align-items:center;gap:12px;margin-top:12px;flex-wrap:wrap">'
@@ -5705,7 +5702,7 @@ function renderEstateTable() {
       || '<tr><td colspan=7 style="color:var(--muted)">No assets match.</td></tr>');
   // pager
   const pager = $('#estatePager');
-  pager.style.display = total ? 'flex' : 'none';
+  pager.style.display = total > estatePageSize ? 'flex' : 'none';
   if (total) {
     const from = start + 1, to = Math.min(start + estatePageSize, total);
     $('#estPageInfo').textContent = 'Showing ' + from + '–' + to
@@ -5724,8 +5721,8 @@ function estateReRender(resetPage) {
   if (estateSystem === 'all') renderEstateSummaryTable();
   else if (window._estate) renderEstateTable();
 }
-$('#estPrev').onclick = () => { estatePage--; renderEstateTable(); };
-$('#estNext').onclick = () => { estatePage++; renderEstateTable(); };
+$('#estPrev').onclick = () => { estatePage--; renderEstateTable(); document.querySelector('.workarea').scrollTo({ top: 0, behavior: 'smooth' }); };
+$('#estNext').onclick = () => { estatePage++; renderEstateTable(); document.querySelector('.workarea').scrollTo({ top: 0, behavior: 'smooth' }); };
 $('#estPageSize').onchange = ev => { estatePageSize = parseInt(ev.target.value, 10) || 25; estateReRender(true); };
 function openAssetDrawer(t, conn, d) {
   $('#modalBody').innerHTML = '<h2 style="font-size:18px">' + esc(t.schema) + '.' + esc(t.name) + '</h2>'
