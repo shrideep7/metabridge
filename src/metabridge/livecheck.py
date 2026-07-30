@@ -119,6 +119,84 @@ def _fetch_columns(run, enriched_sql: str, plain_sql: str,
     return [(r[0], r[1], str(r[2]), str(r[3])) for r in run(plain_sql)]
 
 
+_TEXTUAL_BASES = frozenset({"text", "varchar", "string", "char",
+                            "nvarchar", "nchar", "character varying",
+                            "character"})
+
+
+def _measure_column_sizes(run, tables: dict, length_fn: str = "LENGTH",
+                          max_rows: int = 10_000_000,
+                          max_tables: int = 80) -> int:
+    """Measure, live, what the catalog would not declare: the real maximum
+    length of unbounded text columns and the real magnitude of >18-digit
+    whole-number columns (Snowflake's INT is NUMBER(38,0), so every integer
+    reports 38 digits). Column types are rewritten in place, so the
+    manifest — and everything generated from it — carries measured fact
+    instead of a documented guess, and the probe file becomes unnecessary.
+
+    MAX() is a scan, so this only touches tables whose row count is known
+    and small enough, caps the table count, and treats any per-table
+    failure as "leave the type alone". Text widths get power-of-two
+    headroom (a snapshot is not a ceiling); integrals that fit 18 digits
+    become (18,0) — enough for BIGINT downstream, generous against growth.
+    """
+    import re
+    wide_int = re.compile(
+        r"^(number|numeric|decimal|dec)\((\d+),\s*0\)$", re.I)
+    measured = 0
+    probed = 0
+    for t in tables.values():
+        if "VIEW" in str(t.get("type", "")).upper():
+            continue
+        try:
+            rows = int(t.get("rows") or 0)
+        except (TypeError, ValueError):
+            rows = 0
+        if rows <= 0 or rows > max_rows or probed >= max_tables:
+            continue
+        plan = []                      # (column dict, kind)
+        for c in t.get("columns", []):
+            ty = str(c.get("type", ""))
+            base = ty.split("(")[0].strip().lower()
+            if "(" not in ty and base in _TEXTUAL_BASES:
+                plan.append((c, "len"))
+            else:
+                m = wide_int.match(ty.replace(" ", ""))
+                if m and int(m.group(2)) > 18:
+                    plan.append((c, "abs"))
+        if not plan:
+            continue
+        probed += 1
+        exprs = ["MAX(%s(%s))" % (length_fn, c["name"]) if kind == "len"
+                 else "MAX(ABS(%s))" % c["name"] for c, kind in plan]
+        qualified = "%s.%s" % (t["schema"], t["name"]) if t.get("schema") \
+            else t["name"]
+        try:
+            row = run("SELECT %s FROM %s" % (", ".join(exprs), qualified))
+        except Exception:  # noqa: BLE001 — measuring is best-effort
+            continue
+        if not row:
+            continue
+        values = row[0] if isinstance(row[0], (list, tuple)) else row
+        for (c, kind), v in zip(plan, values):
+            try:
+                n = int(v)
+            except (TypeError, ValueError):
+                continue
+            base = str(c["type"]).split("(")[0].strip()
+            if kind == "len" and n > 0:
+                width = 16
+                while width < n:
+                    width *= 2
+                c["type"] = "%s(%d)" % (base, width)
+                measured += 1
+            elif kind == "abs" and 0 <= n < 10 ** 18:
+                c["type"] = "%s(18,0)" % base
+                measured += 1
+        t["sizes_measured"] = True
+    return measured
+
+
 def _has_live_driver(key: str) -> bool:
     return key in ("snowflake", "databricks") or key in _SQL_DIALECTS
 
@@ -281,6 +359,9 @@ def _databricks_introspect(params: Dict[str, str],
     so the console and scaffold consume it unchanged."""
     catalog = (params.get("catalog") or "").strip()
     schema = (params.get("schema") or "").strip()
+    # Databricks catalogs do not expose row counts, so live size
+    # measurement never runs here — types come from full_data_type instead.
+    measured = 0
     started = time.time()
     try:
         conn = _databricks_connect(params)
@@ -424,6 +505,7 @@ def _databricks_introspect(params: Dict[str, str],
                    if "VIEW" not in t["type"].upper()]
     manifest = {"tables": [
         {"name": t["name"], "schema": t["schema"],
+         **({"database": catalog} if catalog else {}),
          "columns": [{"name": c["name"], "type": c["type"]}
                      for c in t["columns"]]}
         for t in base_tables]}
@@ -443,6 +525,7 @@ def _databricks_introspect(params: Dict[str, str],
             "total_rows": sum(t["rows"] for t in base_tables),
             "tables_with_columns": sum(1 for t in base_tables
                                        if t["columns"]),
+            "column_sizes_measured": measured,
             "views_convertible": len(convertible),
             "views_needing_review": needs_review,
             "verdict": "READY" if base_tables or convertible else
@@ -733,6 +816,18 @@ def _sqldb_introspect(key: str, params: Dict[str, str],
                     tables[key_]["rows"] = max(0, int(r[2] or 0))
         except Exception:  # noqa: BLE001 — estimates are optional
             pass
+
+        def _run_measure(sql):
+            try:
+                cur.execute(sql)
+                return cur.fetchall()
+            except Exception:
+                conn.rollback()
+                raise
+        try:
+            measured = _measure_column_sizes(_run_measure, tables)
+        except Exception:  # noqa: BLE001
+            measured = 0
         views = []
         cur.execute(
             "SELECT table_schema, table_name, view_definition "
@@ -774,6 +869,7 @@ def _sqldb_introspect(key: str, params: Dict[str, str],
                    if "VIEW" not in t["type"].upper()]
     manifest = {"tables": [
         {"name": t["name"], "schema": t["schema"],
+         **({"database": database} if database else {}),
          "columns": [{"name": c["name"], "type": c["type"]}
                      for c in t["columns"]]}
         for t in base_tables]}
@@ -793,6 +889,7 @@ def _sqldb_introspect(key: str, params: Dict[str, str],
             "total_rows": sum(t["rows"] for t in base_tables),
             "tables_with_columns": sum(1 for t in base_tables
                                        if t["columns"]),
+            "column_sizes_measured": measured,
             "views_convertible": len(convertible),
             "views_needing_review": needs_review,
             "verdict": "READY" if base_tables or convertible else
@@ -1028,6 +1125,11 @@ def introspect(key: str, params: Dict[str, str],
             if key_ in tables:
                 tables[key_]["columns"].append({"name": str(r[2]),
                                                 "type": r[3]})
+        try:
+            measured = _measure_column_sizes(
+                lambda sql: cur.execute(sql).fetchall(), tables)
+        except Exception:  # noqa: BLE001
+            measured = 0
         views = []
         for r in cur.execute(
                 "SELECT table_schema, table_name, view_definition "
@@ -1068,6 +1170,7 @@ def introspect(key: str, params: Dict[str, str],
                    if "VIEW" not in t["type"].upper()]
     manifest = {"tables": [
         {"name": t["name"], "schema": t["schema"],
+         **({"database": database} if database else {}),
          "columns": [{"name": c["name"], "type": c["type"]}
                      for c in t["columns"]]}
         for t in base_tables]}
@@ -1087,6 +1190,7 @@ def introspect(key: str, params: Dict[str, str],
             "total_rows": sum(t["rows"] for t in base_tables),
             "tables_with_columns": sum(1 for t in base_tables
                                        if t["columns"]),
+            "column_sizes_measured": measured,
             "views_convertible": len(convertible),
             "views_needing_review": needs_review,
             "verdict": "READY" if base_tables or convertible else

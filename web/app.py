@@ -1336,6 +1336,7 @@ _REPORT_OTHER = (
     ("ai_readiness.json", "AI-readiness (JSON)"),
     ("orchestration_intelligence.json", "Orchestration intelligence (JSON)"),
     ("orchestration_resilience.json", "Orchestration resilience audit (JSON)"),
+    ("object_inventory.json", "Object inventory & feasibility (JSON)"),
 )
 _MEDIA_BY_SUFFIX = {
     ".html": "text/html; charset=utf-8", ".json": "application/json",
@@ -3440,6 +3441,50 @@ async def system_notifications_seen(request: Request):
     return {"marked_seen": marked}
 
 
+@app.get("/api/settings/movement")
+def get_movement_settings():
+    """Workspace Data movement settings: where bulk unload/load stages data
+    and what role the target assumes. Set once; every generated ddl/ bundle
+    comes out fully substituted. No secret is ever stored here — the named
+    stage / IAM role ARE the no-secret mechanisms."""
+    mv = _load_settings_doc().get("movement", {}) or {}
+    return {"stage_uri": str(mv.get("stage_uri", "") or ""),
+            "iam_role": str(mv.get("iam_role", "") or ""),
+            "source_stage": str(mv.get("source_stage", "") or "")}
+
+
+@app.put("/api/settings/movement")
+async def put_movement_settings(request: Request):
+    _require_owner(request)                  # settings:manage
+    body = await request.json()
+    stage_uri = str(body.get("stage_uri", "") or "").strip().rstrip("/")
+    iam_role = str(body.get("iam_role", "") or "").strip()
+    source_stage = str(body.get("source_stage", "") or "").strip() \
+        .lstrip("@")
+    if stage_uri and "://" not in stage_uri:
+        raise HTTPException(422, "stage_uri must be an object-storage URI "
+                                 "(s3://…, gs://…, abfss://…)")
+    if iam_role and not iam_role.startswith("arn:"):
+        raise HTTPException(422, "iam_role must be a role ARN "
+                                 "(arn:aws:iam::…:role/…)")
+    for name, val in (("stage_uri", stage_uri), ("iam_role", iam_role),
+                      ("source_stage", source_stage)):
+        low = val.lower()
+        if "secret" in low or "password" in low or "aws_key" in low:
+            raise HTTPException(422, "%s looks like it contains a "
+                                     "credential — these settings hold "
+                                     "locations and role names only, "
+                                     "never secrets" % name)
+    from metabridge.llm.assist import _settings_file
+    doc = _load_settings_doc()
+    doc["movement"] = {"stage_uri": stage_uri, "iam_role": iam_role,
+                       "source_stage": source_stage}
+    f = _settings_file()
+    f.parent.mkdir(parents=True, exist_ok=True)
+    f.write_text(json.dumps(doc, indent=2), encoding="utf-8")
+    return get_movement_settings()
+
+
 @app.get("/api/settings/notifications/email")
 def get_email_notifications(request: Request):
     """Non-secret health of the outbound-email transport (owner/admin). Shows
@@ -4082,6 +4127,105 @@ def sap_lineage(migration_id: str):
 @app.get("/api/sap/{migration_id}/report")
 def sap_report(migration_id: str, format: str = "json"):
     return get_migration_report(migration_id, format)
+
+
+# ---------------------------------------------------------------------------
+# Object inventory & migration feasibility (Warehouse Object Model)
+# ---------------------------------------------------------------------------
+
+@app.post("/api/objects/inventory")
+async def objects_inventory(request: Request):
+    """{"connection_id", "target"} -> enumerate EVERY schema-level object
+    the connected role can see (views, procedures, functions, tasks,
+    streams, policies, grants, …), classify each against the target
+    platform, and store the report. Read-only against the source."""
+    from metabridge.connections_store import get_connection, resolve_params
+    from metabridge.wom.feasibility import classify_inventory
+    from metabridge.wom.introspect import inventory_objects
+    from metabridge.wom.model import inventory_from_dict
+    from metabridge.wom.report import write_inventory_report
+    body = await _json_object(request)
+    cid = str(body.get("connection_id", "") or "")
+    target = str(body.get("target", "") or "")
+    if not cid or not target:
+        raise HTTPException(422, "connection_id and target are required")
+    from metabridge.connectors.base import get_registry
+    if get_registry().get(target) is None:
+        raise HTTPException(422, "Unknown target connector: %s" % target)
+    row = get_connection(cid)
+    if row is None:
+        raise HTTPException(404, "Unknown connection")
+    try:
+        params = resolve_params(cid)
+    except PermissionError as e:
+        raise HTTPException(409, str(e))
+    job_dir = _new_job("objects")
+    result = inventory_objects(row["connector"], params)
+    if not result.get("ok"):
+        _finish_job(job_dir, status="failed",
+                    error=result.get("error", ""))
+        raise HTTPException(422, result.get("error")
+                            or "Could not inventory the connection")
+    inv_doc = result["inventory"]
+    inv = inventory_from_dict(inv_doc)
+    classification = classify_inventory(inv, row["connector"], target)
+    out = job_dir / "output"
+    out.mkdir(parents=True, exist_ok=True)
+    write_inventory_report(inv_doc, classification, str(out))
+    meta = _finish_job(job_dir, source_format=row["connector"],
+                       target_format=target,
+                       summary={"objects": classification["objects_total"],
+                                "automation_pct":
+                                    classification["automation_pct"]})
+    slim = dict(classification)
+    # records travel to the UI without the converted SQL bodies — those
+    # live in the stored report and the generated package
+    slim["records"] = [
+        {k: v for k, v in r.items() if k != "converted_sql"}
+        for r in classification["records"]][:1200]
+    return {"inventory_id": meta["id"],
+            "connection": {"id": cid, "name": row.get("name", ""),
+                           "connector": row["connector"]},
+            "database": inv_doc.get("database", ""),
+            "schema": inv_doc.get("schema", ""),
+            "elapsed_ms": inv_doc.get("elapsed_ms", 0),
+            "counts": inv_doc.get("counts", {}),
+            **slim,
+            "report_html_url": "/api/jobs/%s/artifact?path="
+                               "object_inventory.html" % meta["id"],
+            "report_json_url": "/api/jobs/%s/artifact?path="
+                               "object_inventory.json" % meta["id"]}
+
+
+@app.post("/api/objects/convert")
+async def objects_convert(request: Request):
+    """{"inventory_id"} -> generate the object migration package (views,
+    sequences, constraints, comments, grants + the manual-review pack)
+    from a stored inventory, as a new downloadable job."""
+    from metabridge.wom.feasibility import classify_inventory
+    from metabridge.wom.generate import generate_object_package
+    from metabridge.wom.model import inventory_from_dict
+    body = await _json_object(request)
+    inv_id = str(body.get("inventory_id", "") or "")
+    src_job = _job_dir(inv_id)
+    f = src_job / "output" / "object_inventory.json"
+    if not f.exists():
+        raise HTTPException(404, "Not an object inventory job")
+    doc = json.loads(f.read_text(encoding="utf-8"))
+    inv = inventory_from_dict(doc["inventory"])
+    prior = doc["classification"]
+    target = str(body.get("target", "") or prior.get("target", ""))
+    classification = prior if target == prior.get("target") else \
+        classify_inventory(inv, prior.get("source", inv.connector), target)
+    job_dir = _new_job("objects_convert")
+    out = job_dir / "output"
+    out.mkdir(parents=True, exist_ok=True)
+    manifest = generate_object_package(inv, classification, target,
+                                       str(out / "objects"))
+    meta = _finish_job(job_dir, source_format=inv.connector,
+                       target_format=target, summary=manifest)
+    return {"package_id": meta["id"], "target": target, **manifest,
+            "download_url": "/api/jobs/%s/download" % meta["id"]}
 
 
 # ---------------------------------------------------------------------------
@@ -4821,7 +4965,9 @@ async def api_scaffold(
                                                                   target),
                               source_region=source_region,
                               target_region=target_region,
-                              governance=governance)
+                              governance=governance,
+                              movement=_load_settings_doc().get(
+                                  "movement", {}) or {})
     except (ValueError, FileNotFoundError) as e:
         _finish_job(job_dir, status="failed", error=str(e))
         raise HTTPException(422, str(e))

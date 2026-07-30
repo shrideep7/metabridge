@@ -8,20 +8,25 @@ the first model with "relation does not exist".
 
 This generator emits the missing extract-and-load layer:
 
-    01_create_schemas.sql    the schemas the dbt sources.yml declares
-    02_create_tables.sql     one typed CREATE TABLE per source table,
-                             warehouse-native, with physical design
+    00_probe_string_widths.sql  (only when widths are still unmeasured)
+    01_create_landing.sql    schemas + one typed CREATE TABLE per source
+                             table, warehouse-native, with physical design
                              (Redshift DIST/SORT keys) inferred from the
                              merge key and watermark column
-    03_unload_from_<src>.sql source-side bulk export to object storage
-    04_load_into_<tgt>.sql   target-side bulk import
-    README.md                run order and what to substitute
+    02_unload_from_<src>.sql source-side bulk export — sets its own
+                             USE DATABASE/WAREHOUSE context and fully
+                             qualifies every table, so it is
+                             session-independent
+    03_load_into_<tgt>.sql   target-side bulk import
+    README.md                run order and anything left to substitute
 
 Schema names deliberately match the generated ``sources.yml`` so the dbt
 models resolve with no edits — the two artifacts agree by construction.
 
-Placeholders you must substitute are written as ``<angle-bracket>`` tokens
-and listed in the README; nothing here embeds a credential.
+Workspace Data movement settings (stage URI / named stage / IAM role) are
+substituted into every statement, so a configured workspace gets
+ready-to-run scripts with zero placeholders; nothing here ever embeds a
+credential.
 """
 from __future__ import annotations
 
@@ -237,7 +242,7 @@ def _probe_widths(spec: Optional[ConnectorSpec], dialect: str,
             "-- and regenerate.\n"
             "--\n"
             "--   *_len   text columns whose length the source does not\n"
-            "--           declare; 02_create_tables.sql used a documented\n"
+            "--           declare; 01_create_landing.sql used a documented\n"
             "--           default. Narrow columns keep Redshift/Synapse\n"
             "--           queries in memory instead of spilling to disk.\n"
             "--   *_max   integral columns wider than 18 digits, so they had\n"
@@ -267,47 +272,107 @@ def _create_table(src: SourceTable, dialect: str, hint: dict) -> str:
 # ---------------------------------------------------------------------------
 # bulk export / import — the actual data movement
 # ---------------------------------------------------------------------------
+#
+# Movement settings (workspace-level, set once in Pipeline Studio) fill the
+# values engineers previously had to paste into every statement:
+#
+#     stage_uri     object-storage prefix both warehouses can reach
+#     iam_role      role ARN the target assumes for its bulk load
+#     source_stage  a NAMED stage that already exists on the source —
+#                   the zero-credential path: the stage holds the storage
+#                   credential, so nothing sensitive appears anywhere here
+#
+# Anything not configured stays an explicit <angle-bracket> token and is
+# listed in the README. Credentials are NEVER written into these files.
+
+def _mv(movement: Optional[dict]) -> dict:
+    m = movement or {}
+    return {"stage_uri": str(m.get("stage_uri", "") or "").rstrip("/"),
+            "iam_role": str(m.get("iam_role", "") or "").strip(),
+            "source_stage":
+                str(m.get("source_stage", "") or "").strip().lstrip("@")}
+
 
 def _unload(spec: Optional[ConnectorSpec], dialect: str,
-            tables: List[SourceTable]) -> str:
+            tables: List[SourceTable],
+            source_params: Optional[Dict[str, str]] = None,
+            movement: Optional[dict] = None) -> str:
     """Source-side export to object storage, in Parquet (typed, so the
-    import does not have to re-guess every column)."""
-    head = ["-- Step 3: export each source table to object storage.",
-            "-- Substitute: <stage-uri>, <credentials>. Run on the SOURCE.",
-            ""]
+    import does not have to re-guess every column). Session-independent:
+    the script sets its own database/warehouse context and fully qualifies
+    every table, so it runs the same from any worksheet."""
+    sp = source_params or {}
+    mv = _mv(movement)
+    uri = mv["stage_uri"] or "<stage-uri>"
+    head = ["-- Step 2: export each source table to object storage.",
+            "-- Run on the SOURCE.", ""]
+
+    def db_of(t: SourceTable) -> str:
+        return t.database or str(sp.get("database", "") or "")
+
+    def fq(t: SourceTable) -> str:
+        q = _qualified(dialect, t.schema, t.name)
+        d = db_of(t)
+        return "%s.%s" % (d, q) if d else q
+
     if dialect == "snowflake":
-        head += ["CREATE OR REPLACE FILE FORMAT mb_parquet TYPE = PARQUET;",
-                 "CREATE OR REPLACE STAGE mb_unload",
-                 "  URL = '<stage-uri>'                 "
-                 "-- s3://bucket/prefix/",
-                 "  CREDENTIALS = (<credentials>)",
-                 "  FILE_FORMAT = mb_parquet;", ""]
-        body = ["COPY INTO @mb_unload/%s/\n  FROM %s\n  "
+        db = next((db_of(t) for t in tables if db_of(t)), "")
+        wh = str(sp.get("warehouse", "") or "")
+        head += ["-- Context is set explicitly so this runs from any "
+                 "worksheet/session:",
+                 "USE DATABASE %s;" % db if db
+                 else "-- USE DATABASE <database>;   -- uncomment and set",
+                 "USE WAREHOUSE %s;" % wh if wh
+                 else "-- USE WAREHOUSE <warehouse>;  -- uncomment and set "
+                      "(an unload needs compute)",
+                 ""]
+        if mv["source_stage"]:
+            stage_ref = "@%s" % mv["source_stage"]
+            head += ["-- Using the named stage from your Data movement "
+                     "settings — its storage",
+                     "-- credential lives in Snowflake, so nothing "
+                     "sensitive appears here.", ""]
+        else:
+            stage_ref = "@mb_unload"
+            head += [
+                "CREATE OR REPLACE FILE FORMAT mb_parquet TYPE = PARQUET;",
+                "CREATE OR REPLACE STAGE mb_unload",
+                "  URL = '%s/'" % uri,
+                "  CREDENTIALS = (<credentials>)   "
+                "-- or create a named stage once and set it in Data "
+                "movement settings",
+                "  FILE_FORMAT = mb_parquet;", ""]
+        body = ["COPY INTO %s/%s/\n  FROM %s\n  "
                 "HEADER = TRUE OVERWRITE = TRUE;"
-                % (t.name.lower(),
-                   _qualified("snowflake", t.schema, t.name))
-                for t in tables]
+                % (stage_ref, t.name.lower(), fq(t)) for t in tables]
     elif dialect == "bigquery":
-        body = ["EXPORT DATA OPTIONS(uri='<stage-uri>/%s/*.parquet',\n"
+        body = ["EXPORT DATA OPTIONS(uri='%s/%s/*.parquet',\n"
                 "  format='PARQUET', overwrite=true) AS\n"
                 "SELECT * FROM %s;"
-                % (t.name.lower(), _qualified("bigquery", t.schema, t.name))
+                % (uri, t.name.lower(),
+                   _qualified("bigquery", t.schema, t.name))
                 for t in tables]
     elif dialect == "redshift":
-        body = ["UNLOAD ('SELECT * FROM %s')\n  TO '<stage-uri>/%s/'\n"
-                "  IAM_ROLE '<iam-role-arn>' FORMAT AS PARQUET ALLOWOVERWRITE;"
-                % (_qualified("redshift", t.schema, t.name), t.name.lower())
+        role = mv["iam_role"] or "<iam-role-arn>"
+        body = ["UNLOAD ('SELECT * FROM %s')\n  TO '%s/%s/'\n"
+                "  IAM_ROLE '%s' FORMAT AS PARQUET ALLOWOVERWRITE;"
+                % (_qualified("redshift", t.schema, t.name), uri,
+                   t.name.lower(), role)
                 for t in tables]
     elif dialect == "databricks":
-        body = ["CREATE OR REPLACE TABLE delta.`<stage-uri>/%s` AS "
+        body = ["CREATE OR REPLACE TABLE delta.`%s/%s` AS "
                 "SELECT * FROM %s;"
-                % (t.name.lower(), _qualified("databricks", t.schema, t.name))
+                % (uri, t.name.lower(),
+                   _qualified("databricks", t.schema, t.name))
                 for t in tables]
     elif dialect == "postgres":
-        head += ["-- psql meta-command: run with psql, not a SQL client.", ""]
-        body = ["\\copy (SELECT * FROM %s) TO '<stage-uri>/%s.csv' "
+        db = next((db_of(t) for t in tables if db_of(t)), "")
+        head += ["-- psql meta-command: run with psql, not a SQL client."
+                 + (" Connect to database '%s'." % db if db else ""), ""]
+        body = ["\\copy (SELECT * FROM %s) TO '%s/%s.csv' "
                 "WITH (FORMAT csv, HEADER true);"
-                % (_qualified("postgres", t.schema, t.name), t.name.lower())
+                % (_qualified("postgres", t.schema, t.name), uri,
+                   t.name.lower())
                 for t in tables]
     else:
         name = spec.name if spec is not None else "the source"
@@ -315,53 +380,62 @@ def _unload(spec: Optional[ConnectorSpec], dialect: str,
                  % name,
                  "-- Export each table below to Parquet with the platform's",
                  "-- own unload/extract utility, one folder per table.", ""]
-        body = ["-- %s -> <stage-uri>/%s/"
-                % (_qualified(dialect, t.schema, t.name), t.name.lower())
+        body = ["-- %s -> %s/%s/" % (fq(t), uri, t.name.lower())
                 for t in tables]
     return "\n".join(head) + "\n" + "\n\n".join(body) + "\n"
 
 
 def _load(spec: Optional[ConnectorSpec], dialect: str,
-          tables: List[SourceTable]) -> str:
+          tables: List[SourceTable],
+          movement: Optional[dict] = None) -> str:
     """Target-side bulk import from the same object-storage layout."""
-    head = ["-- Step 4: load each table from object storage into the target.",
-            "-- Substitute: <stage-uri> and the credential token below.",
-            "-- Run AFTER 02_create_tables.sql. Run on the TARGET.",
-            ""]
+    mv = _mv(movement)
+    uri = mv["stage_uri"] or "<stage-uri>"
+    role = mv["iam_role"] or "<iam-role-arn>"
+    head = ["-- Step 3: load each table from object storage into the "
+            "target.",
+            "-- Run AFTER 01_create_landing.sql. Run on the TARGET.", ""]
     if dialect == "redshift":
-        body = ["COPY %s\n  FROM '<stage-uri>/%s/'\n"
-                "  IAM_ROLE '<iam-role-arn>'\n  FORMAT AS PARQUET;"
-                % (_qualified("redshift", t.schema, t.name), t.name.lower())
+        body = ["COPY %s\n  FROM '%s/%s/'\n"
+                "  IAM_ROLE '%s'\n  FORMAT AS PARQUET;"
+                % (_qualified("redshift", t.schema, t.name), uri,
+                   t.name.lower(), role)
                 for t in tables]
     elif dialect == "snowflake":
-        body = ["COPY INTO %s\n  FROM '<stage-uri>/%s/'\n"
+        body = ["COPY INTO %s\n  FROM '%s/%s/'\n"
                 "  CREDENTIALS = (<credentials>)\n"
                 "  FILE_FORMAT = (TYPE = PARQUET)\n"
                 "  MATCH_BY_COLUMN_NAME = CASE_INSENSITIVE;"
-                % (_qualified("snowflake", t.schema, t.name), t.name.lower())
+                % (_qualified("snowflake", t.schema, t.name), uri,
+                   t.name.lower())
                 for t in tables]
     elif dialect == "databricks":
-        body = ["COPY INTO %s\n  FROM '<stage-uri>/%s/'\n"
+        body = ["COPY INTO %s\n  FROM '%s/%s/'\n"
                 "  FILEFORMAT = PARQUET\n"
                 "  COPY_OPTIONS ('mergeSchema' = 'true');"
-                % (_qualified("databricks", t.schema, t.name), t.name.lower())
+                % (_qualified("databricks", t.schema, t.name), uri,
+                   t.name.lower())
                 for t in tables]
     elif dialect == "bigquery":
         body = ["LOAD DATA INTO %s\n  FROM FILES(format = 'PARQUET',\n"
-                "    uris = ['<stage-uri>/%s/*.parquet']);"
-                % (_qualified("bigquery", t.schema, t.name), t.name.lower())
+                "    uris = ['%s/%s/*.parquet']);"
+                % (_qualified("bigquery", t.schema, t.name), uri,
+                   t.name.lower())
                 for t in tables]
     elif dialect == "postgres":
-        head += ["-- psql meta-command: run with psql, not a SQL client.", ""]
-        body = ["\\copy %s FROM '<stage-uri>/%s.csv' "
+        head += ["-- psql meta-command: run with psql, not a SQL client.",
+                 ""]
+        body = ["\\copy %s FROM '%s/%s.csv' "
                 "WITH (FORMAT csv, HEADER true);"
-                % (_qualified("postgres", t.schema, t.name), t.name.lower())
+                % (_qualified("postgres", t.schema, t.name), uri,
+                   t.name.lower())
                 for t in tables]
     elif dialect == "tsql":
-        body = ["COPY INTO %s\n  FROM '<stage-uri>/%s/'\n"
+        body = ["COPY INTO %s\n  FROM '%s/%s/'\n"
                 "  WITH (FILE_TYPE = 'PARQUET', "
                 "CREDENTIAL = (<credentials>));"
-                % (_qualified("tsql", t.schema, t.name), t.name.lower())
+                % (_qualified("tsql", t.schema, t.name), uri,
+                   t.name.lower())
                 for t in tables]
     else:
         name = spec.name if spec is not None else "the target"
@@ -369,15 +443,17 @@ def _load(spec: Optional[ConnectorSpec], dialect: str,
                  % name,
                  "-- Load each table below with the platform's own utility.",
                  ""]
-        body = ["-- <stage-uri>/%s/ -> %s"
-                % (t.name.lower(), _qualified(dialect, t.schema, t.name))
+        body = ["-- %s/%s/ -> %s"
+                % (uri, t.name.lower(),
+                   _qualified(dialect, t.schema, t.name))
                 for t in tables]
     return "\n".join(head) + "\n" + "\n\n".join(body) + "\n"
 
 
 def _readme(pipeline: Pipeline, source: Optional[ConnectorSpec],
             target: Optional[ConnectorSpec], dialect: str,
-            tables: List[SourceTable], files: List[str]) -> str:
+            tables: List[SourceTable], files: List[str],
+            placeholders: List[str], prefilled: List[str]) -> str:
     s_name = source.name if source is not None else "the source"
     t_name = target.name if target is not None else "the target"
     lines = [
@@ -390,12 +466,11 @@ def _readme(pipeline: Pipeline, source: Optional[ConnectorSpec],
     ]
     why = {
         "00_probe_string_widths.sql":
-            "*(optional, run on %s)* measure real text widths, then pin them "
-            "in the manifest" % s_name,
-        "01_create_schemas.sql":
-            "on %s — create the schemas `sources.yml` declares" % t_name,
-        "02_create_tables.sql":
-            "on %s — create %d typed landing table(s)" % (t_name, len(tables)),
+            "*(optional, run on %s)* measure real column sizes, then pin "
+            "them in the manifest" % s_name,
+        "01_create_landing.sql":
+            "on %s — schemas + %d typed landing table(s) in one file"
+            % (t_name, len(tables)),
     }
     for i, f in enumerate(files, 1):
         if f == "README.md":
@@ -411,26 +486,50 @@ def _readme(pipeline: Pipeline, source: Optional[ConnectorSpec],
         "dbt compile --profiles-dir .   # check the resolved FROM clauses",
         "dbt run     --profiles-dir .",
         "```", "",
-        "## Substitute before running", "",
-        "| token | meaning |",
-        "|---|---|",
-        "| `<stage-uri>` | object-storage prefix both sides can reach "
-        "(e.g. `s3://my-bucket/mb`) |",
-        "| `<iam-role-arn>` | role the warehouse assumes to read/write it |",
-        "| `<credentials>` | platform credential clause, if not using a role |",
-        "", "No credential is written into these files.", "",
+    ]
+    if prefilled:
+        lines += ["## Pre-filled from your Data movement settings", "",
+                  "Set once in Pipeline Studio, substituted everywhere: "
+                  + ", ".join("`%s`" % x for x in prefilled) + ".", ""]
+    if placeholders:
+        token_note = {
+            "<stage-uri>": "object-storage prefix both sides can reach "
+                           "(e.g. `s3://my-bucket/mb`) — set it once in "
+                           "Pipeline Studio's Data movement settings",
+            "<iam-role-arn>": "role the target warehouse assumes for the "
+                              "bulk load — set it once in Data movement "
+                              "settings",
+            "<credentials>": "platform credential clause. For Snowflake, "
+                             "create a NAMED STAGE once and set it in Data "
+                             "movement settings — then no credential "
+                             "appears here at all",
+            "<database>": "source database to unload from",
+            "<warehouse>": "source warehouse (an unload needs compute)",
+        }
+        lines += ["## Substitute before running", "",
+                  "| token | meaning |", "|---|---|"]
+        for t in placeholders:
+            lines.append("| `%s` | %s |" % (t, token_note.get(t, "")))
+        lines += ["", "No credential is written into these files.", ""]
+    else:
+        lines += ["## Nothing to substitute", "",
+                  "Every location and role was filled from your Data "
+                  "movement settings. No credential is written into these "
+                  "files.", ""]
+    lines += [
         "## Types here vs. types in `sources.yml`", "",
         "`sources.yml` documents each column's logical type exactly as the "
-        "source declares it (`decimal(9,0)`). `02_create_tables.sql` creates "
-        "the narrowest exact type that holds it (`INTEGER`) — same values, "
-        "different notation, chosen because a native integer is materially "
-        "cheaper to join and distribute on than a decimal. dbt neither "
-        "creates nor validates source columns from `data_type`, so nothing "
-        "depends on the two strings being identical.", "",
+        "source declares it (`decimal(9,0)`). `01_create_landing.sql` "
+        "creates the narrowest exact type that holds it (`INTEGER`) — same "
+        "values, different notation, chosen because a native integer is "
+        "materially cheaper to join and distribute on than a decimal. dbt "
+        "neither creates nor validates source columns from `data_type`, so "
+        "nothing depends on the two strings being identical.", "",
         "## Why the schema names match the source", "",
         "The landing tables keep the source schema names, because that is "
         "what the generated `sources.yml` references — so the dbt models "
-        "resolve unchanged. To land somewhere else, change both together.", "",
+        "resolve unchanged. To land somewhere else, change both together.",
+        "",
     ]
     if dialect == "redshift":
         lines += [
@@ -450,8 +549,14 @@ def _readme(pipeline: Pipeline, source: Optional[ConnectorSpec],
 def generate_target_ddl(pipeline: Pipeline, out_dir: str,
                         source: Optional[ConnectorSpec] = None,
                         target: Optional[ConnectorSpec] = None,
-                        dialect: str = "") -> dict:
-    """Write the landing-layer DDL + movement scripts. -> file manifest."""
+                        dialect: str = "",
+                        source_params: Optional[Dict[str, str]] = None,
+                        movement: Optional[dict] = None) -> dict:
+    """Write the landing-layer DDL + movement scripts. -> file manifest.
+
+    ``movement`` carries the workspace Data movement settings; whatever it
+    provides is substituted into every statement so the scripts come out
+    ready-to-run, not ready-to-edit."""
     dialect = (dialect or str(pipeline.metadata.get("dialect", "")
                               or "")).lower()
     tables = [s for s in pipeline.sources
@@ -463,70 +568,91 @@ def generate_target_ddl(pipeline: Pipeline, out_dir: str,
         return {"files": [], "tables": 0, "skipped": skipped}
 
     hints = _load_hints(pipeline)
+    mv = _mv(movement)
     files: List[str] = []
 
     def src_of(spec: Optional[ConnectorSpec], fallback: str) -> str:
         return (spec.dialect if spec is not None else "") or fallback
 
-    schemas = sorted({s.schema for s in tables if s.schema})
-    if schemas:
-        (out / "01_create_schemas.sql").write_text(
-            "-- Step 1: schemas the dbt sources.yml expects.\n"
-            + _create_schemas(dialect, schemas), encoding="utf-8")
-        files.append("01_create_schemas.sql")
-
-    probe = _probe_widths(source, src_of(source, dialect), tables)
+    src_dialect = src_of(source, dialect)
+    probe = _probe_widths(source, src_dialect, tables)
     if probe:
         (out / "00_probe_string_widths.sql").write_text(probe,
                                                         encoding="utf-8")
-        files.insert(0, "00_probe_string_widths.sql")
+        files.append("00_probe_string_widths.sql")
 
-    body = ["-- Step 2: landing tables, typed from the source metadata.",
+    # schemas + tables in ONE file: one connection, one run, in order
+    schemas = sorted({s.schema for s in tables if s.schema})
+    body = ["-- Step 1: landing schemas + tables, typed from the source "
+            "metadata.",
             "-- Column names and order match the source, so a bulk load",
             "-- maps positionally as well as by name.", ""]
-    for s in tables:
+    if schemas:
+        body += ["-- schemas the dbt sources.yml expects "
+                 "(needs CREATE SCHEMA privilege):",
+                 _create_schemas(dialect, schemas)]
+    for s_ in tables:
         body.append("-- %s (%s)" % (
-            _qualified(dialect, s.schema, s.name),
-            hints.get(s.name, {}).get("strategy", LoadStrategy.FULL.value)))
-        body.append(_create_table(s, dialect, hints.get(s.name, {})))
+            _qualified(dialect, s_.schema, s_.name),
+            hints.get(s_.name, {}).get("strategy",
+                                       LoadStrategy.FULL.value)))
+        body.append(_create_table(s_, dialect, hints.get(s_.name, {})))
         body.append("")
-    (out / "02_create_tables.sql").write_text("\n".join(body),
-                                              encoding="utf-8")
-    files.append("02_create_tables.sql")
+    (out / "01_create_landing.sql").write_text("\n".join(body),
+                                               encoding="utf-8")
+    files.append("01_create_landing.sql")
 
-    src_dialect = src_of(source, dialect)
-    un = "03_unload_from_%s.sql" % (source.key if source is not None
+    un = "02_unload_from_%s.sql" % (source.key if source is not None
                                     else "source")
-    (out / un).write_text(_unload(source, src_dialect, tables),
-                          encoding="utf-8")
+    un_text = _unload(source, src_dialect, tables, source_params, movement)
+    (out / un).write_text(un_text, encoding="utf-8")
     files.append(un)
-    ld = "04_load_into_%s.sql" % (target.key if target is not None
+    ld = "03_load_into_%s.sql" % (target.key if target is not None
                                   else "target")
-    (out / ld).write_text(_load(target, dialect, tables), encoding="utf-8")
+    ld_text = _load(target, dialect, tables, movement)
+    (out / ld).write_text(ld_text, encoding="utf-8")
     files.append(ld)
 
+    # honest bookkeeping for the README and the UI: what came pre-filled,
+    # what still needs a hand
+    both = un_text + ld_text
+    placeholders = [t for t in ("<stage-uri>", "<iam-role-arn>",
+                                "<credentials>", "<database>",
+                                "<warehouse>") if t in both]
+    prefilled = []
+    if mv["stage_uri"]:
+        prefilled.append("stage URI")
+    if mv["iam_role"] and "<iam-role-arn>" not in both:
+        prefilled.append("IAM role")
+    if mv["source_stage"]:
+        prefilled.append("named source stage")
+
     (out / "README.md").write_text(
-        _readme(pipeline, source, target, dialect, tables, files),
+        _readme(pipeline, source, target, dialect, tables, files,
+                placeholders, prefilled),
         encoding="utf-8")
     files.append("README.md")
 
     # Declared, never silent: every place a width had to be invented.
-    wide = [s.name for s in tables
+    wide = [s_.name for s_ in tables
             if any(c.datatype == "string" and not c.precision
-                   for c in s.columns)]
+                   for c in s_.columns)]
     if wide and dialect not in _UNBOUNDED_STRING:
         width = _VARCHAR_FALLBACK.get(dialect, 0)
         pipeline.issues.append(ConversionIssue(
             severity=IssueSeverity.WARNING, code="STRING_WIDTH_FALLBACK",
-            message="%d landing table(s) have text column(s) with no declared "
-                    "length — DDL uses the documented default %s(%d)"
+            message="%d landing table(s) have text column(s) with no "
+                    "declared length — DDL uses the documented default "
+                    "%s(%d)"
                     % (len(wide), _BY_DIALECT.get(dialect, {}).get(
                         "string", _ANSI["string"]), width),
             obj=", ".join(wide[:8]),
-            suggestion="Run ddl/00_probe_string_widths.sql on the source, put "
-                       "the real lengths in the manifest and regenerate. A "
-                       "value longer than the default makes the bulk load "
-                       "fail loudly rather than truncate."))
+            suggestion="Re-introspect the live source (widths are measured "
+                       "automatically when the table is small enough), or "
+                       "run ddl/00_probe_string_widths.sql and put the real "
+                       "lengths in the manifest. A value longer than the "
+                       "default makes the bulk load fail loudly rather "
+                       "than truncate."))
     cap = 0 if dialect in _NO_STRING_LENGTH else _MAX_STRING.get(dialect, 0)
     clamped = [s_.name for s_ in tables
                if cap and any(c.datatype == "string" and c.precision > cap
@@ -534,13 +660,13 @@ def generate_target_ddl(pipeline: Pipeline, out_dir: str,
     if clamped:
         pipeline.issues.append(ConversionIssue(
             severity=IssueSeverity.WARNING, code="STRING_WIDTH_CLAMPED",
-            message="%d table(s) declare text column(s) wider than %s allows "
-                    "(%d) — the DDL uses %s"
+            message="%d table(s) declare text column(s) wider than %s "
+                    "allows (%d) — the DDL uses %s"
                     % (len(clamped), dialect, cap,
                        _OVER_MAX_STRING.get(dialect, "the maximum width")),
             obj=", ".join(clamped[:8]),
-            suggestion="Check no value actually exceeds %d characters, or the "
-                       "bulk load will reject those rows." % cap))
+            suggestion="Check no value actually exceeds %d characters, or "
+                       "the bulk load will reject those rows." % cap))
 
     wide_int: List[str] = []
     for t in tables:
@@ -556,18 +682,20 @@ def generate_target_ddl(pipeline: Pipeline, out_dir: str,
                                  _INT_NARROWING[dialect][1]),
             obj=", ".join(wide_int[:8]),
             suggestion="Snowflake's INT/BIGINT are aliases of NUMBER(38,0), "
-                       "so its integers always report 38 digits. Run "
-                       "ddl/00_probe_string_widths.sql: if the real maximum "
-                       "fits 18 digits, declare NUMBER(18,0) and the column "
-                       "becomes a native integer — materially cheaper as a "
-                       "join or distribution key."))
+                       "so its integers always report 38 digits. Re-"
+                       "introspect the live source (ranges are measured "
+                       "automatically when the table is small enough): if "
+                       "the real maximum fits 18 digits the column becomes "
+                       "a native integer — materially cheaper as a join or "
+                       "distribution key."))
     if skipped:
         pipeline.issues.append(ConversionIssue(
             severity=IssueSeverity.WARNING, code="DDL_NO_COLUMN_METADATA",
-            message="%d table(s) have no column metadata, so no landing DDL "
-                    "could be generated for them" % len(skipped),
+            message="%d table(s) have no column metadata, so no landing "
+                    "DDL could be generated for them" % len(skipped),
             obj=", ".join(skipped[:8]),
-            suggestion="Add columns to the manifest, or introspect the live "
-                       "system, then regenerate."))
+            suggestion="Add columns to the manifest, or introspect the "
+                       "live system, then regenerate."))
     return {"files": files, "tables": len(tables), "skipped": skipped,
-            "dialect": dialect}
+            "dialect": dialect, "placeholders": placeholders,
+            "movement_prefilled": prefilled}

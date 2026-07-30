@@ -301,7 +301,8 @@ def scaffold(source_key: str, target_key: str, tables_file: str, out_dir: str,
              project: str = "", source_params: Optional[Dict[str, str]] = None,
              target_params: Optional[Dict[str, str]] = None,
              source_region: str = "", target_region: str = "",
-             governance: bool = True) -> dict:
+             governance: bool = True,
+             movement: Optional[dict] = None) -> dict:
     """Generate the target stacks from a table manifest.
 
     ``governance`` is opt-out: with it False the residency/classification scan
@@ -331,6 +332,11 @@ def scaffold(source_key: str, target_key: str, tables_file: str, out_dir: str,
     pipeline.metadata["target_platform"] = target.name or target.key
     pipeline.metadata["source_pc_dbtype"] = source.powercenter_dbtype or ""
     pipeline.metadata["target_pc_dbtype"] = target.powercenter_dbtype or ""
+    # Cross-platform landing: the manifest's `database` names the SOURCE
+    # database (the unload needs it), but the dbt sources must resolve in
+    # the TARGET database — so the sources.yml writer must not pin it.
+    if source.key != target.key:
+        pipeline.metadata["landing_target"] = True
 
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
@@ -347,7 +353,9 @@ def scaffold(source_key: str, target_key: str, tables_file: str, out_dir: str,
     # nothing to select from and `dbt run` fails on the first relation.
     from .generators.ddl_generator import generate_target_ddl
     ddl = generate_target_ddl(pipeline, str(out / "ddl"), source=source,
-                              target=target)
+                              target=target,
+                              source_params=source_params or {},
+                              movement=movement or {})
 
     # 3. Informatica assets
     from .generators.idmc_generator import generate_idmc
