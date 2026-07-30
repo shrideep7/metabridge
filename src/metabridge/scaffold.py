@@ -21,6 +21,7 @@ Table manifest format:
 """
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -44,7 +45,6 @@ def _precision_scale(native_type: str):
     'varchar(18)'. Returns (0, 0) when none is declared so the generators use
     their documented fallback. Preserving this is what stops every numeric
     column collapsing to decimal(38,6)."""
-    import re
     mo = re.search(r"\(\s*(\d+)\s*(?:,\s*(\d+)\s*)?\)", native_type or "")
     if not mo:
         return 0, 0
@@ -140,6 +140,28 @@ _SAMPLE_MANIFEST = """tables:
       - {name: NAME, type: nvarchar}"""
 
 
+_SPLIT_TYPE_RE = re.compile(r"\(\s*\d+\s*$")
+_TYPE_TAIL_RE = re.compile(r"^\s*\d+\s*\)\s*$")
+
+
+def _repair_flow_split_type(c: dict, native: str) -> str:
+    """``{name: id, type: number(38,0)}`` in YAML *flow* style is not one
+    value: the comma is the flow separator, so PyYAML yields
+    ``{'type': 'number(38', '0)': None}`` and the scale is silently lost —
+    every numeric then falls back to decimal(38,6).
+
+    The damage is unambiguous (an unclosed paren beside a bare ``<digits>)``
+    key), so rejoin it rather than lose the precision. Block style and
+    quoted values never take this path.
+    """
+    if not _SPLIT_TYPE_RE.search(native):
+        return native
+    for k, v in c.items():
+        if v is None and isinstance(k, str) and _TYPE_TAIL_RE.match(k):
+            return "%s,%s" % (native, k.strip())
+    return native
+
+
 def _norm_column(c) -> Optional[dict]:
     if isinstance(c, str):
         return {"name": c}
@@ -148,7 +170,7 @@ def _norm_column(c) -> Optional[dict]:
             out = {"name": str(c["name"])}
             for k in ("type", "data_type", "datatype"):
                 if c.get(k):
-                    out["type"] = str(c[k])
+                    out["type"] = _repair_flow_split_type(c, str(c[k]))
                     break
             return out
         if len(c) == 1:                       # {KUNNR: numc}

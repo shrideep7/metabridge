@@ -42,6 +42,83 @@ from typing import Dict, List, Optional
 _SQL_DIALECTS = {"postgres": "postgres", "redshift": "redshift"}
 
 
+# Types that carry (precision, scale); everything else keeps INFORMATION_
+# SCHEMA's numeric_precision to itself. INTEGER reports precision 32 in
+# Postgres, and "integer(32,0)" is not a type.
+_PARAMETERIZED_NUMERIC = ("numeric", "decimal", "number", "dec")
+# A character length equal to the platform's own maximum is what a catalog
+# reports for a column declared with NO length (Snowflake VARCHAR is
+# VARCHAR(16777216)). Recording that as a real width would claim knowledge we
+# do not have, and would ask a target for a width it cannot create.
+_CHAR_LEN_MEANS_UNBOUNDED = frozenset({16777216, 16777215, 1073741824,
+                                       2147483647})
+
+
+def _native_type(data_type: object, char_len: object = None,
+                 num_precision: object = None, num_scale: object = None,
+                 full_type: object = None) -> str:
+    """Rebuild the column's DECLARED type from INFORMATION_SCHEMA.
+
+    ``data_type`` alone is lossy: NUMBER(38,0) and NUMBER(12,2) both report
+    "NUMBER", VARCHAR(80) reports "VARCHAR". Every downstream artifact then
+    has to invent a precision, so a key column ends up DECIMAL(38,6) and a
+    short code column ends up 4000 characters wide. Carrying the real
+    precision/scale/length here is what removes those fallbacks.
+    """
+    if full_type:                       # Databricks exposes the whole type
+        ft = str(full_type).strip()
+        if ft:
+            return ft
+    base = str(data_type or "").strip()
+    if not base:
+        return ""
+    low = base.lower()
+    if char_len is not None:
+        try:
+            n = int(char_len)
+            if n > 0 and n not in _CHAR_LEN_MEANS_UNBOUNDED:
+                return "%s(%d)" % (base, n)
+        except (TypeError, ValueError):
+            pass
+    if num_precision is not None and low in _PARAMETERIZED_NUMERIC:
+        try:
+            prec = int(num_precision)
+            scale = int(num_scale or 0)
+            if prec > 0:
+                return "%s(%d,%d)" % (base, prec, scale)
+        except (TypeError, ValueError):
+            pass
+    return base
+
+
+def _fetch_columns(run, enriched_sql: str, plain_sql: str,
+                   on_retry=None) -> List[tuple]:
+    """Column rows as ``(schema, table, column, native_type)``.
+
+    Tries the projection that carries precision/scale/length and degrades to
+    bare ``data_type`` if the catalog or the role will not give it — losing
+    exact types is a downgrade, losing the whole inventory is an outage.
+    """
+    rows: List[tuple] = []
+    try:
+        raw = run(enriched_sql)
+        for r in raw:
+            rows.append((r[0], r[1], str(r[2]),
+                         _native_type(r[3],
+                                      r[4] if len(r) > 4 else None,
+                                      r[5] if len(r) > 5 else None,
+                                      r[6] if len(r) > 6 else None,
+                                      r[7] if len(r) > 7 else None)))
+        return rows
+    except Exception:  # noqa: BLE001 — fall back to base types
+        if on_retry is not None:
+            try:
+                on_retry()
+            except Exception:  # noqa: BLE001
+                pass
+    return [(r[0], r[1], str(r[2]), str(r[3])) for r in run(plain_sql)]
+
+
 def _has_live_driver(key: str) -> bool:
     return key in ("snowflake", "databricks") or key in _SQL_DIALECTS
 
@@ -226,17 +303,25 @@ def _databricks_introspect(params: Dict[str, str],
                                           "VIEW" else "BASE TABLE"),
                                  "rows": 0, "bytes": 0, "columns": []}
                   for r in cur.fetchall()}
-        cur.execute(
-            "SELECT table_schema, table_name, column_name, data_type "
-            "FROM information_schema.columns "
-            "WHERE table_schema = COALESCE(?, table_schema) "
-            "ORDER BY table_schema, table_name, ordinal_position",
-            [schema or None])
-        for r in cur.fetchall():
+        def _run(sql):
+            cur.execute(sql, [schema or None])
+            return cur.fetchall()
+
+        for r in _fetch_columns(
+                _run,
+                "SELECT table_schema, table_name, column_name, data_type, "
+                "character_maximum_length, numeric_precision, numeric_scale, "
+                "full_data_type FROM information_schema.columns "
+                "WHERE table_schema = COALESCE(?, table_schema) "
+                "ORDER BY table_schema, table_name, ordinal_position",
+                "SELECT table_schema, table_name, column_name, data_type "
+                "FROM information_schema.columns "
+                "WHERE table_schema = COALESCE(?, table_schema) "
+                "ORDER BY table_schema, table_name, ordinal_position"):
             key_ = (r[0], r[1])
             if key_ in tables:
                 tables[key_]["columns"].append(
-                    {"name": str(r[2]), "type": str(r[3])})
+                    {"name": str(r[2]), "type": r[3]})
         views = []
         cur.execute(
             "SELECT table_schema, table_name, view_definition "
@@ -553,17 +638,26 @@ def _sqldb_introspect(key: str, params: Dict[str, str],
                                           "VIEW" else "BASE TABLE"),
                                  "rows": 0, "bytes": 0, "columns": []}
                   for r in cur.fetchall()}
-        cur.execute(
-            "SELECT table_schema, table_name, column_name, data_type "
-            "FROM information_schema.columns "
-            "WHERE table_catalog = current_database() %s "
-            "ORDER BY table_schema, table_name, ordinal_position"
-            % where, args)
-        for r in cur.fetchall():
+        def _run(sql):
+            cur.execute(sql % where, args)
+            return cur.fetchall()
+
+        for r in _fetch_columns(
+                _run,
+                "SELECT table_schema, table_name, column_name, data_type, "
+                "character_maximum_length, numeric_precision, numeric_scale "
+                "FROM information_schema.columns "
+                "WHERE table_catalog = current_database() %s "
+                "ORDER BY table_schema, table_name, ordinal_position",
+                "SELECT table_schema, table_name, column_name, data_type "
+                "FROM information_schema.columns "
+                "WHERE table_catalog = current_database() %s "
+                "ORDER BY table_schema, table_name, ordinal_position",
+                on_retry=lambda: conn.rollback()):
             key_ = (r[0], r[1])
             if key_ in tables:
-                tables[key_]["columns"].append(
-                    {"name": str(r[2]), "type": str(r[3])})
+                tables[key_]["columns"].append({"name": str(r[2]),
+                                                "type": r[3]})
         # row estimates are best-effort — exact COUNT(*) is too costly at
         # scale, and the catalog estimate is what warehouses expose cheaply.
         try:
@@ -857,16 +951,21 @@ def introspect(key: str, params: Dict[str, str],
                                  "rows": int(r[3] or 0),
                                  "bytes": int(r[4] or 0), "columns": []}
                   for r in rows}
-        for r in cur.execute(
+        for r in _fetch_columns(
+                lambda sql: cur.execute(sql % schema_pred, args).fetchall(),
+                "SELECT table_schema, table_name, column_name, data_type, "
+                "character_maximum_length, numeric_precision, numeric_scale "
+                "FROM INFORMATION_SCHEMA.COLUMNS "
+                "WHERE table_catalog = CURRENT_DATABASE() %s "
+                "ORDER BY table_schema, table_name, ordinal_position",
                 "SELECT table_schema, table_name, column_name, data_type "
                 "FROM INFORMATION_SCHEMA.COLUMNS "
                 "WHERE table_catalog = CURRENT_DATABASE() %s "
-                "ORDER BY table_schema, table_name, ordinal_position"
-                % schema_pred, args).fetchall():
+                "ORDER BY table_schema, table_name, ordinal_position"):
             key_ = (r[0], r[1])
             if key_ in tables:
-                tables[key_]["columns"].append(
-                    {"name": str(r[2]), "type": str(r[3])})
+                tables[key_]["columns"].append({"name": str(r[2]),
+                                                "type": r[3]})
         views = []
         for r in cur.execute(
                 "SELECT table_schema, table_name, view_definition "

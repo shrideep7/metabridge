@@ -54,9 +54,9 @@ _BY_DIALECT: Dict[str, Dict[str, str]] = {
     "tsql": {"string": "NVARCHAR", "double": "FLOAT", "binary": "VARBINARY",
              "timestamp": "DATETIME2", "boolean": "BIT"},
     "oracle": {"string": "VARCHAR2", "integer": "NUMBER(10)",
-               "bigint": "NUMBER(19)", "double": "BINARY_DOUBLE",
-               "timestamp": "TIMESTAMP", "boolean": "NUMBER(1)",
-               "binary": "BLOB"},
+               "bigint": "NUMBER(19)", "decimal": "NUMBER",
+               "double": "BINARY_DOUBLE", "timestamp": "TIMESTAMP",
+               "boolean": "NUMBER(1)", "binary": "BLOB"},
     "teradata": {"string": "VARCHAR", "double": "FLOAT", "binary": "VARBYTE"},
 }
 # Widths used when the source metadata declares none.
@@ -73,6 +73,34 @@ _VARCHAR_FALLBACK = {"redshift": 4000, "tsql": 4000, "oracle": 4000,
                      "teradata": 4000}
 # Dialects where an unbounded VARCHAR is legal, so no width is emitted at all
 _UNBOUNDED_STRING = ("bigquery", "databricks", "postgres", "snowflake")
+# Dialects whose string type takes NO length at all: Spark/Databricks STRING
+# rejects STRING(20), so a declared width has to be dropped, not passed on.
+_NO_STRING_LENGTH = ("databricks",)
+
+# Scale-0 numerics -> the narrowest EXACT integer type, per dialect
+# (32-bit name, 64-bit name). Narrowing is loss-free in one direction only:
+# INTEGER spans +/-2.1e9 and so contains every DECIMAL(9,0); BIGINT spans
+# +/-9.2e18 and contains every DECIMAL(18,0). Above 18 digits the decimal
+# stays, because nothing narrower holds it.
+#
+# Omitted on purpose: Snowflake, where INT/BIGINT are aliases of NUMBER(38,0)
+# so narrowing gains nothing and discards the declared precision; and Oracle,
+# where NUMBER(p) already IS the exact-integer type.
+_INT_NARROWING = {
+    "redshift": ("INTEGER", "BIGINT"), "postgres": ("INTEGER", "BIGINT"),
+    "tsql": ("INT", "BIGINT"), "databricks": ("INT", "BIGINT"),
+    "bigquery": ("INT64", "INT64"), "teradata": ("INTEGER", "BIGINT"),
+}
+_INT32_DIGITS, _INT64_DIGITS = 9, 18
+
+# Largest width each target will accept on a character column, and what to
+# use past it. A manifest can legitimately declare more than a target allows
+# (Snowflake VARCHAR goes to 16 MB, Redshift stops at 64 KB), so the DDL has
+# to resolve that rather than emit a statement the warehouse rejects.
+_MAX_STRING = {"redshift": 65535, "tsql": 4000, "oracle": 4000,
+               "teradata": 64000}
+_OVER_MAX_STRING = {"tsql": "NVARCHAR(MAX)", "oracle": "CLOB",
+                    "teradata": "CLOB"}
 
 
 def _type_of(port: Port, dialect: str) -> str:
@@ -83,9 +111,19 @@ def _type_of(port: Port, dialect: str) -> str:
     if canon == "decimal":
         p, sc = (port.precision, port.scale or 0) if port.precision \
             else _DECIMAL_FALLBACK
+        narrow = _INT_NARROWING.get(dialect)
+        if narrow and sc == 0 and port.precision:
+            if p <= _INT32_DIGITS:
+                return narrow[0]
+            if p <= _INT64_DIGITS:
+                return narrow[1]
         return "%s(%d,%d)" % (base["decimal"], p, sc)
     if canon == "string":
-        if port.precision:
+        if port.precision and dialect not in _NO_STRING_LENGTH:
+            cap = _MAX_STRING.get(dialect, 0)
+            if cap and port.precision > cap:
+                over = _OVER_MAX_STRING.get(dialect)
+                return over if over else "%s(%d)" % (sqlt, cap)
             return "%s(%d)" % (sqlt, port.precision)
         if dialect in _UNBOUNDED_STRING:
             return sqlt
@@ -176,26 +214,36 @@ def _probe_widths(spec: Optional[ConnectorSpec], dialect: str,
     metadata does not declare. Run on the SOURCE; feed the answers back into
     the manifest so the landing DDL stops guessing."""
     parts: List[str] = []
+    fn = "LEN" if dialect == "tsql" else "LENGTH"
     for t in tables:
-        undeclared = [c.name for c in t.columns
-                      if c.datatype == "string" and not c.precision]
-        if not undeclared:
+        measures = ["       MAX(%s(%s)) AS %s_len" % (fn, c.name, c.name[:110])
+                    for c in t.columns
+                    if c.datatype == "string" and not c.precision]
+        # an integral column too wide to narrow: measure it so a 128-bit
+        # DECIMAL(38,0) key can become a BIGINT on evidence
+        measures += ["       MAX(ABS(%s)) AS %s_max" % (c.name, c.name[:110])
+                     for c in t.columns
+                     if c.datatype == "decimal" and not (c.scale or 0)
+                     and c.precision > _INT64_DIGITS]
+        if not measures:
             continue
-        fn = "LEN" if dialect == "tsql" else "LENGTH"
-        cols = ",\n".join(
-            "       MAX(%s(%s)) AS %s_len" % (fn, c, c[:110])
-            for c in undeclared)
         parts.append("SELECT '%s' AS table_name,\n%s\nFROM %s;"
-                     % (t.name, cols,
+                     % (t.name, ",\n".join(measures),
                         _qualified(dialect, t.schema, t.name)))
     if not parts:
         return ""
-    return ("-- Step 0 (optional but recommended): measure real text widths.\n"
-            "-- The source metadata declares no length for these columns, so\n"
-            "-- 02_create_tables.sql used a documented default. Run this on\n"
-            "-- the SOURCE, then put the real lengths in the manifest and\n"
-            "-- regenerate — narrow columns keep Redshift/Synapse queries in\n"
-            "-- memory instead of spilling to disk.\n\n"
+    return ("-- Step 0 (optional but recommended): measure real column sizes.\n"
+            "-- Run on the SOURCE, then put the measured sizes in the manifest\n"
+            "-- and regenerate.\n"
+            "--\n"
+            "--   *_len   text columns whose length the source does not\n"
+            "--           declare; 02_create_tables.sql used a documented\n"
+            "--           default. Narrow columns keep Redshift/Synapse\n"
+            "--           queries in memory instead of spilling to disk.\n"
+            "--   *_max   integral columns wider than 18 digits, so they had\n"
+            "--           to stay DECIMAL. If the real maximum fits in\n"
+            "--           9.2e18, declare them NUMBER(18,0) and they become\n"
+            "--           BIGINT — much cheaper to join and distribute on.\n\n"
             + "\n\n".join(parts) + "\n")
 
 
@@ -371,6 +419,14 @@ def _readme(pipeline: Pipeline, source: Optional[ConnectorSpec],
         "| `<iam-role-arn>` | role the warehouse assumes to read/write it |",
         "| `<credentials>` | platform credential clause, if not using a role |",
         "", "No credential is written into these files.", "",
+        "## Types here vs. types in `sources.yml`", "",
+        "`sources.yml` documents each column's logical type exactly as the "
+        "source declares it (`decimal(9,0)`). `02_create_tables.sql` creates "
+        "the narrowest exact type that holds it (`INTEGER`) — same values, "
+        "different notation, chosen because a native integer is materially "
+        "cheaper to join and distribute on than a decimal. dbt neither "
+        "creates nor validates source columns from `data_type`, so nothing "
+        "depends on the two strings being identical.", "",
         "## Why the schema names match the source", "",
         "The landing tables keep the source schema names, because that is "
         "what the generated `sources.yml` references — so the dbt models "
@@ -471,6 +527,40 @@ def generate_target_ddl(pipeline: Pipeline, out_dir: str,
                        "the real lengths in the manifest and regenerate. A "
                        "value longer than the default makes the bulk load "
                        "fail loudly rather than truncate."))
+    cap = 0 if dialect in _NO_STRING_LENGTH else _MAX_STRING.get(dialect, 0)
+    clamped = [s_.name for s_ in tables
+               if cap and any(c.datatype == "string" and c.precision > cap
+                              for c in s_.columns)]
+    if clamped:
+        pipeline.issues.append(ConversionIssue(
+            severity=IssueSeverity.WARNING, code="STRING_WIDTH_CLAMPED",
+            message="%d table(s) declare text column(s) wider than %s allows "
+                    "(%d) — the DDL uses %s"
+                    % (len(clamped), dialect, cap,
+                       _OVER_MAX_STRING.get(dialect, "the maximum width")),
+            obj=", ".join(clamped[:8]),
+            suggestion="Check no value actually exceeds %d characters, or the "
+                       "bulk load will reject those rows." % cap))
+
+    wide_int: List[str] = []
+    for t in tables:
+        if any(c.datatype == "decimal" and not (c.scale or 0)
+               and c.precision > _INT64_DIGITS for c in t.columns):
+            wide_int.append(t.name)
+    if wide_int and dialect in _INT_NARROWING:
+        pipeline.issues.append(ConversionIssue(
+            severity=IssueSeverity.INFO, code="WIDE_INTEGER_KEPT_DECIMAL",
+            message="%d table(s) have whole-number column(s) declared wider "
+                    "than %d digits, so the DDL keeps them DECIMAL rather "
+                    "than %s" % (len(wide_int), _INT64_DIGITS,
+                                 _INT_NARROWING[dialect][1]),
+            obj=", ".join(wide_int[:8]),
+            suggestion="Snowflake's INT/BIGINT are aliases of NUMBER(38,0), "
+                       "so its integers always report 38 digits. Run "
+                       "ddl/00_probe_string_widths.sql: if the real maximum "
+                       "fits 18 digits, declare NUMBER(18,0) and the column "
+                       "becomes a native integer — materially cheaper as a "
+                       "join or distribution key."))
     if skipped:
         pipeline.issues.append(ConversionIssue(
             severity=IssueSeverity.WARNING, code="DDL_NO_COLUMN_METADATA",
