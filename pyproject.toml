@@ -1,0 +1,53 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "metabridge"
+version = "0.1.0"
+description = "MetaBridge — Enterprise dbt ⇄ Informatica conversion platform (PowerCenter & IDMC)"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "Proprietary" }
+authors = [{ name = "Metafor Data", email = "saachinmane@metafordata.com" }]
+dependencies = [
+    "sqlglot>=25.0,<31",
+    "PyYAML>=6.0",
+    "typer>=0.9",
+    "jinja2>=3.1",
+    # Ed25519 signing (marketplace packages; commercial license files) —
+    # was imported by metabridge.marketplace but previously undeclared.
+    "cryptography>=41.0",
+]
+
+[project.optional-dependencies]
+web = ["fastapi>=0.110", "uvicorn[standard]>=0.29", "python-multipart>=0.0.9",
+       "pillow>=10.0", "openpyxl>=3.1", "python-docx>=1.0",
+       "python-pptx>=0.6.23", "reportlab>=4.0"]
+llm = ["anthropic[bedrock]>=0.34"]
+dtd = ["lxml>=5.0"]
+# Live connector drivers — needed for Test connection / Analyze database /
+# Load against a live system. Snowflake, Databricks, PostgreSQL and Amazon
+# Redshift are the certified live connectors today (see
+# metabridge.livecheck.LIVE_CONNECTORS); PostgreSQL and Redshift share the
+# psycopg2 wire path. Add a live connector's driver here as it is certified.
+# Without this extra the deterministic engines still work; only the live
+# actions are unavailable and say so.
+connectors = ["snowflake-connector-python>=3.0", "psycopg2-binary>=2.9",
+              "databricks-sql-connector>=3.0"]
+# commercial control plane (multi-tenant; SQLite for dev/test, PostgreSQL in
+# production via CONTROLPLANE_DATABASE_URL — install psycopg2-binary for RDS)
+commercial = ["sqlalchemy>=2.0,<3"]
+dev = ["pytest>=8.0", "httpx>=0.27"]
+
+[project.scripts]
+metabridge = "metabridge.cli:app"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+metabridge = ["**/*.yaml"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
