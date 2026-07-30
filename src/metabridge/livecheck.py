@@ -322,10 +322,10 @@ def _databricks_introspect(params: Dict[str, str],
             if key_ in tables:
                 tables[key_]["columns"].append(
                     {"name": str(r[2]), "type": r[3]})
-        # Row-count estimates from catalog statistics — best-effort.
-        # information_schema.table_statistics is populated after ANALYZE or
-        # whenever Databricks auto-collects stats. We fall back silently if
-        # the view isn't available or the table has never been analyzed.
+        # ── Row counts: 3-tier fallback ──────────────────────────────────────
+        # Tier 1: information_schema.table_statistics — populated by ANALYZE
+        # TABLE or Databricks' automatic stats collection. Fast, but zero for
+        # freshly loaded tables that have never been ANALYZEd.
         try:
             cur.execute(
                 "SELECT table_schema, table_name, row_count "
@@ -336,8 +336,54 @@ def _databricks_introspect(params: Dict[str, str],
                 key_ = (r[0], r[1])
                 if key_ in tables and r[2] is not None:
                     tables[key_]["rows"] = max(0, int(r[2]))
-        except Exception:  # noqa: BLE001 — stats are optional, never crash
+        except Exception:  # noqa: BLE001 — stats view may not exist
             pass
+
+        # Tier 2: DESCRIBE DETAIL <schema>.<table> — reads numRows straight
+        # from the Delta transaction log. Always current after any write (no
+        # ANALYZE needed). Only issued for base tables still showing 0 rows so
+        # we skip tables that Tier 1 already populated.
+        zero_tables = [(s, n) for (s, n), t in tables.items()
+                       if t["rows"] == 0 and "VIEW" not in t["type"].upper()]
+        for tbl_schema, tbl_name in zero_tables:
+            try:
+                cur.execute("DESCRIBE DETAIL `%s`.`%s`"
+                            % (tbl_schema.replace("`", ""),
+                               tbl_name.replace("`", "")))
+                detail = cur.fetchone()
+                if detail:
+                    # DESCRIBE DETAIL returns a single row; numRows is the
+                    # 8th column (index 7) in the standard schema:
+                    # format, id, name, description, location, createdAt,
+                    # lastModified, partitionColumns, numFiles, sizeInBytes,
+                    # properties, minReaderVersion, minWriterVersion, numRows
+                    row_cols = [d[0].lower() for d in cur.description]
+                    if "numrows" in row_cols:
+                        nr = detail[row_cols.index("numrows")]
+                        key_ = (tbl_schema, tbl_name)
+                        if key_ in tables and nr is not None:
+                            tables[key_]["rows"] = max(0, int(nr))
+            except Exception:  # noqa: BLE001 — non-Delta tables, skip
+                pass
+
+        # Tier 3: exact COUNT(*) — last resort for tables still at 0 after
+        # both stats sources (non-Delta tables, or a Delta table whose
+        # transaction log hasn't materialized numRows yet, e.g. right after
+        # a fresh load). Bounded to the handful of tables still unresolved
+        # so this stays cheap even though it scans data.
+        still_zero = [(s, n) for (s, n), t in tables.items()
+                      if t["rows"] == 0 and "VIEW" not in t["type"].upper()]
+        for tbl_schema, tbl_name in still_zero:
+            try:
+                cur.execute("SELECT COUNT(*) FROM `%s`.`%s`"
+                            % (tbl_schema.replace("`", ""),
+                               tbl_name.replace("`", "")))
+                cnt = cur.fetchone()
+                key_ = (tbl_schema, tbl_name)
+                if cnt is not None and key_ in tables:
+                    tables[key_]["rows"] = max(0, int(cnt[0] or 0))
+            except Exception:  # noqa: BLE001 — best-effort, skip on error
+                pass
         views = []
         cur.execute(
             "SELECT table_schema, table_name, view_definition "
