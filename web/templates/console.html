@@ -1436,7 +1436,9 @@
     <div style="color:var(--ink3);font-size:13px;margin-bottom:10px">
       Import Airflow DAGs, ADF/Fabric pipelines, Step Functions, Control-M, AutoSys JIL,
       IDMC taskflows, dbt Cloud jobs or crontabs — visualize the execution graph, adjust
-      dependencies, and generate target-native orchestration. Platform auto-detected.</div>
+      dependencies, audit runtime resilience, and generate target-native orchestration.
+      Platform auto-detected. Airflow DAGs are read in both classic and TaskFlow
+      (<code>@dag</code>&nbsp;/&nbsp;<code>@task</code>) style.</div>
     <input type="file" id="orchFiles" multiple
            accept=".py,.json,.jil,.cron,.txt,.xml,.dtsx,.dsx,.item">
     <div class="fhint"><b>Which files?</b> Orchestration exports —
@@ -1452,6 +1454,7 @@
       <div class="cards" id="orchCards"></div>
       <div><label>Workflow</label><select id="orchWfSel" style="max-width:340px"></select></div>
       <div id="orchGraph" style="overflow-x:auto;background:#fff;border:1px solid var(--border);border-radius:var(--radius);margin-top:10px;padding:10px"></div>
+      <div id="orchResil" style="display:none;margin-top:12px"></div>
       <details style="margin-top:12px"><summary style="font-size:13px;color:var(--accent);cursor:pointer;font-weight:600">Dependencies (view / edit)</summary>
         <table id="orchDepTable" style="margin-top:8px"></table>
         <div style="display:flex;gap:8px;align-items:flex-end;margin-top:10px;flex-wrap:wrap">
@@ -5239,7 +5242,7 @@ $('#evtGenerate').onclick = async () => {
 };
 
 /* ---------------- Pipeline Studio: orchestration modernization ---------- */
-let orchId = null, orchGraphs = null;
+let orchId = null, orchGraphs = null, orchResil = null;
 
 async function orchReadFiles() {
   const files = [...$('#orchFiles').files];
@@ -5261,6 +5264,7 @@ $('#orchAnalyze').onclick = async () => {
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({files})});
     orchId = d.orchestration_id;
+    orchResil = d.resilience || null;
     $('#orchStatus').textContent = '';
     const card = (n, l, dd) => '<div class="mcard"><div class="n">' + n
       + '</div><div class="l">' + l + '</div>'
@@ -5272,7 +5276,12 @@ $('#orchAnalyze').onclick = async () => {
       + card(d.dependencies_total, 'Dependencies')
       + card(d.automation_score + '%', 'Automation score')
       + card(esc(d.validation_verdict.replace(/_/g, ' ')), 'Validation',
-             d.manual_review_items.length + ' manual review item(s)');
+             d.manual_review_items.length + ' manual review item(s)')
+      + (orchResil && orchResil.resilience_score !== undefined
+         ? card(orchResil.resilience_score + '/100 ' + esc(orchResil.grade),
+                'Runtime resilience',
+                orchResil.findings.length + ' runtime risk(s)')
+         : '');
     const g = await api('/api/orchestration/' + orchId + '/graph');
     orchGraphs = g.workflows;
     $('#orchWfSel').innerHTML = Object.keys(orchGraphs).map(w =>
@@ -5305,6 +5314,85 @@ function orchRenderWorkflow() {
     a.onclick = () => orchEditDeps(wf,
       {remove: [{from: g.edges[+a.dataset.rmdep].from,
                  to: g.edges[+a.dataset.rmdep].to}]}));
+  orchRenderResilience(wf);
+}
+
+/* Critical path, blast radius and cutover risk for one workflow — the
+   operational read a migration lead needs before signing off a cutover. */
+function orchRenderResilience(wf) {
+  const box = $('#orchResil');
+  if (!box) return;
+  if (!orchResil || !orchResil.workflows) { box.style.display = 'none'; return; }
+  const r = orchResil.workflows.find(x => x.workflow === wf);
+  if (!r) { box.style.display = 'none'; return; }
+  const mine = (orchResil.findings || []).filter(f => f.workflow === wf);
+  const stat = (l, v, d) => '<div style="min-width:150px">'
+    + '<div style="font-size:11px;letter-spacing:.4px;text-transform:uppercase;'
+    + 'color:var(--ink3)">' + l + '</div>'
+    + '<div style="font-size:15px;font-weight:650;color:var(--ink)">' + v + '</div>'
+    + (d ? '<div style="font-size:11.5px;color:var(--ink3)">' + d + '</div>' : '')
+    + '</div>';
+  let html = '<div class="panel" style="margin:0;padding:14px">'
+    + '<div style="display:flex;justify-content:space-between;align-items:center;'
+    + 'flex-wrap:wrap;gap:8px"><b style="font-size:13.5px">Runtime resilience — '
+    + esc(wf) + '</b>'
+    + badge(orchResil.resilience_score + '/100 · grade ' + esc(orchResil.grade),
+            orchResil.resilience_score >= 90 ? 'var(--green)'
+            : orchResil.resilience_score >= 75 ? 'var(--amber)' : 'var(--red)')
+    + '</div>'
+    + '<div style="display:flex;gap:22px;flex-wrap:wrap;margin-top:12px">'
+    + stat('Critical path', r.critical_path_length + ' of ' + r.tasks + ' tasks',
+           (r.critical_path_declared_timeout_seconds
+            ? (r.critical_path_unbounded_tasks ? '\u2265 ' : '')
+              + r.critical_path_declared_timeout + ' declared'
+            : 'no timeouts declared')
+           + (r.critical_path_unbounded_tasks
+              ? ' \u00b7 ' + r.critical_path_unbounded_tasks + ' unbounded' : ''))
+    + stat('Sequential stages', r.serial_stages,
+           'parallelism ' + r.parallelism_ratio + '×')
+    + stat('Widest parallel step', r.max_parallel_width + ' task(s)',
+           r.schedule_interval_seconds
+             ? 'every ' + Math.round(r.schedule_interval_seconds / 60) + ' min' : '')
+    + '</div>';
+  if (r.critical_path.length) {
+    html += '<div style="margin-top:12px;font-size:12.5px;color:var(--ink3)">'
+      + 'Longest chain</div><div style="font-size:12.5px;margin-top:3px">'
+      + r.critical_path.map(k => '<code>' + esc(k) + '</code>').join(' → ')
+      + '</div>';
+  }
+  if ((r.single_points_of_failure || []).length) {
+    html += '<div style="margin-top:14px;font-size:12.5px;color:var(--ink3)">'
+      + 'Single points of failure — one failure blocks:</div>'
+      + '<table style="margin-top:6px"><tr><th>Task</th><th>Type</th>'
+      + '<th>Blocks downstream</th><th>Retries</th><th>Timeout</th></tr>'
+      + r.single_points_of_failure.map(s => '<tr><td><code>' + esc(s.task)
+        + '</code></td><td>' + esc(s.type) + '</td><td>' + s.blocks_downstream
+        + ' task(s)</td><td>' + (s.retries
+            ? s.retries : badge('none', 'var(--red)'))
+        + '</td><td>' + (s.has_timeout ? 'set'
+            : badge('unbounded', 'var(--amber)')) + '</td></tr>').join('')
+      + '</table>';
+  }
+  if (mine.length) {
+    html += '<div style="margin-top:14px">' + mine.map(f =>
+      '<div style="padding:8px 0;border-top:1px solid var(--border)">'
+      + badge(f.severity, SEV_COLOR[f.severity] || 'var(--ink3)')
+      + ' <b style="font-size:12.5px">' + esc(f.code) + '</b>'
+      + '<div style="font-size:12.5px;margin-top:3px">' + esc(f.message) + '</div>'
+      + (f.suggestion ? '<div style="font-size:12px;color:var(--ink3);'
+         + 'margin-top:2px">' + esc(f.suggestion) + '</div>' : '')
+      + '</div>').join('') + '</div>';
+  }
+  if ((orchResil.cutover_checklist || []).length) {
+    html += '<details style="margin-top:12px"><summary style="font-size:13px;'
+      + 'color:var(--accent);cursor:pointer;font-weight:600">Cutover checklist ('
+      + orchResil.cutover_checklist.length + ')</summary><ul style="margin:8px 0 0 18px;'
+      + 'font-size:12.5px;line-height:1.75">'
+      + orchResil.cutover_checklist.map(c => '<li>' + esc(c) + '</li>').join('')
+      + '</ul></details>';
+  }
+  box.innerHTML = html + '</div>';
+  box.style.display = 'block';
 }
 
 function orchRenderSvg(g) {

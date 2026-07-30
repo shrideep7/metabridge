@@ -1,9 +1,16 @@
 """Orchestration source adapters (Command 6) — every platform -> COR.
 
-    airflow          DAG .py files, parsed with Python's ``ast`` module
-                     (DAGs, operators, sensors, TaskGroups, >>/<< chains,
-                     set_upstream/downstream, chain(), pools, retries,
-                     SLAs, schedules; XCom use surfaced as variables)
+    airflow          DAG .py files, parsed with Python's ``ast`` module.
+                     Classic style (``with DAG(...)``, ``dag = DAG(...)``,
+                     ``*Operator``/``*Sensor``, TaskGroups, >>/<< chains,
+                     set_upstream/downstream, chain(), cross_downstream)
+                     AND the TaskFlow API (``@dag``, ``@task``,
+                     ``@task.<flavour>``, ``@task_group``, data-flow
+                     dependencies, ``.override()``/``.expand()``), plus
+                     pools, retries, timeouts, SLAs, trigger rules,
+                     schedules (cron/timetable/dataset) and XCom use.
+                     One Workflow per DAG, so a module holding several
+                     DAGs imports as several workflows.
     adf / synapse_pipelines / fabric
                      pipeline JSON (activities, dependsOn conditions,
                      policy retry/timeout, IfCondition/ForEach/Until
@@ -142,7 +149,7 @@ def detect_orchestration_platform(path: str) -> dict:
 
 
 # ===========================================================================
-# Airflow (ast — never regex-only)
+# Airflow (ast — never regex-only). Classic operators AND the TaskFlow API.
 # ===========================================================================
 
 _AF_TYPE = [
@@ -157,6 +164,43 @@ _AF_TYPE = [
     ("dbtcloudrunjob", "subworkflow"), ("kubernetespod", "command"),
 ]
 
+# TaskFlow decorator flavour -> COR type / nearest classic operator.
+# "" is the bare ``@task`` / ``@task()`` form (a plain Python callable).
+_TF_TYPE = {
+    "": "command", "python": "command", "bash": "command",
+    "virtualenv": "command", "external_python": "command",
+    "branch": "choice", "branch_python": "choice",
+    "branch_virtualenv": "choice", "branch_external_python": "choice",
+    "short_circuit": "choice", "sensor": "sensor",
+    "docker": "command", "kubernetes": "command",
+    "pyspark": "notebook", "spark": "notebook",
+}
+_TF_OPERATOR = {
+    "": "PythonOperator", "python": "PythonOperator",
+    "bash": "BashOperator", "virtualenv": "PythonVirtualenvOperator",
+    "external_python": "ExternalPythonOperator",
+    "branch": "BranchPythonOperator", "branch_python": "BranchPythonOperator",
+    "branch_virtualenv": "BranchPythonVirtualenvOperator",
+    "branch_external_python": "BranchExternalPythonOperator",
+    "short_circuit": "ShortCircuitOperator", "sensor": "PythonSensor",
+    "docker": "DockerOperator", "kubernetes": "KubernetesPodOperator",
+    "pyspark": "PySparkOperator", "spark": "SparkSubmitOperator",
+}
+# ``.override()`` / ``.partial()`` / ``.expand()`` ride on a TaskFlow callable
+_TF_CHAIN = ("override", "partial", "expand", "expand_kwargs")
+# task-level kwargs that ``.override()`` may legitimately change
+_TF_OVERRIDABLE = (
+    "task_id", "retries", "retry_delay", "retry_exponential_backoff",
+    "execution_timeout", "timeout", "sla", "pool", "trigger_rule",
+    "depends_on_past", "max_active_tis_per_dag", "mode", "poke_interval",
+    "queue", "priority_weight",
+)
+# Airflow trigger rules that describe a failure/always path, not success
+_AF_TRIGGER_KIND = {"one_failed": "failure", "all_failed": "failure",
+                    "all_done": "always", "all_done_setup_success": "always",
+                    "always": "always", "none_skipped": "always"}
+_GROUP = "@group:"          # sentinel: "the TaskGroup called <key>"
+
 
 def _af_task_type(cls: str) -> str:
     c = cls.lower()
@@ -164,6 +208,17 @@ def _af_task_type(cls: str) -> str:
         if key in c:
             return t
     return "unknown"
+
+
+def _num(v: object, default: int = 0) -> int:
+    """Airflow DAGs freely use module constants (``retries=RETRIES``);
+    an unresolvable value must degrade, never crash the import."""
+    if isinstance(v, bool):
+        return int(v)
+    try:
+        return int(v)                            # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return default
 
 
 def _const(node) -> object:
@@ -178,10 +233,10 @@ def _const(node) -> object:
         fn = _call_name(node)
         if fn == "timedelta":
             kw = {k.arg: _const(k.value) for k in node.keywords}
-            return int(kw.get("days", 0) or 0) * 86400 + \
-                int(kw.get("hours", 0) or 0) * 3600 + \
-                int(kw.get("minutes", 0) or 0) * 60 + \
-                int(kw.get("seconds", 0) or 0)
+            return _num(kw.get("days", 0)) * 86400 + \
+                _num(kw.get("hours", 0)) * 3600 + \
+                _num(kw.get("minutes", 0)) * 60 + \
+                _num(kw.get("seconds", 0))
     if isinstance(node, ast.Name):
         return "$" + node.id
     return None
@@ -196,11 +251,258 @@ def _call_name(call: ast.Call) -> str:
     return ""
 
 
+def _src(node) -> str:
+    """Original source of an expression — used where a value is only
+    knowable at runtime (start_date, timetables, dataset triggers)."""
+    try:
+        return ast.unparse(node)
+    except Exception:                                    # pragma: no cover
+        return ""
+
+
+def _deref(v: object, consts: Dict[str, object]) -> object:
+    """``retries=RETRIES`` — resolve a module constant one hop. DAGs lean
+    on module-level constants constantly; an unresolved one must still
+    degrade rather than crash."""
+    if isinstance(v, str) and v.startswith("$"):
+        return consts.get(v[1:], v)
+    return v
+
+
+def _dotted(node) -> str:
+    parts: List[str] = []
+    while isinstance(node, ast.Attribute):
+        parts.insert(0, node.attr)
+        node = node.value
+    if isinstance(node, ast.Name):
+        parts.insert(0, node.id)
+    return ".".join(parts)
+
+
+def _af_decorator(fn) -> Tuple[str, str, Optional[ast.Call]]:
+    """(kind, flavour, decorator call) for @dag / @task / @task_group.
+
+    Import style is irrelevant — ``@dag``, ``@dag(...)``, ``@task.bash``,
+    ``@airflow.decorators.task(...)`` and ``@airflow.sdk.task`` all match.
+    """
+    found: Dict[str, Tuple[str, Optional[ast.Call]]] = {}
+    for d in getattr(fn, "decorator_list", []):
+        call = d if isinstance(d, ast.Call) else None
+        parts = _dotted(call.func if call is not None else d).split(".")
+        for i, p in enumerate(parts):
+            if p in ("dag", "task_group", "task", "setup", "teardown"):
+                found.setdefault(p, (".".join(parts[i + 1:]), call))
+                break
+    for kind in ("dag", "task_group", "task"):
+        if kind in found:
+            return kind, found[kind][0], found[kind][1]
+    for kind in ("setup", "teardown"):                  # @setup / @teardown
+        if kind in found:
+            return "task", "", found[kind][1]
+    return "", "", None
+
+
+def _tf_chain(call: ast.Call):
+    """Peel ``.override()/.partial()/.expand()`` off a TaskFlow call.
+
+    -> (base callable node, every value node passed anywhere in the chain,
+    keyword map, flag set). The value nodes are what carries TaskFlow data
+    flow, so they are also the dependency edges.
+    """
+    args: List[object] = []
+    kwargs: Dict[str, object] = {}
+    flags: set = set()
+    cur: object = call
+    while isinstance(cur, ast.Call):
+        args.extend(cur.args)
+        for k in cur.keywords:
+            if k.arg:
+                kwargs.setdefault(k.arg, k.value)
+            args.append(k.value)
+        fn = cur.func
+        if isinstance(fn, ast.Attribute) and fn.attr in _TF_CHAIN:
+            flags.add(fn.attr)
+            cur = fn.value
+            continue
+        if isinstance(fn, ast.Call):
+            cur = fn            # f.override(task_id=…)(x) — keep peeling
+            continue
+        return fn, args, kwargs, flags
+    return cur, args, kwargs, flags
+
+
+def _af_schedule(node, consts: Optional[Dict[str, object]] = None
+                 ) -> Optional[Schedule]:
+    """Every Airflow 1/2/3 schedule form -> one COR Schedule."""
+    v = _deref(_const(node), consts or {})
+    if isinstance(v, str) and v.startswith("$"):
+        return None                                  # variable — unknowable
+    if isinstance(v, str) and v:
+        return Schedule(kind="cron", cron=normalize_cron(v), raw=v)
+    if isinstance(node, ast.Constant) and v is None:
+        return Schedule(kind="manual", raw="None")
+    if isinstance(v, bool):
+        return None
+    if isinstance(v, int) and v:
+        return Schedule(kind="interval", interval_seconds=v, raw=str(v))
+    raw = _src(node)[:200]
+    if isinstance(node, (ast.List, ast.Tuple, ast.Set)):     # dataset/asset
+        return Schedule(kind="event", event=raw, raw=raw)
+    if isinstance(node, ast.Call):
+        nm = _call_name(node).lower()
+        first = node.args[0] if node.args else None
+        if "cron" in nm and isinstance(first, ast.Constant) and \
+                isinstance(first.value, str):
+            return Schedule(kind="cron",
+                            cron=normalize_cron(first.value), raw=raw)
+        if "delta" in nm:
+            return Schedule(kind="interval",
+                            interval_seconds=_num(_const(first)), raw=raw)
+        if "asset" in nm or "dataset" in nm or "event" in nm:
+            return Schedule(kind="event", event=raw, raw=raw)
+        return Schedule(kind="calendar", calendar=raw, raw=raw)
+    return None
+
+
+def _af_common(kw: Dict[str, object], default_args: dict,
+               consts: Optional[Dict[str, object]] = None) -> dict:
+    """Retry/timeout/SLA/pool/connection/trigger-rule with Airflow's own
+    precedence: task kwargs first, then the DAG's default_args."""
+    cs = consts or {}
+
+    def pick(name: str, fallback: object = 0) -> object:
+        if name in kw:
+            return _deref(_const(kw[name]), cs)
+        return _deref(default_args.get(name, fallback), cs)
+
+    timeout = _num(pick("execution_timeout", 0))
+    if not timeout:                       # sensors carry ``timeout=``
+        timeout = _num(pick("timeout", 0))
+    tr_node = kw.get("trigger_rule")
+    tr = _deref(_const(tr_node), cs) if tr_node is not None \
+        else default_args.get("trigger_rule", "")
+    if tr is None and isinstance(tr_node, ast.Attribute):
+        tr = tr_node.attr                            # TriggerRule.ONE_FAILED
+    conn = ""
+    for k in kw:
+        if k.endswith("conn_id"):
+            conn = str(_deref(_const(kw[k]), cs) or "")
+    return {
+        "retry": RetryPolicy(
+            _num(pick("retries", 0)), _num(pick("retry_delay", 0)),
+            2.0 if pick("retry_exponential_backoff", False) is True
+            else 1.0),
+        "timeout": timeout,
+        "sla": _num(pick("sla", 0)),
+        "connection": conn,
+        "pool": str(pick("pool", "") or ""),
+        "trigger_rule": str(tr or "").lower().rsplit(".", 1)[-1],
+        "mode": str(pick("mode", "") or ""),
+        "poke_interval": _num(pick("poke_interval", 0)),
+        "depends_on_past": pick("depends_on_past", False) is True,
+        "max_active_tis": _num(pick("max_active_tis_per_dag", 0)),
+    }
+
+
+def _returned_string(fn) -> str:
+    """``@task.bash`` returns its command — surface it when it is literal."""
+    for n in ast.walk(fn):
+        if isinstance(n, ast.Return) and isinstance(n.value, ast.Constant) \
+                and isinstance(n.value.value, str):
+            return n.value.value
+    return ""
+
+
+def _first_line(doc: str) -> str:
+    lines = [ln.strip() for ln in (doc or "").splitlines() if ln.strip()]
+    return lines[0][:200] if lines else ""
+
+
+class _AfScope:
+    """One DAG being parsed — a ``with DAG(...)`` block, a ``@dag``
+    function, or the module itself for ``dag = DAG(...)`` style."""
+
+    def __init__(self, wf: Workflow, default_args: dict) -> None:
+        self.wf = wf
+        self.default_args = dict(default_args)
+        self.var_task: Dict[str, List[str]] = {}   # python var -> task keys
+        self.templates: Dict[str, dict] = {}       # @task fn -> template
+        self.groups: Dict[str, List[str]] = {}     # group key -> members
+        self.group_ctx: List[str] = []             # TaskGroup nesting
+        self.marks: List[Tuple[str, int]] = []
+        self.counts: Dict[str, int] = {}           # task_id -> instances
+
+
+def _imports_airflow(tree: ast.Module) -> bool:
+    return any(isinstance(n, (ast.Import, ast.ImportFrom))
+               and "airflow" in ast.dump(n) for n in ast.walk(tree))
+
+
+def _looks_airflow(tree: ast.Module) -> bool:
+    """Worth parsing as Airflow: an import, a ``DAG(...)`` call, or a
+    ``@dag``/``@task`` function. Pasted snippets often drop the imports."""
+    if _imports_airflow(tree):
+        return True
+    for n in ast.walk(tree):
+        if isinstance(n, ast.Call) and _call_name(n) == "DAG":
+            return True
+        if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and \
+                _af_decorator(n)[0] in ("dag", "task", "task_group"):
+            return True
+    return False
+
+
+def _and(names: List[str], cap: int = 4) -> str:
+    uniq = list(dict.fromkeys(names))
+    head = uniq[:cap]
+    rest = len(uniq) - len(head)
+    text = ", ".join(head)
+    if rest:
+        return "%s and %d more file(s)" % (text, rest)
+    if len(head) > 1:
+        return "%s and %s" % (", ".join(head[:-1]), head[-1])
+    return text
+
+
+def _af_nothing_found(p: Path, scanned: List[str], skipped: List[str],
+                      barren: List[str]) -> Exception:
+    """Say what was actually wrong with the upload — and never echo the
+    server-side job path back at the user."""
+    where = p.name if p.is_file() else "the upload"
+    if not scanned:
+        return FileNotFoundError(
+            "No Python files found in %s. Airflow modernization reads DAG "
+            "modules — upload the .py files from your dags/ folder." % where)
+    if barren:
+        many = len(set(barren)) > 1
+        return ValueError(
+            "%s %s Airflow but %s no DAG that MetaBridge can read. "
+            "MetaBridge understands `with DAG(...)`, `dag = DAG(...)` and "
+            "`@dag`-decorated functions, plus `*Operator`/`*Sensor` calls "
+            "and `@task` TaskFlow functions. If the DAG is assembled by a "
+            "factory, a loop or a YAML/JSON generator, it only exists once "
+            "Airflow imports it — export the rendered definition (Airflow "
+            "UI > DAG > Code, or `airflow dags show <dag_id>`) and upload "
+            "that instead."
+            % (_and(barren), "import" if many else "imports",
+               "declare" if many else "declares"))
+    names = skipped or scanned
+    return ValueError(
+        "%s %s no Airflow DAG — no `airflow` import, no `DAG(...)` call and "
+        "no `@dag` function. Upload the DAG modules themselves, not "
+        "plugins, hooks or helper modules."
+        % (_and(names), "contain" if len(set(names)) > 1 else "contains"))
+
+
 def parse_airflow(path: str) -> COR:
     p = Path(path)
     files = [p] if p.is_file() else sorted(p.rglob("*.py"))
     cor = COR(name=_clean(p.stem), source_platform="airflow")
+    scanned: List[str] = []
+    skipped: List[str] = []
+    barren: List[str] = []
     for f in files:
+        scanned.append(f.name)
         try:
             tree = ast.parse(f.read_text(errors="replace", encoding="utf-8"))
         except (SyntaxError, OSError) as e:
@@ -208,62 +510,158 @@ def parse_airflow(path: str) -> COR:
                                "message": "%s is not parseable Python: %s"
                                % (f.name, e)})
             continue
-        if not any(isinstance(n, (ast.Import, ast.ImportFrom)) and
-                   "airflow" in ast.dump(n) for n in ast.walk(tree)):
+        if not _looks_airflow(tree):
+            skipped.append(f.name)
             continue
+        before = len(cor.workflows)
         _parse_airflow_module(f, tree, cor)
-    if not cor.workflows and not cor.issues:
-        raise FileNotFoundError("No Airflow DAG files under %s" % path)
+        if len(cor.workflows) == before:
+            # "imports Airflow but has no DAG" is only true if it really
+            # imports Airflow — a Celery @app.task module lands here too
+            (barren if _imports_airflow(tree) else skipped).append(f.name)
+    if not cor.workflows:
+        if cor.issues:
+            raise ValueError(
+                "No Airflow DAG could be read from the upload. "
+                + " ".join(str(i.get("message", "")) for i in cor.issues[:3]))
+        raise _af_nothing_found(p, scanned, skipped, barren)
     return cor
 
 
 def _parse_airflow_module(f: Path, tree: ast.Module, cor: COR) -> None:
-    wf = Workflow(name=_clean(f.stem), platform="airflow",
-                  metadata={"file": f.name})
-    default_args: Dict[str, object] = {}
-    module_dicts: Dict[str, dict] = {}     # module-level dict literals
-    var_task: Dict[str, str] = {}          # python var -> task key
-    group_of_ctx: List[str] = []           # TaskGroup nesting
+    """One module -> one Workflow per DAG it declares.
 
-    def dag_call(call: ast.Call) -> None:
+    DAG forms read: ``with DAG(...) as dag:``, ``dag = DAG(...)`` and
+    ``@dag``-decorated functions. Task forms read: any ``*Operator`` /
+    ``*Sensor`` call carrying ``task_id``, and any ``@task`` /
+    ``@task.<flavour>`` / ``@task_group`` function invoked in the DAG body.
+    TaskFlow data flow (``load(transform(extract()))``) is read as the
+    dependency graph Airflow itself derives from it, so a modern DAG lands
+    in COR with the same shape a classic one does.
+    """
+    module_vals: Dict[str, object] = {}      # module/DAG-level constants
+    produced: List[Workflow] = []
+    all_templates: List[Tuple[str, dict, Workflow]] = []
+    group_vars: List[object] = []
+
+    def new_wf(name: str) -> Workflow:
+        return Workflow(name=_clean(name), platform="airflow",
+                        metadata={"file": f.name})
+
+    root = _AfScope(new_wf(f.stem), {})
+    stack: List[_AfScope] = [root]
+
+    def sc() -> _AfScope:
+        return stack[-1]
+
+    def find_template(name: str) -> Optional[dict]:
+        for s in reversed(stack):
+            if name in s.templates:
+                return s.templates[name]
+        return None
+
+    def var_keys(name: str) -> List[str]:
+        for s in reversed(stack):
+            if name in s.var_task:
+                return list(s.var_task[name])
+        return []
+
+    def group_members(gkey: str) -> List[str]:
+        for s in reversed(stack):
+            if gkey in s.groups:
+                return s.groups[gkey]
+        return []
+
+    # -- DAG-level attributes ------------------------------------------------
+
+    def dag_kwargs(scope: _AfScope, call: Optional[ast.Call]) -> None:
+        wf = scope.wf
+        if call is None:
+            return
         args = {k.arg: k.value for k in call.keywords if k.arg}
         if call.args and isinstance(call.args[0], ast.Constant):
             wf.name = _clean(str(call.args[0].value))
         if "dag_id" in args:
             wf.name = _clean(str(_const(args["dag_id"])))
-        sched = args.get("schedule") or args.get("schedule_interval")
-        if sched is not None:
-            v = _const(sched)
-            if isinstance(v, str) and v:
-                wf.schedules.append(Schedule(
-                    kind="cron", cron=normalize_cron(v), raw=v))
-            elif isinstance(v, int):
-                wf.schedules.append(Schedule(kind="interval",
-                                             interval_seconds=v,
-                                             raw=str(v)))
-            elif v is None:
-                wf.schedules.append(Schedule(kind="manual", raw="None"))
+        for key in ("schedule", "schedule_interval", "timetable"):
+            if key in args:
+                s = _af_schedule(args[key], module_vals)
+                if s is not None:
+                    wf.schedules.append(s)
+                break
         if "default_args" in args:
             v = _const(args["default_args"])
             if isinstance(v, str) and v.startswith("$"):
-                v = module_dicts.get(v[1:])       # default_args=<var>
+                v = module_vals.get(v[1:])
             if isinstance(v, dict):
-                default_args.update(v)
-        for key in ("description",):
+                scope.default_args.update(v)
+        if "description" in args:
+            wf.description = str(_const(args["description"]) or "")
+        for key, mkey in (("catchup", "catchup"),
+                          ("max_active_runs", "max_active_runs"),
+                          ("max_active_tasks", "max_active_tasks"),
+                          ("concurrency", "max_active_tasks"),
+                          ("dagrun_timeout", "dagrun_timeout_seconds"),
+                          ("is_paused_upon_creation", "paused_on_create")):
             if key in args:
-                wf.description = str(_const(args[key]) or "")
+                v = _deref(_const(args[key]), module_vals)
+                if isinstance(v, (bool, int, float, str)):
+                    wf.metadata[mkey] = v
+        for key in ("start_date", "end_date"):
+            if key in args:
+                wf.metadata[key] = _src(args[key])[:120]
+        if "tags" in args:
+            v = _const(args["tags"])
+            if isinstance(v, list):
+                wf.metadata["tags"] = [str(x) for x in v if x]
+        if "owner" in args:
+            wf.metadata["owner"] = str(_const(args["owner"]) or "")
+        for cb in ("on_failure_callback", "sla_miss_callback"):
+            if cb in args:
+                wf.notifications.append(Notification(
+                    on="sla" if "sla" in cb else "failure",
+                    channel="callback", target=_src(args[cb])[:120]))
 
-    def task_from_call(call: ast.Call, varname: str = "") -> Optional[str]:
+    # -- tasks --------------------------------------------------------------
+
+    def make_task(key: str, ttype: str, action: Dict[str, object],
+                  kw: Dict[str, object], original: Dict[str, object]) -> Task:
+        wf = sc().wf
+        existing = wf.task(key)
+        if existing is not None:
+            return existing
+        c = _af_common(kw, sc().default_args, module_vals)
+        t = Task(key=key, name=key, type=ttype, action=action,
+                 retry=c["retry"], timeout_seconds=c["timeout"],
+                 sla_seconds=c["sla"], connection=c["connection"],
+                 parallel_group="/".join(sc().group_ctx),
+                 original=dict(original))
+        if c["pool"]:
+            t.resources["pool"] = c["pool"]
+        if c["mode"]:
+            t.resources["mode"] = c["mode"]
+        if c["max_active_tis"]:
+            t.resources["max_active_tis_per_dag"] = str(c["max_active_tis"])
+        if c["poke_interval"]:
+            t.original["poke_interval"] = c["poke_interval"]
+        if c["trigger_rule"]:
+            t.original["trigger_rule"] = c["trigger_rule"]
+        if c["depends_on_past"]:
+            t.original["depends_on_past"] = True
+        wf.tasks.append(t)
+        return t
+
+    def task_from_call(call: ast.Call) -> Optional[str]:
         cls = _call_name(call)
-        if not (cls.endswith("Operator") or cls.endswith("Sensor") or
-                cls in ("TaskGroup",)):
+        if not (cls.endswith("Operator") or cls.endswith("Sensor")):
             return None
-        kw = {k.arg: k.value for k in call.keywords if k.arg}
-        if cls == "TaskGroup":
-            return None
+        kw: Dict[str, object] = {k.arg: k.value for k in call.keywords
+                                 if k.arg}
         if "task_id" not in kw:
             return None
         key = _clean(str(_const(kw["task_id"])))
+        if not key:
+            return None
         ttype = _af_task_type(cls)
         action: Dict[str, object] = {"operator": cls}
         for src, tgt in (("bash_command", "command"), ("sql", "sql"),
@@ -271,128 +669,209 @@ def _parse_airflow_module(f: Path, tree: ast.Module, cor: COR) -> None:
                          ("notebook_path", "notebook"),
                          ("trigger_dag_id", "workflow"),
                          ("job_id", "job"), ("to", "to"),
+                         ("filepath", "filepath"),
                          ("external_dag_id", "workflow")):
             if src in kw:
                 v = _const(kw[src])
                 action[tgt] = str(v)[:500] if v is not None else ""
-        retries = _const(kw["retries"]) if "retries" in kw \
-            else default_args.get("retries", 0)
-        delay = _const(kw["retry_delay"]) if "retry_delay" in kw \
-            else default_args.get("retry_delay", 0)
-        timeout = _const(kw["execution_timeout"]) \
-            if "execution_timeout" in kw else 0
-        sla = _const(kw["sla"]) if "sla" in kw else default_args.get("sla", 0)
-        conn = ""
-        for k in kw:
-            if k.endswith("conn_id"):
-                conn = str(_const(kw[k]) or "")
-        t = Task(key=key, name=key, type=ttype, action=action,
-                 retry=RetryPolicy(int(retries or 0), int(delay or 0)),
-                 timeout_seconds=int(timeout or 0),
-                 sla_seconds=int(sla or 0), connection=conn,
-                 parallel_group="/".join(group_of_ctx),
-                 original={"operator": cls})
-        if "pool" in kw:
-            t.resources["pool"] = str(_const(kw["pool"]) or "")
-        src_txt = ast.dump(call)
-        if "xcom_pull" in src_txt or "xcom_push" in src_txt:
-            t.variables_used.append("xcom")
+        t = make_task(key, ttype, action, kw, {"operator": cls})
+        if "xcom_pull" in ast.dump(call) or "xcom_push" in ast.dump(call):
+            if "xcom" not in t.variables_used:
+                t.variables_used.append("xcom")
         if ttype == "unknown":
-            wf.add_issue("MANUAL", "AF_OPERATOR_UNSUPPORTED",
-                         "Operator %s (task %s) has no direct target "
-                         "equivalent — preserved for manual porting"
-                         % (cls, key))
-        wf.tasks.append(t)
-        if varname:
-            var_task[varname] = key
-        return key
+            sc().wf.add_issue("MANUAL", "AF_OPERATOR_UNSUPPORTED",
+                              "Operator %s (task %s) has no direct target "
+                              "equivalent — preserved for manual porting"
+                              % (cls, key))
+        return t.key
+
+    # -- TaskFlow -----------------------------------------------------------
+
+    def register_template(fn, kind: str, flavour: str,
+                          call: Optional[ast.Call]) -> None:
+        kw: Dict[str, object] = {k.arg: k.value
+                                 for k in (call.keywords if call else [])
+                                 if k.arg}
+        base = _clean(str(_const(kw["task_id"]))) if "task_id" in kw else ""
+        tpl = {"kind": kind, "flavour": flavour.split(".")[0], "kw": kw,
+               "fn": fn, "task_id": base or _clean(fn.name), "used": False}
+        sc().templates[fn.name] = tpl
+        all_templates.append((fn.name, tpl, sc().wf))
+
+    def instantiate(tpl: dict, kwargs: Dict[str, object], flags: set,
+                    params: Optional[Dict[str, List[str]]] = None
+                    ) -> List[str]:
+        tpl["used"] = True
+        base = tpl["task_id"]
+        if "task_id" in kwargs:                     # .override(task_id=…)
+            base = _clean(str(_const(kwargs["task_id"]))) or base
+        n = sc().counts.get(base, 0)
+        sc().counts[base] = n + 1
+        key = base if not n else "%s__%d" % (base, n)   # Airflow's own rule
+        if tpl["kind"] == "task_group":
+            enter_group(key)
+            outer = dict(sc().var_task)
+            for pname, pkeys in (params or {}).items():
+                if pkeys:                    # the group's own parameters
+                    sc().var_task[pname] = list(pkeys)
+            walk(tpl["fn"].body)
+            sc().var_task = outer            # group locals do not leak
+            gkey = leave_group()
+            return [_GROUP + gkey] if group_members(gkey) else []
+        kw = dict(tpl["kw"])
+        if "override" in flags:
+            kw.update({k: v for k, v in kwargs.items()
+                       if k in _TF_OVERRIDABLE})
+        flavour = tpl["flavour"]
+        ttype = _TF_TYPE.get(flavour, "command")
+        action: Dict[str, object] = {
+            "operator": _TF_OPERATOR.get(flavour, "PythonOperator"),
+            "taskflow": True, "callable": tpl["fn"].name}
+        if flavour == "bash":
+            cmd = _returned_string(tpl["fn"])
+            if cmd:
+                action["command"] = cmd[:500]
+        t = make_task(key, ttype, action, kw,
+                      {"decorator": "@task" + ("." + flavour if flavour
+                                               else ""),
+                       "callable": tpl["fn"].name, "taskflow": True})
+        if not t.description:
+            t.description = _first_line(ast.get_docstring(tpl["fn"]) or "")
+        if "xcom" not in t.variables_used:
+            t.variables_used.append("xcom")     # TaskFlow IS XCom
+        if flags & {"expand", "expand_kwargs"}:
+            t.loop = {"kind": "dynamic_task_mapping", "source": ".expand()"}
+            sc().wf.add_issue(
+                "MANUAL", "AF_DYNAMIC_TASK_MAPPING",
+                "Task '%s' fans out at runtime with .expand() (dynamic task "
+                "mapping) — how many instances run is unknown until the DAG "
+                "executes" % key, suggestion="No target orchestrator has a "
+                "direct equivalent: port to a native ForEach/Map activity "
+                "or a parameterized child workflow.")
+        if flavour and flavour not in _TF_TYPE:
+            sc().wf.add_issue(
+                "MANUAL", "AF_TASKFLOW_FLAVOUR_UNKNOWN",
+                "@task.%s (task %s) is not a flavour MetaBridge maps — "
+                "imported as a Python task, review the runtime it needs"
+                % (flavour, key))
+        return [t.key]
+
+    # -- TaskGroups (classic and TaskFlow share one implementation) ---------
+
+    def enter_group(name: str) -> None:
+        sc().group_ctx.append(_clean(name))
+        sc().marks.append(("/".join(sc().group_ctx), len(sc().wf.tasks)))
+
+    def leave_group() -> str:
+        gkey, start = sc().marks.pop()
+        members = [t.key for t in sc().wf.tasks[start:]]
+        if members:
+            sc().groups[gkey] = members
+        sc().group_ctx.pop()
+        return gkey
+
+    def group_boundary(gkey: str, side: str) -> List[str]:
+        """A dependency on a group binds to its edge tasks, not all of
+        them: its exits when upstream, its entries when downstream."""
+        members = group_members(gkey)
+        if len(members) < 2:
+            return list(members)
+        mset = set(members)
+        inner = [d for d in sc().wf.dependencies
+                 if d.from_task in mset and d.to_task in mset]
+        busy = {d.from_task for d in inner} if side == "out" \
+            else {d.to_task for d in inner}
+        return [m for m in members if m not in busy] or list(members)
+
+    def side_keys(keys: List[str], side: str) -> List[str]:
+        out: List[str] = []
+        for k in keys:
+            if k.startswith(_GROUP):
+                out.extend(group_boundary(k[len(_GROUP):], side))
+            else:
+                out.append(k)
+        return out
+
+    def already_wired(ups: List[str], keys: List[str]) -> bool:
+        """A ``@task_group`` body that consumed its own arguments has
+        already wired the precise edges. Adding the group-level edge on top
+        would connect every upstream task to every entry task."""
+        if not ups or not keys:
+            return False
+        srcs = set(side_keys(ups, "out"))
+        dsts = set(side_keys(keys, "in"))
+        return any(d.from_task in srcs and d.to_task in dsts
+                   for d in sc().wf.dependencies)
+
+    def dep(froms: List[str], tos: List[str]) -> None:
+        wf = sc().wf
+        for a in side_keys(froms, "out"):
+            for b in side_keys(tos, "in"):
+                if a != b:
+                    wf.dependencies.append(Dependency(a, b))
+
+    # -- expressions --------------------------------------------------------
 
     def resolve(node) -> List[str]:
-        """>>-chain operand -> task keys (vars, lists, direct calls)."""
+        """Any expression -> the task keys it stands for, instantiating
+        TaskFlow calls and inline operators on the way."""
+        if node is None:
+            return []
         if isinstance(node, ast.Name):
-            return [var_task[node.id]] if node.id in var_task else []
-        if isinstance(node, (ast.List, ast.Tuple)):
+            return var_keys(node.id)
+        if isinstance(node, (ast.List, ast.Tuple, ast.Set)):
             return [k for e in node.elts for k in resolve(e)]
+        if isinstance(node, ast.Starred):
+            return resolve(node.value)
+        if isinstance(node, ast.Subscript):            # xcom["key"]
+            return resolve(node.value)
+        if isinstance(node, ast.Attribute):            # task.output
+            return resolve(node.value)
+        if isinstance(node, ast.IfExp):
+            return resolve(node.body) + resolve(node.orelse)
+        if isinstance(node, ast.BinOp):
+            return chain_binop(node)
         if isinstance(node, ast.Call):
+            base, argv, kwargs, flags = _tf_chain(node)
+            name = base.id if isinstance(base, ast.Name) else (
+                base.attr if isinstance(base, ast.Attribute) else "")
+            tpl = find_template(name)
+            if tpl is not None:
+                if tpl["kind"] == "task_group" and not flags:
+                    fa = tpl["fn"].args
+                    pnames = [a.arg for a in (getattr(fa, "posonlyargs", [])
+                                              + fa.args + fa.kwonlyargs)]
+                    pmap: Dict[str, List[str]] = {}
+                    upstream = []
+                    for i, a in enumerate(node.args):
+                        ks = resolve(a)          # resolve once, never twice
+                        upstream += ks
+                        if i < len(pnames):
+                            pmap[pnames[i]] = ks
+                    for kwn in node.keywords:
+                        ks = resolve(kwn.value)
+                        upstream += ks
+                        if kwn.arg in pnames:
+                            pmap[kwn.arg] = ks
+                    keys = instantiate(tpl, kwargs, flags, pmap)
+                    if not already_wired(upstream, keys):
+                        dep(upstream, keys)
+                    return keys
+                upstream = [k for a in argv for k in resolve(a)]
+                keys = instantiate(tpl, kwargs, flags)
+                dep(upstream, keys)
+                return keys
+            if _call_name(node) == "TaskGroup":
+                return []
             key = task_from_call(node)
             return [key] if key else []
         return []
 
-    def dep(f_keys: List[str], t_keys: List[str]) -> None:
-        for a in f_keys:
-            for b in t_keys:
-                wf.dependencies.append(Dependency(a, b))
-
-    def walk(body) -> None:
-        for node in body:
-            if isinstance(node, ast.With):
-                entered = False
-                for item in node.items:
-                    ce = item.context_expr
-                    if isinstance(ce, ast.Call):
-                        nm = _call_name(ce)
-                        if nm == "DAG":
-                            dag_call(ce)
-                        elif nm == "TaskGroup":
-                            gname = ""
-                            if ce.args and isinstance(ce.args[0],
-                                                      ast.Constant):
-                                gname = str(ce.args[0].value)
-                            for k in ce.keywords:
-                                if k.arg == "group_id":
-                                    gname = str(_const(k.value))
-                            group_of_ctx.append(_clean(gname))
-                            entered = True
-                walk(node.body)
-                if entered:
-                    group_of_ctx.pop()
-            elif isinstance(node, ast.Assign) and \
-                    isinstance(node.value, ast.Dict) and \
-                    len(node.targets) == 1 and \
-                    isinstance(node.targets[0], ast.Name):
-                v = _const(node.value)
-                if isinstance(v, dict):
-                    module_dicts[node.targets[0].id] = v
-            elif isinstance(node, ast.Assign) and \
-                    isinstance(node.value, ast.Call):
-                nm = _call_name(node.value)
-                if nm == "DAG":
-                    dag_call(node.value)
-                elif len(node.targets) == 1 and \
-                        isinstance(node.targets[0], ast.Name):
-                    task_from_call(node.value, node.targets[0].id)
-            elif isinstance(node, ast.Expr):
-                v = node.value
-                if isinstance(v, ast.BinOp):
-                    _chain_binop(v)
-                elif isinstance(v, ast.Call):
-                    nm = _call_name(v)
-                    if nm == "chain":
-                        ops = [resolve(a) for a in v.args]
-                        for a, b in zip(ops, ops[1:]):
-                            dep(a, b)
-                    elif nm in ("set_downstream", "set_upstream") and \
-                            isinstance(v.func, ast.Attribute):
-                        left = resolve(v.func.value)
-                        right = [k for a in v.args for k in resolve(a)]
-                        if nm == "set_downstream":
-                            dep(left, right)
-                        else:
-                            dep(right, left)
-                    else:
-                        task_from_call(v)
-            elif isinstance(node, (ast.FunctionDef,
-                                   ast.AsyncFunctionDef)):
-                walk(node.body)
-            elif isinstance(node, (ast.If, ast.For, ast.Try)):
-                walk(getattr(node, "body", []))
-                walk(getattr(node, "orelse", []))
-
-    def _chain_binop(b: ast.BinOp) -> None:
-        """a >> b >> [c, d] >> e  — flatten same-operator chains into
+    def chain_binop(b: ast.BinOp) -> List[str]:
+        """``a >> b >> [c, d] >> e`` — flatten same-operator chains into
         ordered operand groups, then link successive groups."""
         if not isinstance(b.op, (ast.RShift, ast.LShift)):
-            return
+            return []
         groups: List[List[str]] = []
 
         def collect(n) -> None:
@@ -407,25 +886,195 @@ def _parse_airflow_module(f: Path, tree: ast.Module, cor: COR) -> None:
             groups.reverse()
         for g1, g2 in zip(groups, groups[1:]):
             dep(g1, g2)
+        return groups[-1] if groups else []
+
+    def bind(targets, keys: List[str]) -> None:
+        if not keys:
+            return
+        for tgt in targets:
+            if isinstance(tgt, ast.Name):
+                sc().var_task[tgt.id] = list(keys)
+            elif isinstance(tgt, (ast.Tuple, ast.List)):
+                for el in tgt.elts:                # multiple_outputs unpack
+                    if isinstance(el, ast.Name):
+                        sc().var_task[el.id] = list(keys)
+
+    # -- statements ---------------------------------------------------------
+
+    def walk(body) -> None:
+        for node in body:
+            if isinstance(node, (ast.With, ast.AsyncWith)):
+                scopes = groups = 0
+                for item in node.items:
+                    ce = item.context_expr
+                    if not isinstance(ce, ast.Call):
+                        continue
+                    nm = _call_name(ce)
+                    if nm == "DAG":
+                        scope = _AfScope(new_wf(f.stem), sc().default_args)
+                        stack.append(scope)
+                        scopes += 1
+                        dag_kwargs(scope, ce)
+                    elif nm == "TaskGroup":
+                        gname = ""
+                        if ce.args and isinstance(ce.args[0], ast.Constant):
+                            gname = str(ce.args[0].value)
+                        for k in ce.keywords:
+                            if k.arg == "group_id":
+                                gname = str(_const(k.value))
+                        enter_group(gname)
+                        group_vars.append(item.optional_vars)
+                        groups += 1
+                walk(node.body)
+                for _ in range(groups):
+                    gkey = leave_group()
+                    var_node = group_vars.pop()
+                    if isinstance(var_node, ast.Name) and \
+                            group_members(gkey):
+                        sc().var_task[var_node.id] = [_GROUP + gkey]
+                for _ in range(scopes):
+                    close_scope()
+            elif isinstance(node, ast.Assign):
+                tgt1 = node.targets[0] if len(node.targets) == 1 else None
+                if isinstance(node.value, (ast.Constant, ast.Dict)):
+                    if isinstance(tgt1, ast.Name):
+                        v = _const(node.value)
+                        if v is not None:
+                            module_vals[tgt1.id] = v
+                    continue
+                if isinstance(node.value, (ast.List, ast.Tuple)):
+                    keys = resolve(node.value)      # tasks = [Op(), Op()]
+                    if keys:
+                        bind(node.targets, keys)
+                    elif isinstance(tgt1, ast.Name):
+                        v = _const(node.value)
+                        if v is not None:
+                            module_vals[tgt1.id] = v
+                    continue
+                if isinstance(node.value, ast.Call) and \
+                        _call_name(node.value) == "DAG":
+                    dag_kwargs(sc(), node.value)
+                    continue
+                bind(node.targets, resolve(node.value))
+            elif isinstance(node, ast.AnnAssign) and node.value is not None:
+                bind([node.target], resolve(node.value))
+            elif isinstance(node, ast.Expr):
+                v = node.value
+                if isinstance(v, ast.BinOp):
+                    chain_binop(v)
+                elif isinstance(v, ast.Call):
+                    nm = _call_name(v)
+                    if nm in ("chain", "chain_linear"):
+                        ops = [resolve(a) for a in v.args]
+                        for a, b in zip(ops, ops[1:]):
+                            dep(a, b)
+                    elif nm == "cross_downstream":
+                        kw = {k.arg: k.value for k in v.keywords if k.arg}
+                        pos = list(v.args)
+                        frm = kw.get("from_tasks",
+                                     pos[0] if pos else None)
+                        to = kw.get("to_tasks",
+                                    pos[1] if len(pos) > 1 else None)
+                        dep(resolve(frm), resolve(to))
+                    elif nm in ("set_downstream", "set_upstream") and \
+                            isinstance(v.func, ast.Attribute):
+                        left = resolve(v.func.value)
+                        right = [k for a in v.args for k in resolve(a)]
+                        if nm == "set_downstream":
+                            dep(left, right)
+                        else:
+                            dep(right, left)
+                    else:
+                        resolve(v)
+            elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                kind, flavour, call = _af_decorator(node)
+                if kind == "dag":
+                    scope = _AfScope(new_wf(node.name), sc().default_args)
+                    stack.append(scope)
+                    dag_kwargs(scope, call)
+                    if not scope.wf.description:
+                        scope.wf.description = _first_line(
+                            ast.get_docstring(node) or "")
+                    walk(node.body)
+                    close_scope()
+                elif kind in ("task", "task_group"):
+                    register_template(node, kind, flavour, call)
+                else:
+                    walk(node.body)
+            elif isinstance(node, ast.Return):
+                resolve(node.value)
+            elif isinstance(node, (ast.If, ast.For, ast.AsyncFor, ast.Try,
+                                   ast.While)):
+                walk(getattr(node, "body", []))
+                walk(getattr(node, "orelse", []))
+                walk(getattr(node, "finalbody", []))
+                for h in getattr(node, "handlers", []):
+                    walk(h.body)
+
+    # -- close a DAG scope --------------------------------------------------
+
+    def close_scope() -> None:
+        scope = stack.pop()
+        wf = scope.wf
+        da = {k: _deref(v, module_vals)
+              for k, v in scope.default_args.items()}
+        scope.default_args = da
+        for key in ("depends_on_past", "wait_for_downstream"):
+            if da.get(key) is True:
+                wf.metadata[key] = True
+        if da.get("owner") and not wf.metadata.get("owner"):
+            wf.metadata["owner"] = str(da["owner"])
+        if da.get("email") and da.get("email_on_failure", True):
+            tgt = da["email"]
+            wf.notifications.append(Notification(
+                on="failure", channel="email",
+                target=", ".join(str(x) for x in tgt)
+                if isinstance(tgt, list) else str(tgt)))
+        for cb in ("on_failure_callback", "sla_miss_callback"):
+            if da.get(cb):
+                wf.notifications.append(Notification(
+                    on="sla" if "sla" in cb else "failure",
+                    channel="callback", target=str(da[cb])[:120]))
+        # trigger_rule is Airflow's failure/always path — carry the intent
+        # into the dependency kind so target generators keep the semantics
+        for t in wf.tasks:
+            kind = _AF_TRIGGER_KIND.get(str(t.original.get("trigger_rule",
+                                                           "")))
+            if not kind:
+                continue
+            for d in wf.dependencies:
+                if d.to_task == t.key and d.kind == "success":
+                    d.kind = kind
+        seen: set = set()
+        uniq: List[Dependency] = []
+        for d in wf.dependencies:
+            sig = (d.from_task, d.to_task, d.kind)
+            if sig not in seen:
+                seen.add(sig)
+                uniq.append(d)
+        wf.dependencies = uniq
+        if wf.tasks:
+            produced.append(wf)
 
     walk(tree.body)
-    # de-duplicate dependencies from chain recursion
-    seen = set()
-    uniq = []
-    for d in wf.dependencies:
-        sig = (d.from_task, d.to_task, d.kind)
-        if sig not in seen:
-            seen.add(sig)
-            uniq.append(d)
-    wf.dependencies = uniq
-    if default_args.get("email") and (
-            default_args.get("email_on_failure", True)):
-        tgt = default_args["email"]
-        wf.notifications.append(Notification(
-            on="failure", channel="email",
-            target=", ".join(tgt) if isinstance(tgt, list) else str(tgt)))
-    if wf.tasks:
-        cor.workflows.append(wf)
+    close_scope()                                        # module scope
+    cor.workflows.extend(produced)
+    # A @task function that is never invoked never becomes a task in
+    # Airflow either — declare it instead of silently dropping it.
+    for name, tpl, owner in all_templates:
+        if tpl["kind"] != "task" or tpl["used"]:
+            continue
+        target = owner if owner.tasks else (produced[0] if produced
+                                            else None)
+        if target is None:
+            continue
+        target.add_issue(
+            "WARNING", "AF_TASKFLOW_UNINVOKED",
+            "@task function '%s' is declared in %s but never called — "
+            "Airflow only creates a task when the function is invoked, so "
+            "it never ran" % (name, f.name),
+            suggestion="Call it inside the DAG body, or delete it before "
+                       "modernizing.")
 
 
 # ===========================================================================
@@ -1201,8 +1850,11 @@ def parse_orchestration(path: str, platform: str = "") -> COR:
         det = detect_orchestration_platform(path)
         platform = det["detected_platform"]
         if not platform:
-            raise ValueError("Could not detect an orchestration platform "
-                             "at %s" % path)
+            raise ValueError(
+                "Could not detect an orchestration platform in the upload. "
+                "Expected Airflow DAG .py, ADF/Fabric or Step Functions "
+                "JSON, Control-M JSON, AutoSys .jil, an IDMC taskflow, a "
+                "dbt Cloud job or a crontab.")
     platform = platform.lower()
     if platform in _PARSERS:
         cor = _PARSERS[platform](path)
@@ -1212,6 +1864,13 @@ def parse_orchestration(path: str, platform: str = "") -> COR:
     else:
         raise ValueError("Unsupported orchestration platform: %s (one of "
                          "%s)" % (platform, ", ".join(ORCH_PLATFORMS)))
+    if not cor.workflows:
+        # Never hand back an "analysis" of nothing: say what was wrong.
+        raise ValueError(
+            "No %s workflow could be read from the upload.%s" % (
+                platform, (" " + " ".join(
+                    str(i.get("message", "")) for i in cor.all_issues()[:3]))
+                if cor.all_issues() else ""))
     cor.metadata.setdefault("inventory", {
         "workflows": len(cor.workflows),
         "tasks": sum(len(w.tasks) for w in cor.workflows),
