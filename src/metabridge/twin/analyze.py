@@ -191,19 +191,19 @@ def application_landscape(twin: DigitalTwin) -> dict:
     for n in twin.nodes.values():
         if n.kind != "application":
             continue
-        contained = [twin.nodes[e.to_id]
-                     for e in twin.out_edges(n.id)
-                     if e.kind == "contains"]
+        contained_ids = {e.to_id for e in twin.out_edges(n.id) if e.kind in ("contains", "writes")}
+        fed_ids = {e.from_id for e in twin.in_edges(n.id) if e.kind == "feeds"}
+        related = [twin.nodes[nid] for nid in (contained_ids | fed_ids) if nid in twin.nodes]
         rows.append({
             "application": n.name, "technology": n.technology,
             "domain": n.domain or "(unassigned)",
             "owner": n.owner,
-            "pipelines": sum(1 for c in contained
+            "pipelines": sum(1 for c in related
                              if c.kind in ("pipeline",
                                            "streaming_job")),
-            "tables": sum(1 for c in contained if c.kind == "table"),
-            "topics": sum(1 for c in contained if c.kind == "topic"),
-            "workflows": sum(1 for c in contained
+            "tables": sum(1 for c in related if c.kind == "table"),
+            "topics": sum(1 for c in related if c.kind == "topic"),
+            "workflows": sum(1 for c in related
                              if c.kind == "workflow"),
         })
     return {"applications": sorted(rows,
@@ -284,9 +284,10 @@ def simulate_migration(twin: DigitalTwin,
     external consumers affected at each wave."""
     if technology and not selection:
         selected = {n.id for n in twin.nodes.values()
-                    if n.technology == technology
+                    if str(n.technology).lower() == str(technology).lower()
                     and n.kind in ("pipeline", "streaming_job",
-                                   "workflow", "table", "topic")}
+                                   "workflow", "table", "topic",
+                                   "application", "api", "dashboard")}
     else:
         selected = set()
         for s in selection or []:

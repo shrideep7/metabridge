@@ -360,23 +360,6 @@ def add_jobs(twin: DigitalTwin, jobs_dir: Path) -> int:
 
 def apply_estate_descriptor(twin: DigitalTwin, doc: dict,
                             source: str = "estate.yml") -> None:
-    for d in doc.get("domains", []) or []:
-        dn = twin.add_node("domain", d.get("name", ""), source,
-                           owner=d.get("owner", ""), authoritative=True)
-        for pattern in d.get("match", []) or []:
-            for n in list(twin.nodes.values()):
-                if n.kind in ("domain", "owner"):
-                    continue
-                if fnmatch.fnmatch(n.name.lower(),
-                                   str(pattern).lower()):
-                    n.domain = d.get("name", "")
-                    twin.add_edge(n.id, dn.id, "belongs_to", source)
-        for obj in d.get("objects", []) or []:
-            # a name can name several facets (a model's pipeline AND its
-            # table) — the whole logical object belongs to the domain
-            for node in twin.find_all(str(obj)):
-                node.domain = d.get("name", "")
-                twin.add_edge(node.id, dn.id, "belongs_to", source)
     for a in doc.get("applications", []) or []:
         an = twin.add_node("application", a.get("name", ""), source,
                            technology=a.get("technology", ""),
@@ -423,6 +406,23 @@ def apply_estate_descriptor(twin: DigitalTwin, doc: dict,
             for node in twin.find_all(str(obj)):
                 node.owner = o.get("name", "")
                 twin.add_edge(on.id, node.id, "owns", source)
+    for d in doc.get("domains", []) or []:
+        dn = twin.add_node("domain", d.get("name", ""), source,
+                           owner=d.get("owner", ""), authoritative=True)
+        for pattern in d.get("match", []) or []:
+            for n in list(twin.nodes.values()):
+                if n.kind in ("domain", "owner"):
+                    continue
+                if fnmatch.fnmatch(n.name.lower(),
+                                   str(pattern).lower()):
+                    n.domain = d.get("name", "")
+                    twin.add_edge(n.id, dn.id, "belongs_to", source)
+        for obj in d.get("objects", []) or []:
+            # a name can name several facets (a model's pipeline AND its
+            # table) — the whole logical object belongs to the domain
+            for node in twin.find_all(str(obj)):
+                node.domain = d.get("name", "")
+                twin.add_edge(node.id, dn.id, "belongs_to", source)
 
 
 def infer_domains(twin: DigitalTwin) -> None:

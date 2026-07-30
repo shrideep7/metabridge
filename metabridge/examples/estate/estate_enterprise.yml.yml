@@ -1,0 +1,160 @@
+# ---------------------------------------------------------------------------
+# MetaBridge Digital Twin — Enterprise Test Estate Descriptor
+#
+# A comprehensive enterprise estate descriptor with 6 Business Domains,
+# 10 Applications, 4 APIs, 5 BI Dashboards, 4 Data Products, and multi-layered
+# data flows (Raw -> Staging -> Data Mart -> Serving APIs & Dashboards).
+# ---------------------------------------------------------------------------
+
+domains:
+  - name: SupplyChain
+    owner: supplychain-lead@metafordata.com
+    match: ["raw_inventory*", "stg_inventory*", "dim_warehouse*", "fct_shipments*", "*shipment*"]
+  - name: ECommerce
+    owner: retail-lead@metafordata.com
+    match: ["raw_web_orders*", "stg_orders*", "fct_orders*", "cart_*", "*order*"]
+  - name: CustomerCX
+    owner: cx-lead@metafordata.com
+    match: ["raw_user_clicks*", "stg_profiles*", "dim_customer*", "churn_*", "*customer*"]
+  - name: FinanceRisk
+    owner: compliance-lead@metafordata.com
+    match: ["raw_transactions*", "stg_ledger*", "fct_revenue*", "fraud_*", "*transaction*"]
+  - name: HumanResources
+    owner: hr-lead@metafordata.com
+    match: ["raw_employees*", "stg_staff*", "dim_employee*", "*payroll*"]
+  - name: Governance
+    owner: cdo@metafordata.com
+    match: ["gov_*", "audit_*", "policy_*"]
+
+applications:
+  # 1) Ingestion Layer (Raw Sources)
+  - name: ERP_Ingestion_CDC
+    technology: debezium
+    owner: data-platform@metafordata.com
+    writes: ["raw_inventory", "raw_transactions", "raw_employees"]
+
+  - name: Web_Clickstream_Collector
+    technology: python
+    owner: cx-team@metafordata.com
+    writes: ["raw_web_orders", "raw_user_clicks"]
+
+  # 2) Staging Layer (dbt & Spark Transformation)
+  - name: Staging_Transformer
+    technology: dbt
+    owner: analytics-eng@metafordata.com
+    reads: ["raw_inventory", "raw_web_orders", "raw_user_clicks", "raw_transactions", "raw_employees"]
+    writes: ["stg_inventory", "stg_orders", "stg_profiles", "stg_ledger", "stg_staff"]
+
+  - name: Risk_Fraud_Detector
+    technology: flink
+    owner: risk-eng@metafordata.com
+    reads: ["raw_transactions", "stg_profiles"]
+    writes: ["fraud_alerts", "risk_scores"]
+
+  # 3) Curated Warehouse & Data Mart Layer
+  - name: SupplyChain_Optimizer
+    technology: spark
+    owner: logistics-eng@metafordata.com
+    reads: ["stg_inventory", "stg_orders"]
+    writes: ["fct_shipments", "dim_warehouse"]
+
+  - name: Customer_360_Engine
+    technology: snowflake
+    owner: analytics-eng@metafordata.com
+    reads: ["stg_orders", "stg_profiles", "stg_ledger"]
+    writes: ["fct_orders", "dim_customer", "fct_revenue", "churn_predictions"]
+
+  - name: HR_Analytics_Sync
+    technology: talend
+    owner: hr-tech@metafordata.com
+    reads: ["stg_staff"]
+    writes: ["dim_employee"]
+
+  # 4) Operational Serving Applications
+  - name: Inventory_Portal
+    technology: java
+    owner: logistics-app@metafordata.com
+    reads: ["fct_shipments", "dim_warehouse"]
+
+  - name: Mobile_App_Backend
+    technology: nodejs
+    owner: mobile-team@metafordata.com
+    reads: ["dim_customer", "fct_orders"]
+
+  - name: Executive_Reporting_Job
+    technology: airflow
+    owner: data-platform@metafordata.com
+    reads: ["fct_revenue", "risk_scores", "churn_predictions"]
+    writes: ["gov_audit_log"]
+
+apis:
+  - name: inventory-management-api
+    technology: rest
+    owner: logistics-app@metafordata.com
+    reads: ["fct_shipments", "dim_warehouse"]
+    serves: ["Inventory_Portal"]
+
+  - name: customer-profile-graphql
+    technology: graphql
+    owner: mobile-team@metafordata.com
+    reads: ["dim_customer", "fct_orders"]
+    serves: ["Mobile_App_Backend"]
+
+  - name: fraud-alerts-webhook
+    technology: webhook
+    owner: risk-eng@metafordata.com
+    reads: ["fraud_alerts", "risk_scores"]
+
+  - name: employee-directory-api
+    technology: rest
+    owner: hr-tech@metafordata.com
+    reads: ["dim_employee"]
+
+dashboards:
+  - name: GlobalSupplyChainTower
+    tool: PowerBI
+    owner: logistics-lead@metafordata.com
+    reads: ["fct_shipments", "dim_warehouse"]
+
+  - name: ExecutiveRevenueBoard
+    tool: Tableau
+    owner: finance-lead@metafordata.com
+    reads: ["fct_revenue", "fct_orders"]
+
+  - name: CustomerChurn360
+    tool: Looker
+    owner: cx-lead@metafordata.com
+    reads: ["dim_customer", "churn_predictions"]
+
+  - name: FraudRiskAlerts
+    tool: Grafana
+    owner: compliance-lead@metafordata.com
+    reads: ["fraud_alerts", "risk_scores"]
+
+  - name: WorkforceDiversityTracker
+    tool: Qlik
+    owner: hr-lead@metafordata.com
+    reads: ["dim_employee"]
+
+data_products:
+  - name: SupplyChainTower
+    owner: supplychain-lead@metafordata.com
+    includes: ["fct_shipments", "dim_warehouse"]
+
+  - name: Customer360Master
+    owner: cx-lead@metafordata.com
+    includes: ["dim_customer", "fct_orders", "churn_predictions"]
+
+  - name: ExecutiveFinancials
+    owner: compliance-lead@metafordata.com
+    includes: ["fct_revenue", "fraud_alerts"]
+
+  - name: EmployeeWorkforceMaster
+    owner: hr-lead@metafordata.com
+    includes: ["dim_employee"]
+
+owners:
+  - name: data-platform@metafordata.com
+    objects: ["raw_inventory", "raw_transactions", "raw_employees", "gov_audit_log"]
+  - name: risk-eng@metafordata.com
+    objects: ["fraud_alerts", "risk_scores"]

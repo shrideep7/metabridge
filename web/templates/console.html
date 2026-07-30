@@ -89,6 +89,8 @@
             gap:16px; padding:0 24px; position:sticky; top:0; z-index:30; }
   .topbar .crumb { font-size:13px; color:var(--muted); white-space:nowrap; }
   .topbar .crumb b { color:var(--ink); font-weight:600; }
+  .topbar #wsSwitch { height:100%; display:flex; align-items:center; align-self:center; position:relative; margin-left:14px; }
+  .topbar #wsBtn { display:inline-flex; align-items:center; justify-content:center; height:32px; box-sizing:border-box; margin:0; align-self:center; gap:7px; background:#f2f5fa; border:1px solid #dfe3ea; border-radius:9px; padding:0 11px; font-size:13px; font-weight:600; color:#123; cursor:pointer; max-width:230px; }
   #wsBtn:hover { background:var(--header-bg); border-color:#B7C2CF; }
   .topbar .gsearch { position:relative; margin-left:auto; }
   .topbar .gsearch input { width:340px; height:32px; padding:0 10px; border:1px solid var(--border);
@@ -192,10 +194,12 @@
   .catbar button.off { background:#fff; color:var(--ink2); border-color:#C7D0DA; }
   .catbar button.off:hover { background:var(--header-bg); border-color:#9FACBB; }
   /* marketplace redesign */
-  .mkt-head { display:flex; align-items:flex-start; gap:16px; flex-wrap:wrap; margin-bottom:16px; }
-  .mkt-head .titles { flex:1; min-width:300px; }
+  .mkt-head { margin-bottom:16px; }
+  .mkt-head-top { display:flex; justify-content:space-between; align-items:center; gap:16px; flex-wrap:wrap; margin-bottom:6px; }
+  .mkt-head-top h1 { margin:0; font-size:20px; font-weight:700; line-height:1.2; }
   .mkt-actions { display:flex; gap:8px; align-items:center; }
-  .mkt-actions input[type=search] { width:280px; font-size:13px; }
+  .mkt-actions input[type=search] { width:280px; height:36px; box-sizing:border-box; font-size:13px; margin:0; }
+  .mkt-actions button { height:36px; box-sizing:border-box; margin:0; display:inline-flex; align-items:center; justify-content:center; }
   .mkt-metrics { display:flex; gap:8px; flex-wrap:wrap; margin:0 0 16px; }
   .mkt-metrics span { background:#fff; border:1px solid var(--border); border-radius:var(--radius-sm); padding:5px 10px; font-size:12px; color:var(--ink3); }
   .mkt-metrics b { color:var(--ink); font-family:var(--mono); font-weight:600; }
@@ -479,9 +483,9 @@
 <div class="workarea">
 <div class="topbar">
   <span class="crumb" id="crumb">Workspace / <b>Overview</b></span>
-  <div id="wsSwitch" style="position:relative;margin-left:10px;display:none">
+  <div id="wsSwitch" style="display:none;position:relative;margin-left:14px;height:100%;align-items:center;align-self:center">
     <button id="wsBtn" aria-haspopup="menu" aria-expanded="false" title="Switch workspace"
-            style="display:flex;align-items:center;gap:7px;height:32px;margin:0;background:#fff;border:1px solid var(--border);border-radius:var(--radius-sm);padding:0 10px;font-size:13px;font-weight:600;color:var(--ink2);cursor:pointer;max-width:230px">
+            style="display:inline-flex;align-items:center;justify-content:center;height:32px;box-sizing:border-box;margin:0;align-self:center;gap:7px;background:#f2f5fa;border:1px solid #dfe3ea;border-radius:9px;padding:0 11px;font-size:13px;font-weight:600;color:#123;cursor:pointer;max-width:230px">
       <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg>
       <span id="wsBtnName" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">Workspace</span>
       <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>
@@ -1281,15 +1285,15 @@
 <!-- ======================= MARKETPLACE ======================= -->
 <div class="page" id="page-marketplace">
   <div class="mkt-head">
-    <div class="titles">
+    <div class="mkt-head-top">
       <h1>Integration Marketplace</h1>
-      <div class="sub">Connect enterprise applications, legacy databases, cloud warehouses, lakehouses,
-      and SAP systems to analyze, modernize, and generate data pipelines.</div>
+      <div class="mkt-actions">
+        <input type="search" id="mktSearch" placeholder="Search integrations..." aria-label="Search integrations">
+        <button id="newConnBtn" aria-label="New connection">+ New connection</button>
+      </div>
     </div>
-    <div class="mkt-actions">
-      <input type="search" id="mktSearch" placeholder="Search integrations..." aria-label="Search integrations">
-      <button id="newConnBtn" aria-label="New connection">+ New connection</button>
-    </div>
+    <div class="sub">Connect enterprise applications, legacy databases, cloud warehouses, lakehouses,
+    and SAP systems to analyze, modernize, and generate data pipelines.</div>
   </div>
   <div class="mkt-metrics" id="mktMetrics" aria-label="Marketplace summary"></div>
   <div class="mkt-filters">
@@ -1802,7 +1806,7 @@ function renderWorkspaceSwitcher(d) {
   gWorkspaces = d.workspaces || [];
   gActiveWs = d.active_workspace || '';
   if (!gWorkspaces.length) { sw.style.display = 'none'; return; }
-  sw.style.display = '';
+  sw.style.display = 'flex';
   const active = gWorkspaces.find(w => w.id === gActiveWs) || gWorkspaces[0];
   $('#wsBtnName').textContent = active ? active.name : 'Workspace';
   let html = '<div style="padding:8px 12px 4px;font-size:11px;letter-spacing:.5px;color:#8a94a6;font-weight:700">WORKSPACES</div>'
