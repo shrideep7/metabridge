@@ -220,6 +220,18 @@
   .dot { width:8px; height:8px; border-radius:2px; display:inline-block; background:var(--green); vertical-align:middle; }
   .dot.err { background:var(--red); } .dot.dis { background:#A5AFBA; } .dot.warn { background:var(--amber); animation:dotpulse 1.1s ease-in-out infinite; }
   @keyframes dotpulse { 0%,100%{opacity:1} 50%{opacity:.35} }
+  /* Digital Twin canvas fullscreen takeover — an explicit escape hatch
+     rather than an always-full-viewport canvas (see twinSetFullscreen).
+     The toolbar (incl. the Exit fullscreen button) lives INSIDE
+     #twinCanvasRoot so it travels with the canvas into the takeover —
+     it must never be left behind under the fixed overlay. */
+  body.twin-fullscreen { overflow:hidden; }
+  #twinCanvasRoot.twin-canvas-fs {
+    position:fixed; inset:16px; z-index:200; margin:0;
+    box-shadow:0 24px 64px rgba(16,24,40,.32);
+  }
+  #twinCanvasRoot.twin-canvas-fs #twinToolbar { flex:none; }
+  #twinCanvasRoot.twin-canvas-fs #twinWrap { height:100% !important; }
   .req { color:var(--red); font-weight:600; }
   .opt { color:var(--muted); font-weight:400; font-size:11px; }
   .kebab { position:absolute; top:12px; right:10px; background:none; border:none; color:var(--muted); padding:2px 8px;
@@ -617,17 +629,40 @@
     <div class="err" id="twinErr"></div>
     <div id="twinResult" style="display:none;margin-top:16px">
       <div class="cards" id="twinCards"></div>
-      <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:12px 0">
-        <select id="twinView" style="width:auto" aria-label="Graph view">
-          <option value="full">Full estate graph</option>
-          <option value="flow">Data flow only</option>
-        </select>
-        <input type="search" id="twinSearch" placeholder="Find a node…" style="max-width:220px" aria-label="Find node">
-        <select id="twinTech" style="width:auto;min-width:160px" aria-label="Technology to simulate"></select>
-        <button type="button" class="secondary" id="twinSimulate" style="margin:0">Simulate migration</button>
-        <span style="font-size:12px;color:var(--muted)">click a node for blast radius &amp; impact</span>
+      <div id="twinCanvasRoot" style="display:flex;flex-direction:column;border:1px solid var(--border);border-radius:var(--radius);background:#fff;overflow:hidden">
+        <div id="twinToolbar" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;padding:10px 12px;border-bottom:1px solid var(--line);background:var(--header-bg)">
+          <select id="twinView" style="width:auto" aria-label="Graph view">
+            <option value="full">Full estate graph</option>
+            <option value="flow">Data flow only</option>
+          </select>
+          <input type="search" id="twinSearch" placeholder="Find a node…" style="max-width:220px" aria-label="Find node">
+          <select id="twinLayout" style="width:auto" aria-label="Layout mode">
+            <option value="lr">Layered · left→right</option>
+            <option value="tb">Layered · top→bottom</option>
+            <option value="depth">Compact by depth</option>
+          </select>
+          <button type="button" class="secondary" id="twinRelayout" style="margin:0" title="Re-run auto-layout">Auto-layout</button>
+          <select id="twinTech" style="width:auto;min-width:160px" aria-label="Technology to simulate"></select>
+          <button type="button" class="secondary" id="twinSimulate" style="margin:0" disabled
+                  title="Pick a technology first — then simulate migrating every asset built on it">Simulate by technology</button>
+          <span style="font-size:12px;color:var(--muted)">click a node for blast radius &amp; impact</span>
+          <div style="margin-left:auto;display:flex;gap:8px;align-items:center">
+            <button type="button" class="secondary" id="twinReset" style="margin:0" title="Reset view, layout & selection">↺ Reset</button>
+            <button type="button" class="secondary" id="twinFullscreen" style="margin:0" title="Expand to fullscreen">⤢ Fullscreen</button>
+          </div>
+        </div>
+        <!-- The side panel is absolutely positioned so its content can never
+             stretch this row. Previously it was a flex sibling: a tall panel
+             (long dependency lists, expanded root-cause table) grew the row
+             past the canvas height and left a band of empty white beside the
+             graph — and it appeared only once the panel had filled in, so it
+             looked like it "happened after a while". The panel now scrolls
+             inside a fixed-height row that tracks the canvas alone. -->
+        <div id="twinCanvasRow" style="display:flex;flex:1;min-height:0;position:relative">
+          <div id="twinWrap" style="flex:1;position:relative;overflow:hidden;height:72vh;background-color:var(--bg);cursor:default"></div>
+          <div id="twinSidePanel" style="position:absolute;top:0;right:0;bottom:0;width:0;border-left:0 solid var(--border);background:#fff;overflow-y:auto;overflow-x:hidden;transition:width .18s ease"></div>
+        </div>
       </div>
-      <div id="twinGraph" style="overflow:auto;border:1px solid var(--border);border-radius:var(--radius);background:#fff;max-height:520px"></div>
       <div id="twinDetail" style="margin-top:12px"></div>
       <div style="display:flex;gap:8px;margin:14px 0 8px;flex-wrap:wrap" id="twinTabs">
         <button type="button" class="secondary" data-tab="landscape" style="margin:0">Application landscape</button>
@@ -6016,7 +6051,9 @@ function renderTwin() {
   const techs = [...new Set(gTwin.nodes.map(n => n.technology).filter(Boolean))].sort();
   $('#twinTech').innerHTML = '<option value="">Simulate technology…</option>'
     + techs.map(t => '<option>' + esc(t) + '</option>').join('');
-  renderTwinGraph();
+  twinSyncSimulateBtn();
+  gTwinCanvas = gTwinCanvas || new TwinCanvas($('#twinWrap'), $('#twinSidePanel'));
+  gTwinCanvas.setGraph(twinGraphNodes(), gTwin.edges || []);
   twinTab('landscape');
 }
 
@@ -6026,69 +6063,543 @@ function twinGraphNodes() {
     nodes = nodes.filter(n => TWIN_FLOW_KINDS.includes(n.kind));
   return nodes;
 }
+$('#twinView').onchange = () => gTwinCanvas && gTwinCanvas.setGraph(twinGraphNodes(), gTwin.edges || []);
+$('#twinSearch').oninput = e => gTwinCanvas && gTwinCanvas.setQuery(e.target.value);
+$('#twinLayout').onchange = e => gTwinCanvas && gTwinCanvas.relayout(e.target.value);
+$('#twinRelayout').onclick = () => gTwinCanvas && gTwinCanvas.relayout($('#twinLayout').value);
 
-function renderTwinGraph() {
-  const q = ($('#twinSearch').value || '').toLowerCase();
-  const nodes = twinGraphNodes();
-  const ids = new Set(nodes.map(n => n.id));
-  const PERCOL = 40, W = 196, H = 40, GX = 236, GY = 56;
-  const cols = {}, pos = {}, more = {}, layerOf = {};
-  nodes.forEach(n => {
-    const L = n.layer || 0;
-    layerOf[n.id] = L;
-    cols[L] = cols[L] || 0;
-    if (cols[L] >= PERCOL) { more[L] = (more[L] || 0) + 1; return; }
-    pos[n.id] = {x: 20 + L * GX, y: 34 + cols[L] * GY};
-    cols[L]++;
-  });
-  const usedLayers = Object.keys(cols).map(Number).sort((a, b) => a - b);
-  // compact unused layers away
-  const lx = {}; usedLayers.forEach((L, i) => lx[L] = 20 + i * GX);
-  Object.entries(pos).forEach(([id, p]) => { p.x = lx[layerOf[id]]; });
-  const width = 40 + usedLayers.length * GX,
-        height = 60 + Math.max(...Object.values(cols), 1) * GY;
-  let svg = '<svg width="' + width + '" height="' + height + '" xmlns="http://www.w3.org/2000/svg" font-family="inherit">';
-  usedLayers.forEach(L => {
-    svg += '<text x="' + (lx[L] + W / 2) + '" y="18" text-anchor="middle" font-size="10.5" font-weight="700" fill="var(--muted)" letter-spacing="1">'
-      + TWIN_LAYERS[L].toUpperCase() + (more[L] ? ' (+' + more[L] + ' more)' : '') + '</text>';
-  });
-  const hide = {belongs_to: 1, owns: 1, includes: 1};
-  (gTwin.edges || []).forEach(e => {
-    if (hide[e.kind]) return;
-    const a = pos[e.from], b = pos[e.to];
-    if (!a || !b) return;
-    const lit = twinAffected && twinAffected.has(e.from) && twinAffected.has(e.to);
-    svg += '<path d="M' + (a.x + W) + ' ' + (a.y + H / 2) + ' C ' + (a.x + W + 34)
-      + ' ' + (a.y + H / 2) + ', ' + (b.x - 34) + ' ' + (b.y + H / 2) + ', '
-      + b.x + ' ' + (b.y + H / 2) + '" fill="none" stroke="'
-      + (lit ? 'var(--red)' : e.kind === 'contains' ? '#dbe1ea' : '#8aa2c0')
-      + '" stroke-width="' + (lit ? 2 : 1.3) + '"'
-      + (e.kind === 'orchestrates' || e.inferred ? ' stroke-dasharray="5,4"' : '') + '/>';
-  });
-  nodes.forEach(n => {
-    const p = pos[n.id];
-    if (!p) return;
-    const col = TWIN_KIND_COLOR[n.kind] || 'var(--muted)';
-    const hit = twinAffected && twinAffected.has(n.id);
-    const sel = twinSelected === n.id;
-    const dim = q && !n.name.toLowerCase().includes(q);
-    svg += '<g data-nid="' + esc(n.id) + '" style="cursor:pointer" opacity="' + (dim ? 0.25 : 1) + '">'
-      + '<rect x="' + p.x + '" y="' + p.y + '" width="' + W + '" height="' + H
-      + '" rx="9" fill="' + (sel ? '#eaf1fb' : hit ? '#fdeeec' : '#fff')
-      + '" stroke="' + (sel ? '#2f6fb4' : hit ? 'var(--red)' : col)
-      + '" stroke-width="' + (sel || hit ? 2.2 : 1.4) + '"/>'
-      + '<text x="' + (p.x + W / 2) + '" y="' + (p.y + 17) + '" text-anchor="middle" font-size="11" font-weight="600" fill="#16233c">'
-      + esc(String(n.name).slice(0, 26)) + '</text>'
-      + '<text x="' + (p.x + W / 2) + '" y="' + (p.y + 31) + '" text-anchor="middle" font-size="9.5" fill="var(--muted)">'
-      + esc(n.kind.replace(/_/g, ' ') + (n.technology ? ' · ' + n.technology : '')
-        + (n.inferred ? ' · inferred' : '')) + '</text></g>';
-  });
-  $('#twinGraph').innerHTML = svg + '</svg>';
-  $('#twinGraph').querySelectorAll('g[data-nid]').forEach(g =>
-    g.onclick = () => twinSelect(g.dataset.nid));
+/* ---------------- Digital Twin — infinite-canvas graph ----------------
+ * Hand-rolled pan/zoom/drag/minimap SVG canvas (no charting library —
+ * same "plain DOM/SVG string" technique used everywhere else in this
+ * console). Mirrors the old renderTwinGraph()'s data contract (gTwin
+ * nodes/edges, TWIN_KIND_COLOR, twinAffected/twinSelected) but renders
+ * as a live, draggable, zoomable scene instead of a static flat SVG. */
+class TwinCanvas {
+  constructor(wrapEl, panelEl) {
+    this.wrap = wrapEl; this.panel = panelEl;
+    this.NW = 190; this.NH = 46;
+    this.view = {x: 60, y: 60, k: .85};
+    this.pos = {}; this.q = ''; this.layoutMode = 'lr';
+    this.hover = null; this.userMoved = false;
+    this.simIds = null; this.simLevels = null; this.simWave = -1; this.simTimer = null;
+
+    this.svgNS = 'http://www.w3.org/2000/svg';
+    wrapEl.innerHTML =
+      '<div class="twc-layer" style="position:absolute;left:0;top:0;transform-origin:0 0">'
+      + '<svg class="twc-svg" width="1" height="1" style="position:absolute;left:0;top:0;overflow:visible"></svg>'
+      + '<div class="twc-nodes" style="position:absolute;left:0;top:0"></div></div>'
+      + '<div class="twc-legend" style="position:absolute;left:12px;top:12px;display:flex;gap:6px;flex-wrap:wrap;max-width:70%;pointer-events:none"></div>'
+      + '<div class="twc-zoom" style="position:absolute;right:12px;bottom:12px;display:flex;flex-direction:column;gap:6px">'
+      + '<div style="display:flex;flex-direction:column;background:#fff;border:1px solid var(--border);border-radius:var(--radius-sm);overflow:hidden;box-shadow:var(--shadow)">'
+      + '<button type="button" class="twc-zi" style="all:unset;box-sizing:border-box;width:28px;height:26px;text-align:center;border-bottom:1px solid var(--line);cursor:pointer;color:var(--ink2)">+</button>'
+      + '<button type="button" class="twc-zo" style="all:unset;box-sizing:border-box;width:28px;height:26px;text-align:center;border-bottom:1px solid var(--line);cursor:pointer;color:var(--ink2)">−</button>'
+      + '<button type="button" class="twc-fit" style="all:unset;box-sizing:border-box;width:28px;height:26px;text-align:center;cursor:pointer;color:var(--ink2)" title="Fit to screen">⤢</button></div>'
+      + '<div class="twc-zoompct" style="text-align:center;font:500 10px var(--mono);color:var(--muted);background:#fff;border:1px solid var(--border);border-radius:4px;padding:2px 0"></div></div>'
+      + '<div class="twc-minimap" style="position:absolute;left:12px;bottom:12px;width:180px;height:120px;background:rgba(255,255,255,.94);border:1px solid var(--border);border-radius:6px;overflow:hidden;cursor:crosshair;box-shadow:var(--shadow)">'
+      + '<svg width="180" height="120" style="display:block"></svg>'
+      + '<button type="button" class="twc-maphide" title="Hide the minimap"'
+      + ' style="position:absolute;right:2px;top:2px;margin:0;height:18px;width:18px;padding:0;line-height:1;'
+      + 'font-size:13px;background:rgba(255,255,255,.9);color:var(--muted);border:1px solid var(--border);'
+      + 'border-radius:3px;cursor:pointer">×</button></div>'
+      + '<button type="button" class="twc-maptoggle" title="Show/hide the overview minimap"'
+      + ' style="position:absolute;left:12px;bottom:12px;margin:0;height:24px;padding:0 8px;font-size:11px;'
+      + 'background:#fff;color:var(--ink2);border:1px solid var(--border);border-radius:4px;cursor:pointer;'
+      + 'box-shadow:var(--shadow);display:none">Map</button>';
+
+    this.layerEl = wrapEl.querySelector('.twc-layer');
+    this.svgEl = wrapEl.querySelector('.twc-svg');
+    this.nodesEl = wrapEl.querySelector('.twc-nodes');
+    this.legendEl = wrapEl.querySelector('.twc-legend');
+    this.mapEl = wrapEl.querySelector('.twc-minimap');
+    this.mapToggleEl = wrapEl.querySelector('.twc-maptoggle');
+    // The minimap sits over the lower-left of the canvas and can cover real
+    // nodes — let it be dismissed, collapsing to a small "Map" chip.
+    this.mapToggleEl.onclick = () => this.setMapOpen(true);
+    wrapEl.querySelector('.twc-maphide').onpointerdown = e => {
+      e.stopPropagation(); e.preventDefault(); this.setMapOpen(false);
+    };
+    this.mapSvg = this.mapEl.querySelector('svg');
+    this.zoomPctEl = wrapEl.querySelector('.twc-zoompct');
+
+    wrapEl.querySelector('.twc-zi').onclick = () => this.zoomBy(1.22);
+    wrapEl.querySelector('.twc-zo').onclick = () => this.zoomBy(1 / 1.22);
+    wrapEl.querySelector('.twc-fit').onclick = () => { this.userMoved = false; this.fit(); };
+    this.mapEl.onpointerdown = e => this.onMapDown(e);
+    wrapEl.onpointerdown = e => this.onBgDown(e);
+    wrapEl.addEventListener('wheel', e => this.onWheel(e), {passive: false});
+
+    this._move = e => this.onMove(e);
+    this._up = () => this.onUp();
+    window.addEventListener('pointermove', this._move);
+    window.addEventListener('pointerup', this._up);
+
+    this.ro = new ResizeObserver(() => { if (!this.userMoved) this.fit(); else this.renderTransform(); });
+    this.ro.observe(wrapEl);
+  }
+
+  setGraph(nodes, edges) {
+    this.nodes = nodes;
+    this.byId = {}; nodes.forEach(n => this.byId[n.id] = n);
+    const ids = new Set(nodes.map(n => n.id));
+    const hide = {belongs_to: 1, owns: 1, includes: 1};
+    this.edges = edges.filter(e => !hide[e.kind] && ids.has(e.from) && ids.has(e.to));
+    this.out = {}; this.in = {};
+    nodes.forEach(n => { this.out[n.id] = []; this.in[n.id] = []; });
+    this.edges.forEach(e => { this.out[e.from].push(e.to); this.in[e.to].push(e.from); });
+    this.pos = this.computeLayout(this.layoutMode);
+    this.render();
+    setTimeout(() => this.fit(), 30);
+  }
+
+  relayout(mode) {
+    this.layoutMode = mode;
+    this.pos = this.computeLayout(mode);
+    this.render();
+    setTimeout(() => this.fit(), 30);
+  }
+
+  setQuery(q) { this.q = q || ''; this.render(); }
+
+  computeLayout(mode) {
+    const nodes = this.nodes || [];
+    const byLayer = {};
+    nodes.forEach(n => (byLayer[n.layer || 0] = byLayer[n.layer || 0] || []).push(n.id));
+    const layers = Object.keys(byLayer).map(Number).sort((a, b) => a - b);
+    const NW = this.NW, NH = this.NH;
+    const pos = {};
+    if (mode === 'depth') {
+      const indeg = {}; nodes.forEach(n => indeg[n.id] = this.in[n.id].length);
+      const q = nodes.filter(n => !indeg[n.id]).map(n => n.id);
+      const order = []; const seen = new Set(q);
+      while (q.length) { const c = q.shift(); order.push(c);
+        (this.out[c] || []).forEach(o => { if (!seen.has(o)) { seen.add(o); q.push(o); } }); }
+      nodes.forEach(n => { if (!seen.has(n.id)) order.push(n.id); });
+      const depth = {};
+      order.forEach(id => { const ups = this.in[id] || [];
+        depth[id] = ups.length ? Math.max(...ups.map(p => (depth[p] ?? 0) + 1)) : 0; });
+      const buckets = {};
+      order.forEach(id => (buckets[depth[id]] = buckets[depth[id]] || []).push(id));
+      const keys = Object.keys(buckets).map(Number).sort((a, b) => a - b);
+      const max = Math.max(1, ...keys.map(k => buckets[k].length));
+      keys.forEach(k => {
+        const arr = buckets[k].sort((a, b) => (this.byId[a].layer || 0) - (this.byId[b].layer || 0));
+        const off = (max - arr.length) * (NH + 22) / 2;
+        arr.forEach((id, i) => pos[id] = {x: k * (NW + 110), y: off + i * (NH + 22)});
+      });
+      return pos;
+    }
+    const stepY = NH + 24;
+    // Wrap over-long layers into sub-columns. A layer with 50 tables in a
+    // single column is ~3500px tall against a ~900px-wide graph, and fit()
+    // then scales the whole thing to ~12% — a unreadable sliver with dead
+    // space below it. Wrapping keeps the graph roughly screen-shaped.
+    const PERCOL = 14;
+    const wrap = ids => {
+      const sub = [];
+      for (let i = 0; i < ids.length; i += PERCOL) sub.push(ids.slice(i, i + PERCOL));
+      return sub;
+    };
+    if (mode === 'tb') {
+      // rows instead of columns: wrap on the horizontal axis
+      const stepX = NW + 30;
+      const rows = layers.map(L => wrap(byLayer[L]));
+      const maxLen = Math.max(1, ...rows.flat().map(r => r.length));
+      let y = 0;
+      rows.forEach(subRows => {
+        subRows.forEach(row => {
+          const off = (maxLen - row.length) * stepX / 2;
+          row.forEach((id, i) => pos[id] = {x: off + i * stepX, y});
+          y += stepY + 24;
+        });
+        y += 90;                     // gap between layers
+      });
+    } else {
+      const stepX = NW + 130;
+      const colsOf = layers.map(L => wrap(byLayer[L]));
+      const maxLen = Math.max(1, ...colsOf.flat().map(c => c.length));
+      let x = 0;
+      colsOf.forEach(subCols => {
+        subCols.forEach(col => {
+          const off = (maxLen - col.length) * stepY / 2;
+          col.forEach((id, i) => pos[id] = {x, y: off + i * stepY});
+          x += stepX;
+        });
+      });
+    }
+    return pos;
+  }
+
+  bbox() {
+    const p = this.pos, ids = Object.keys(p);
+    if (!ids.length) return {x: 0, y: 0, w: 1, h: 1};
+    let x0 = 1e9, y0 = 1e9, x1 = -1e9, y1 = -1e9;
+    ids.forEach(id => { x0 = Math.min(x0, p[id].x); y0 = Math.min(y0, p[id].y);
+      x1 = Math.max(x1, p[id].x + this.NW); y1 = Math.max(y1, p[id].y + this.NH); });
+    return {x: x0 - 60, y: y0 - 60, w: x1 - x0 + 120, h: y1 - y0 + 120};
+  }
+
+  // Size the canvas to the height the graph actually needs, so there is no
+  // dead band under a short graph AND no squeezed-to-12% sliver under a
+  // tall one.
+  //
+  // The scale fit() will settle on is min(aw/b.w, ah/b.h) — it depends on
+  // the height we're choosing here, so solve it directly instead of
+  // guessing from the horizontal fit alone:
+  //   * wide graph  -> width is the binding constraint; height just needs
+  //                    b.h*kw, which is less than the cap. Use it.
+  //   * tall graph  -> height binds; growing the box only helps up to the
+  //                    cap, so take the cap and let fit() use the full box
+  //                    rather than leaving slack below a shrunken graph.
+  autoHeight() {
+    if (twinFullscreen) return;                 // fullscreen always fills
+    const b = this.bbox();
+    const r = this.wrap.getBoundingClientRect();
+    const vw = r.width || 600;
+    if (vw < 50) return;
+    const L = 24, R = 60, T = 20, B = 20;
+    const aw = Math.max(120, vw - L - R);
+    const capPx = Math.max(260, window.innerHeight * 0.72);
+    // Height needed at the scale fit() will actually use — including the
+    // MIN_FIT_K floor. Without the floor a big graph computed a tiny scale,
+    // reported a small "needed" height, and the canvas ended up both short
+    // AND zoomed out to an unreadable sliver.
+    const kw = Math.max(Math.min(aw / b.w, 1.4) * 0.96, this.MIN_FIT_K);
+    const needed = b.h * kw + T + B;
+    // Below the cap the graph fits at kw with no leftover space. At or above
+    // it, the box is capped and fit() will scale down to match — either way
+    // the box is exactly as tall as the content will occupy.
+    const h = Math.max(260, Math.min(capPx, needed));
+    this.wrap.style.height = Math.round(h) + 'px';
+    // Pin the whole canvas/panel row to the canvas height. Otherwise the
+    // side panel (which is often taller than the graph) stretches the row
+    // and leaves a band of empty canvas beside it — the white gap under
+    // the graph when a node is selected.
+  }
+
+  // Below ~55% the 12px node labels stop being readable, so "fit
+  // everything on screen" becomes worthless — you get a wall of grey
+  // slivers. Past that point stop zooming out: hold a legible scale and
+  // let the user pan/scroll the canvas instead (standard infinite-canvas
+  // behaviour — Figma/Miro never auto-zoom you into illegibility either).
+  MIN_FIT_K = 0.55;
+
+  fit() {
+    this.autoHeight();
+    const b = this.bbox();
+    const r = this.wrap.getBoundingClientRect();
+    const vw = r.width || 600, vh = r.height || 400;
+    const L = 24, R = 60, T = 20, B = 20;
+    const aw = Math.max(120, vw - L - R), ah = Math.max(120, vh - T - B);
+    const raw = Math.min(aw / b.w, ah / b.h, 1.4) * 0.96;
+    const k = Math.max(raw, this.MIN_FIT_K);
+    // When clamped the graph is larger than the viewport: anchor to the
+    // top-left of the content instead of centring it, so you start reading
+    // at the sources rather than in the middle of nowhere.
+    const clamped = k > raw + 1e-9;
+    this.view = clamped
+      ? {k, x: L - b.x * k, y: T - b.y * k}
+      : {k, x: L + (aw - b.w * k) / 2 - b.x * k, y: T + (ah - b.h * k) / 2 - b.y * k};
+    this.render();
+  }
+
+  centerOn(id, k) {
+    const p = this.pos[id]; if (!p) return;
+    const r = this.wrap.getBoundingClientRect();
+    const kk = k || Math.max(this.view.k, .85);
+    this.view = {k: kk, x: r.width / 2 - (p.x + this.NW / 2) * kk, y: r.height / 2 - (p.y + this.NH / 2) * kk};
+    this.userMoved = true;
+    this.render();
+  }
+
+  zoomBy(f) {
+    const r = this.wrap.getBoundingClientRect();
+    const v = this.view, k = Math.min(2.5, Math.max(.18, v.k * f));
+    this.view = {k, x: r.width / 2 - (r.width / 2 - v.x) * (k / v.k), y: r.height / 2 - (r.height / 2 - v.y) * (k / v.k)};
+    this.userMoved = true;
+    this.render();
+  }
+
+  onWheel(e) {
+    e.preventDefault();
+    const v = this.view, r = this.wrap.getBoundingClientRect();
+    this.userMoved = true;
+    if (e.ctrlKey || e.metaKey || e.altKey) {
+      const f = Math.exp(-e.deltaY * 0.0022), k = Math.min(2.5, Math.max(.18, v.k * f));
+      const mx = e.clientX - r.left, my = e.clientY - r.top;
+      this.view = {k, x: mx - (mx - v.x) * (k / v.k), y: my - (my - v.y) * (k / v.k)};
+    } else this.view = {...v, x: v.x - e.deltaX, y: v.y - e.deltaY};
+    this.render();
+  }
+
+  onBgDown(e) {
+    if (e.target.closest('.twc-node')) return;
+    this.pan = {vx: this.view.x, vy: this.view.y, mx: e.clientX, my: e.clientY, moved: false};
+  }
+  onMove(e) {
+    if (this.pan) { this.userMoved = true;
+      this.pan.moved = this.pan.moved || Math.abs(e.clientX - this.pan.mx) + Math.abs(e.clientY - this.pan.my) > 3;
+      this.view = {...this.view, x: this.pan.vx + e.clientX - this.pan.mx, y: this.pan.vy + e.clientY - this.pan.my};
+      this.render();
+    } else if (this.dragN) { this.userMoved = true;
+      const k = this.view.k;
+      const p = {x: this.dragN.px + (e.clientX - this.dragN.mx) / k, y: this.dragN.py + (e.clientY - this.dragN.my) / k};
+      this.dragN.moved = this.dragN.moved || Math.abs(e.clientX - this.dragN.mx) + Math.abs(e.clientY - this.dragN.my) > 3;
+      this.pos[this.dragN.id] = p;
+      this.render();
+    }
+  }
+  onUp() {
+    if (this.dragN && !this.dragN.moved) twinSelect(this.dragN.id);
+    if (this.pan && !this.pan.moved) twinClearSelection();
+    this.pan = null; this.dragN = null;
+  }
+  setMapOpen(open) {
+    this.mapOpen = open;
+    this.mapEl.style.display = open ? 'block' : 'none';
+    this.mapToggleEl.style.display = open ? 'none' : 'block';
+    if (open) this.render();
+  }
+
+  onMapDown(e) {
+    e.stopPropagation();
+    const r = this.mapEl.getBoundingClientRect();
+    const wx = ((e.clientX - r.left) - this._mox) / this._mk, wy = ((e.clientY - r.top) - this._moy) / this._mk;
+    const wr = this.wrap.getBoundingClientRect();
+    this.view = {k: this.view.k, x: wr.width / 2 - wx * this.view.k, y: wr.height / 2 - wy * this.view.k};
+    this.userMoved = true;
+    this.render();
+  }
+
+  renderTransform() {
+    this.layerEl.style.transform = 'translate3d(' + this.view.x + 'px,' + this.view.y + 'px,0) scale(' + this.view.k + ')';
+    this.zoomPctEl.textContent = Math.round(this.view.k * 100) + '%';
+  }
+
+  anchor(id, side) {
+    const p = this.pos[id] || {x: 0, y: 0};
+    const tb = this.layoutMode === 'tb';
+    if (tb) return side === 'out' ? {x: p.x + this.NW / 2, y: p.y + this.NH} : {x: p.x + this.NW / 2, y: p.y};
+    return side === 'out' ? {x: p.x + this.NW, y: p.y + this.NH / 2} : {x: p.x, y: p.y + this.NH / 2};
+  }
+  edgePath(a, b) {
+    const tb = this.layoutMode === 'tb';
+    if (tb) { const d = Math.max(36, Math.abs(b.y - a.y) * 0.5); return 'M' + a.x + ',' + a.y + ' C' + a.x + ',' + (a.y + d) + ' ' + b.x + ',' + (b.y - d) + ' ' + b.x + ',' + b.y; }
+    const d = Math.max(40, Math.abs(b.x - a.x) * 0.45); return 'M' + a.x + ',' + a.y + ' C' + (a.x + d) + ',' + a.y + ' ' + (b.x - d) + ',' + b.y + ' ' + b.x + ',' + b.y;
+  }
+
+  // Hover fires pointerenter/leave in rapid succession as the freshly
+  // rebuilt DOM node lands back under the cursor (this.render() replaces
+  // every .twc-node's innerHTML). Coalescing onto rAF lets that settle
+  // once per frame instead of tearing down/rebuilding the whole node
+  // layer on every micro-event — without this the hover highlight never
+  // stabilizes and any click racing a hover loses its target mid-click.
+  scheduleRender() {
+    if (this._renderQueued) return;
+    this._renderQueued = true;
+    requestAnimationFrame(() => { this._renderQueued = false; this.render(); });
+  }
+
+  render() {
+    if (!this.nodes) return;
+    this.renderTransform();
+    const P = this.pos, NW = this.NW, NH = this.NH;
+    const q = (this.q || '').trim().toLowerCase();
+    const matches = q ? new Set(this.nodes.filter(n =>
+      String(n.name).toLowerCase().includes(q) || String(n.technology || '').toLowerCase().includes(q)
+      || String(n.domain || '').toLowerCase().includes(q)).map(n => n.id)) : null;
+
+    const focusId = twinSelected || this.hover;
+    let rel = null, up = null, down = null;
+    if (focusId) {
+      up = twinClosure(this, focusId, 'up'); down = twinClosure(this, focusId, 'down');
+      rel = new Set([focusId, ...up, ...down]);
+    }
+    const simOn = this.simIds && this.simWave >= 0;
+
+    // edges
+    let svg = '<defs>'
+      + '<marker id="twcArrow" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto"><path d="M0,0 L7,3.5 L0,7 z" fill="#9aa6bb"></path></marker>'
+      + '<marker id="twcArrowHot" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto"><path d="M0,0 L7,3.5 L0,7 z" fill="var(--accent)"></path></marker>'
+      + '<marker id="twcArrowSim" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto"><path d="M0,0 L7,3.5 L0,7 z" fill="var(--red)"></path></marker>'
+      + '</defs>';
+    this.edges.forEach(e => {
+      const a = this.anchor(e.from, 'out'), b = this.anchor(e.to, 'in');
+      if (!P[e.from] || !P[e.to]) return;
+      const inFocus = rel && rel.has(e.from) && rel.has(e.to);
+      const onPath = focusId && ((up && up.has(e.from) && rel.has(e.to)) || (down && down.has(e.to) && rel.has(e.from)) || e.from === focusId || e.to === focusId) && inFocus;
+      // Highlight edges wholly inside the simulated selection AND edges
+      // feeding into it from outside (the "inbound boundary") — a
+      // single-node migration selection has no internal edge at all, so
+      // restricting to both-ends-selected left the flow with nothing to
+      // animate even though real inbound dependencies exist.
+      // Gated on simWave so the wave-by-wave progression is actually
+      // visible: an edge lights up only once its TARGET's wave has been
+      // reached (inbound-boundary edges ride their target's wave).
+      const simHit = simOn && this.simReached(e.to) && (
+        this.simIds.has(e.from) || this.simIds.has(e.to));
+      let stroke = '#b9c1cf', w = 1.3, op = .85, dash = '0', marker = 'url(#twcArrow)', cls = '';
+      if (simHit) { stroke = 'var(--red)'; w = 2; op = 1; dash = '7 6'; marker = 'url(#twcArrowSim)'; cls = ' class="twc-flow"'; }
+      else if (focusId) { if (onPath) { stroke = 'var(--accent)'; w = 2.1; op = 1; marker = 'url(#twcArrowHot)'; } else { op = .12; w = 1.1; } }
+      svg += '<path' + cls + ' d="' + this.edgePath(a, b) + '" fill="none" stroke="' + stroke + '" stroke-width="' + w
+        + '" stroke-opacity="' + op + '" stroke-linecap="round" stroke-dasharray="' + dash + '" marker-end="' + marker
+        + '" style="transition:stroke-opacity .25s ease"></path>';
+    });
+    this.svgEl.innerHTML = svg;
+
+    // nodes
+    let html = '';
+    this.nodes.forEach(n => {
+      const p = P[n.id]; if (!p) return;
+      const col = TWIN_KIND_COLOR[n.kind] || 'var(--muted)';
+      const dim = (focusId && !(rel && rel.has(n.id))) || (matches && !matches.has(n.id));
+      const isSel = twinSelected === n.id, isHover = this.hover === n.id;
+      const simHit = simOn && this.simIds.has(n.id) && this.simReached(n.id);
+      const isSeed = simOn && this.simLevels && this.simLevels[n.id] === 0;
+      const border = simHit ? 'var(--red)' : (isSel ? 'var(--accent)' : (matches && matches.has(n.id) ? 'var(--amber)' : col));
+      const bg = simHit ? 'var(--red-bg)' : (isSel ? '#fff' : '#fff');
+      const shadow = isSel ? '0 0 0 3px var(--accent-line), 0 8px 20px rgba(16,24,40,.14)' : (isHover ? '0 4px 14px rgba(16,24,40,.12)' : '0 1px 2px rgba(16,24,40,.06)');
+      const flag = simHit ? (isSeed ? 'SOURCE' : 'IMPACTED') : '';
+      html += '<div class="twc-node" data-nid="' + esc(n.id) + '" style="'
+        + 'position:absolute;left:0;top:0;display:flex;align-items:stretch;box-sizing:border-box;'
+        + 'width:' + NW + 'px;height:' + NH + 'px;'
+        + 'transform:translate3d(' + p.x + 'px,' + p.y + 'px,0);'
+        + 'background:' + bg + ';border:1.5px solid ' + border + ';border-radius:9px;overflow:hidden;'
+        + 'box-shadow:' + shadow + ';opacity:' + (dim ? .22 : 1) + ';cursor:grab;user-select:none;'
+        + 'transition:' + (this.dragN && this.dragN.id === n.id ? 'none' : 'transform .25s cubic-bezier(.22,.7,.25,1)') + ', opacity .22s ease, box-shadow .18s ease'
+        + '">'
+        + '<div style="width:4px;flex:none;background:' + (simHit ? 'var(--red)' : col) + '"></div>'
+        + '<div style="flex:1;min-width:0;padding:6px 8px 6px 10px">'
+        + '<div style="font:600 12px inherit;color:var(--ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + esc(String(n.name)) + '</div>'
+        + '<div style="font:400 10px var(--mono);color:var(--muted);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">'
+        + esc(n.kind.replace(/_/g, ' ') + (n.technology ? ' · ' + n.technology : '')) + '</div></div>'
+        + (flag ? '<div style="align-self:center;margin-right:8px;padding:2px 5px;border-radius:4px;background:' + (isSeed ? 'var(--red)' : 'var(--red-bg)') + ';color:' + (isSeed ? '#fff' : 'var(--red)') + ';font:700 8px inherit;letter-spacing:.06em;flex:none">' + flag + '</div>' : '')
+        + '</div>';
+    });
+    this.nodesEl.innerHTML = html;
+    this.nodesEl.querySelectorAll('.twc-node').forEach(el => {
+      const nid = el.dataset.nid;
+      el.onpointerdown = ev => { ev.stopPropagation(); const p = this.pos[nid];
+        this.dragN = {id: nid, px: p.x, py: p.y, mx: ev.clientX, my: ev.clientY, moved: false}; };
+      el.onpointerenter = () => { if (!this.dragN && !this.pan && this.hover !== nid) { this.hover = nid; this.scheduleRender(); } };
+      el.onpointerleave = () => { if (this.hover === nid) { this.hover = null; this.scheduleRender(); } };
+    });
+
+    // legend
+    const counts = {};
+    this.nodes.forEach(n => counts[n.kind] = (counts[n.kind] || 0) + 1);
+    this.legendEl.innerHTML = Object.keys(TWIN_KIND_COLOR).filter(k => counts[k]).map(k =>
+      '<div style="display:flex;align-items:center;gap:5px;padding:3px 8px;border-radius:14px;background:rgba(255,255,255,.9);border:1px solid var(--line);font:500 10.5px inherit;color:var(--ink3)">'
+      + '<span style="width:6px;height:6px;border-radius:99px;background:' + TWIN_KIND_COLOR[k] + ';display:inline-block"></span>'
+      + k.replace(/_/g, ' ') + ' <span style="color:var(--muted);font:500 10px var(--mono)">' + counts[k] + '</span></div>').join('');
+
+    // minimap — skipped entirely while collapsed (render() runs on hover,
+    // so there's no reason to rebuild an invisible SVG each time)
+    if (this.mapOpen === false) { this.applyFlowOffset(); if (simOn) this.startFlow(); else this.stopFlow(); return; }
+    const b = this.bbox(); const MW = 180, MH = 120;
+    const mk = Math.min(MW / b.w, MH / b.h) * 0.9;
+    const mox = (MW - b.w * mk) / 2 - b.x * mk, moy = (MH - b.h * mk) / 2 - b.y * mk;
+    this._mk = mk; this._mox = mox; this._moy = moy;
+    const r = this.wrap.getBoundingClientRect();
+    let mapSvg = '';
+    this.nodes.forEach(n => { const p = P[n.id]; if (!p) return;
+      const fill = simOn && this.simIds.has(n.id) ? 'var(--red)' : (TWIN_KIND_COLOR[n.kind] || 'var(--muted)');
+      const op = (focusId && !(rel && rel.has(n.id))) ? .2 : .85;
+      mapSvg += '<rect x="' + (p.x * mk + mox) + '" y="' + (p.y * mk + moy) + '" width="' + Math.max(2.5, NW * mk) + '" height="' + Math.max(2, NH * mk) + '" rx="1" fill="' + fill + '" fill-opacity="' + op + '"></rect>'; });
+    mapSvg += '<rect x="' + ((-this.view.x / this.view.k) * mk + mox) + '" y="' + ((-this.view.y / this.view.k) * mk + moy)
+      + '" width="' + ((r.width / this.view.k) * mk) + '" height="' + ((r.height / this.view.k) * mk)
+      + '" fill="rgba(30,98,208,.1)" stroke="var(--accent)" stroke-width="1.1" rx="2"></rect>';
+    this.mapSvg.innerHTML = mapSvg;
+
+    // Paths are rebuilt from scratch on every render (innerHTML), which
+    // would restart a CSS keyframe animation from 0 on each hover/pan/
+    // wave-tick — the flow visibly stuttered. Drive the offset from one
+    // persistent clock instead, so motion is continuous across renders.
+    this.applyFlowOffset();
+    if (simOn) this.startFlow(); else this.stopFlow();
+  }
+
+  applyFlowOffset() {
+    const paths = this.svgEl.querySelectorAll('.twc-flow');
+    if (!paths.length) return;
+    const off = -((performance.now() / 1000 * 30) % 26);
+    paths.forEach(p => p.style.strokeDashoffset = off + 'px');
+  }
+  startFlow() {
+    if (this._flowRaf) return;
+    const tick = () => {
+      if (!this.simIds) { this._flowRaf = null; return; }
+      this.applyFlowOffset();
+      this._flowRaf = requestAnimationFrame(tick);
+    };
+    this._flowRaf = requestAnimationFrame(tick);
+  }
+  stopFlow() {
+    if (this._flowRaf) { cancelAnimationFrame(this._flowRaf); this._flowRaf = null; }
+  }
+
+  // Has this node's migration wave been reached by the running animation?
+  // Nodes outside the selection (inbound boundary) have no wave of their
+  // own — they count as reached so their feeding edge can light up with
+  // whichever selected node they point at.
+  simReached(id) {
+    if (!this.simLevels) return false;
+    const lvl = this.simLevels[id];
+    if (lvl === undefined) return true;
+    return lvl <= this.simWave;
+  }
+
+  runSimulation(ids, levels) {
+    clearInterval(this.simTimer);
+    this.simIds = ids; this.simLevels = levels;
+    const max = Math.max(0, ...Object.values(levels));
+    this.simWave = 0; this.render();
+    let w = 0;
+    this.simTimer = setInterval(() => { w++; if (w > max) { clearInterval(this.simTimer); return; }
+      this.simWave = w; this.render(); }, 700);
+  }
+  clearSimulation() { clearInterval(this.simTimer); this.stopFlow(); this.simIds = null; this.simLevels = null; this.simWave = -1; this.render(); }
 }
-$('#twinView').onchange = renderTwinGraph;
-$('#twinSearch').oninput = renderTwinGraph;
+
+function twinClosure(canvas, id, dir) {
+  const seen = new Set(), q = [id];
+  const map = dir === 'down' ? canvas.out : canvas.in;
+  while (q.length) { const c = q.shift(); (map[c] || []).forEach(n => { if (!seen.has(n)) { seen.add(n); q.push(n); } }); }
+  return seen;
+}
+
+let gTwinCanvas = null;
+
+// Fullscreen takeover for the canvas — matches how established lineage tools
+// (e.g. Atlan) handle this: embedded by default, with an explicit escape
+// hatch to a focused view, rather than always taking the full viewport.
+let twinFullscreen = false;
+function twinSetFullscreen(on) {
+  twinFullscreen = on;
+  const root = $('#twinCanvasRoot'), wrap = $('#twinWrap'), btn = $('#twinFullscreen');
+  document.body.classList.toggle('twin-fullscreen', on);
+  root.classList.toggle('twin-canvas-fs', on);
+  wrap.style.height = on ? '' : '72vh';
+  btn.innerHTML = on ? '⤢ Exit fullscreen' : '⤢ Fullscreen';
+  if (gTwinCanvas) setTimeout(() => { gTwinCanvas.userMoved = false; gTwinCanvas.fit(); }, 60);
+}
+$('#twinFullscreen').onclick = () => twinSetFullscreen(!twinFullscreen);
+document.addEventListener('keydown', e => { if (e.key === 'Escape' && twinFullscreen) twinSetFullscreen(false); });
+
+// Reset — back to the graph's initial state: default layout, no search
+// filter, no simulation, no selection, view re-fit to content. Does NOT
+// exit fullscreen (that's Escape/the fullscreen button's own job).
+$('#twinReset').onclick = () => {
+  if (!gTwinCanvas) return;
+  $('#twinSearch').value = ''; gTwinCanvas.setQuery('');
+  $('#twinLayout').value = 'lr'; $('#twinView').value = 'full';
+  $('#twinTech').value = ''; twinSyncSimulateBtn();
+  gTwinCanvas.clearSimulation();
+  twinPinned = false;
+  twinClearSelection(true);
+  gTwinCanvas.layoutMode = 'lr';
+  gTwinCanvas.setGraph(twinGraphNodes(), gTwin.edges || []);
+  $('#twinDetail').innerHTML = '';
+};
 
 // Compact facts line from a node's metadata (rows/columns/schema for tables,
 // object counts for systems) — surfaces the introspected detail on click.
@@ -6105,27 +6616,91 @@ function twinFacts(m) {
   if (m.views) f.push(m.views + ' views');
   return f.join(' · ');
 }
+let twinPinned = false;
+
+function twinClearSelection(force) {
+  if (twinPinned && !force) return;
+  document.getElementById('twinSimInPanel')?.remove();
+  twinSelected = null; twinAffected = null;
+  $('#twinSidePanel').style.width = '0'; $('#twinSidePanel').style.borderLeftWidth = '0';
+  $('#twinSidePanel').innerHTML = '';
+  // panel is absolutely positioned — give the canvas its width back
+  $('#twinWrap').style.marginRight = '0';
+  if (gTwinCanvas) { gTwinCanvas.userMoved = false; gTwinCanvas.fit(); }
+}
+
 async function twinSelect(nid) {
   twinSelected = nid;
   const n = gTwin.nodes.find(x => x.id === nid);
+  const panel = $('#twinSidePanel');
+  panel.style.width = '320px'; panel.style.borderLeftWidth = '1px';
+  // reserve the canvas width the overlaid panel covers
+  $('#twinWrap').style.marginRight = '320px';
   try {
     const d = await api('/api/twin/impact?node=' + encodeURIComponent(nid));
     twinAffected = new Set(d.affected.map(a => a.id));
-    renderTwinGraph();
+    if (gTwinCanvas) gTwinCanvas.render();
     const lvl = {HIGH: 'var(--red)', MEDIUM: 'var(--amber)', LOW: 'var(--green)'}[d.impact_level];
-    $('#twinDetail').innerHTML =
-      '<div style="background:var(--accent-soft);border:1px solid var(--accent-line);border-radius:var(--radius);padding:12px 14px;font-size:13.5px">'
-      + '<b>' + esc(n.name) + '</b> <span style="color:var(--muted)">(' + esc(n.kind.replace(/_/g, ' '))
-      + (n.technology ? ' · ' + esc(n.technology) : '') + (n.domain ? ' · domain: ' + esc(n.domain) : '')
-      + (n.owner ? ' · owner: ' + esc(n.owner) : '') + ')</span><br>'
-      + (twinFacts(n.metadata) ? '<span style="color:#68738a;font-size:12.5px">' + twinFacts(n.metadata) + '</span><br>' : '')
-      + '<span style="display:inline-block;margin:6px 0;padding:2px 10px;border-radius:20px;background:' + lvl
-      + ';color:#fff;font-size:12px;font-weight:600">IMPACT ' + d.impact_level + '</span> '
-      + esc(d.summary)
-      + (d.business_endpoints.length ? '<br><b>Business endpoints hit:</b> '
-         + d.business_endpoints.map(e => esc(e.name) + ' (' + esc(e.kind) + ')').join(', ') : '')
-      + '<div style="margin-top:8px"><button type="button" class="secondary" id="twinRC" style="margin:0">Root cause candidates</button></div>'
-      + '<div id="twinRCOut"></div></div>';
+    const lvlBg = {HIGH: 'var(--red-bg)', MEDIUM: 'var(--amber-bg)', LOW: 'var(--green-bg)'}[d.impact_level];
+    const ups = (gTwinCanvas.in[nid] || []).map(id => gTwin.nodes.find(x => x.id === id)).filter(Boolean);
+    const downs = (gTwinCanvas.out[nid] || []).map(id => gTwin.nodes.find(x => x.id === id)).filter(Boolean);
+    // max-width caps a long identifier (e.g. "snowflake (XNLRKUP-BZ56043)")
+    // so it ellipsises inside the 320px panel instead of forcing the whole
+    // panel to scroll sideways. title= keeps the full name reachable.
+    const pill = m => '<button type="button" class="secondary twin-pill" data-nid="' + esc(m.id)
+      + '" title="' + esc(m.name) + '"'
+      + ' style="margin:0;height:auto;padding:4px 8px;font-size:11px;font-weight:500;white-space:nowrap;'
+      + 'max-width:100%;display:inline-block;overflow:hidden;text-overflow:ellipsis;vertical-align:top">'
+      + esc(m.name) + '</button>';
+    panel.innerHTML =
+      '<div style="padding:14px 16px 12px;border-bottom:1px solid var(--line)">'
+      + '<div style="display:flex;align-items:flex-start;gap:9px">'
+      + '<div style="width:9px;height:30px;border-radius:3px;background:' + (TWIN_KIND_COLOR[n.kind] || 'var(--muted)') + ';flex:none;margin-top:2px"></div>'
+      + '<div style="flex:1;min-width:0"><div style="font:600 14.5px inherit;color:var(--ink);word-break:break-word">' + esc(n.name) + '</div>'
+      + '<div style="font:400 11px var(--mono);color:var(--muted);margin-top:2px">' + esc(n.kind.replace(/_/g, ' '))
+      + (n.technology ? ' · ' + esc(n.technology) : '') + '</div></div>'
+      + '<button type="button" id="twinPanelPin" title="' + (twinPinned ? 'Unpin — clicking another node or the background will close this panel' : 'Pin — keep this panel open when clicking elsewhere')
+      + '" style="all:unset;cursor:pointer;color:' + (twinPinned ? 'var(--accent)' : 'var(--muted)') + ';font-size:14px;padding:2px 6px">📌</button>'
+      + '<button type="button" id="twinPanelClose" style="all:unset;cursor:pointer;color:var(--muted);font-size:15px;padding:2px 6px">×</button>'
+      + '</div></div>'
+      + '<div style="padding:12px 16px;border-bottom:1px solid var(--line)">'
+      + '<div style="font:600 10px inherit;letter-spacing:.09em;color:var(--muted);margin-bottom:8px">BLAST RADIUS</div>'
+      + '<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:7px">'
+      + twinStatBox(d.affected_total, 'affected')
+      + twinStatBox(ups.length, 'upstream')
+      + twinStatBox(d.business_endpoints.length, 'endpoints')
+      + '</div>'
+      + '<div style="margin-top:9px;padding:8px 9px;border-radius:6px;background:' + lvlBg + ';color:' + lvl + ';font:500 11.5px/1.4 inherit">'
+      + '<b>IMPACT ' + esc(d.impact_level) + '</b> — ' + esc(d.summary) + '</div>'
+      + (d.business_endpoints.length ? '<div style="margin-top:8px;font:400 11.5px inherit;color:var(--ink2)"><b>Endpoints hit:</b> '
+         + d.business_endpoints.map(e => esc(e.name) + ' (' + esc(e.kind) + ')').join(', ') + '</div>' : '')
+      + '</div>'
+      + (twinFacts(n.metadata) ? '<div style="padding:10px 16px;border-bottom:1px solid var(--line);font:400 11.5px inherit;color:var(--ink3)">' + twinFacts(n.metadata) + '</div>' : '')
+      + '<div style="padding:12px 16px;border-bottom:1px solid var(--line)">'
+      + '<div style="font:600 10px inherit;letter-spacing:.09em;color:var(--muted);margin-bottom:7px">DIRECT DEPENDENCIES</div>'
+      + '<div style="font:500 10.5px inherit;color:var(--ink3);margin:2px 0 5px">Upstream</div>'
+      + '<div style="display:flex;flex-wrap:wrap;gap:5px;min-width:0">' + (ups.length ? ups.map(pill).join('') : '<span style="font:400 11.5px inherit;color:var(--muted)">Source node — no upstream.</span>') + '</div>'
+      + '<div style="font:500 10.5px inherit;color:var(--ink3);margin:10px 0 5px">Downstream</div>'
+      + '<div style="display:flex;flex-wrap:wrap;gap:5px;min-width:0">' + (downs.length ? downs.map(pill).join('') : '<span style="font:400 11.5px inherit;color:var(--muted)">Leaf node — nothing consumes it.</span>') + '</div>'
+      + '</div>'
+      + '<div style="padding:12px 16px 18px">'
+      + '<div style="font:600 10px inherit;letter-spacing:.09em;color:var(--muted);margin-bottom:8px">ROOT CAUSE</div>'
+      + '<button type="button" class="secondary" id="twinRC" style="margin:0">Root cause candidates</button>'
+      + '<div id="twinRCOut"></div>'
+      + '<button type="button" id="twinSimFromSel" style="width:100%;margin-top:12px"'
+      + ' title="Simulate migrating ' + esc(n.name) + ' together with everything downstream of it">'
+      + 'Simulate migrating this node + downstream</button>'
+      + '</div>';
+    panel.querySelectorAll('.twin-pill').forEach(b => b.onclick = () => { twinSelect(b.dataset.nid); gTwinCanvas.centerOn(b.dataset.nid); });
+    // Gated inline (like #autofixBtn): this button is created after the
+    // boot-time applyRbacUi() pass, so the RBAC_UI table can't reach it —
+    // but it runs a job, exactly like the toolbar's #twinSimulate.
+    if (!can('jobs:run')) {
+      const sb = $('#twinSimFromSel');
+      sb.disabled = true; sb.title = permTitle('jobs:run');
+    }
+    $('#twinPanelPin').onclick = () => { twinPinned = !twinPinned; twinSelect(nid); };
+    $('#twinPanelClose').onclick = () => twinClearSelection(true);
     $('#twinRC').onclick = async () => {
       const rc = await api('/api/twin/root-cause?node=' + encodeURIComponent(nid));
       $('#twinRCOut').innerHTML = rc.candidates.length
@@ -6135,20 +6710,45 @@ async function twinSelect(nid) {
           + '</table><div style="color:var(--muted);font-size:12px;margin-top:4px">' + esc(rc.note) + '</div>'
         : '<div style="color:var(--muted);font-size:13px;margin-top:6px">Nothing upstream — this is a source.</div>';
     };
-  } catch (e) { $('#twinDetail').innerHTML = '<div class="err" style="display:block">' + esc(e.message) + '</div>'; }
+    // Migrating a node means migrating it AND everything downstream that
+    // depends on it — that's what yields a real dependency-ordered wave
+    // plan. Sending only the node itself always came back as one wave
+    // with nothing to sequence.
+    $('#twinSimFromSel').onclick = () => {
+      const ids = [n.id, ...twinClosure(gTwinCanvas, n.id, 'down')];
+      const names = ids.map(id => (gTwin.nodes.find(x => x.id === id) || {}).name).filter(Boolean);
+      twinRunSimulation({selection: names}, n.name + ' + downstream');
+    };
+  } catch (e) { panel.innerHTML = '<div class="err" style="display:block;margin:16px">' + esc(e.message) + '</div>'; }
 }
 
-$('#twinSimulate').onclick = async () => {
-  const tech = $('#twinTech').value;
-  if (!tech) { $('#twinDetail').innerHTML = '<div style="color:var(--muted);font-size:13px">Pick a technology to simulate migrating.</div>'; return; }
+function twinStatBox(n, label) {
+  return '<div style="background:var(--header-bg);border:1px solid var(--line);border-radius:6px;padding:7px 8px">'
+    + '<div style="font:600 17px var(--mono);color:var(--ink)">' + n + '</div>'
+    + '<div style="font:400 9.5px inherit;color:var(--muted);margin-top:1px">' + label + '</div></div>';
+}
+
+// Drives both the canvas's animated wave highlight and the #twinDetail
+// summary from ONE real backend call — the canvas never re-derives waves
+// client-side, it only visualizes what /api/twin/simulate returned.
+async function twinRunSimulation(body, label) {
+  $('#twinDetail').innerHTML = '<div style="color:var(--muted);font-size:13px">Simulating…</div>';
   try {
     const d = await api('/api/twin/simulate', {method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({technology: tech})});
+      headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)});
+    const nameToId = {}; gTwin.nodes.forEach(n => nameToId[n.name] = n.id);
+    const ids = new Set(), levels = {};
+    d.waves.forEach(w => w.objects.forEach(name => {
+      const id = nameToId[name]; if (!id) return;
+      ids.add(id); levels[id] = w.wave - 1;
+    }));
+    if (gTwinCanvas) gTwinCanvas.runSimulation(ids, levels);
     $('#twinDetail').innerHTML =
       '<div style="background:var(--green-bg);border:1px solid var(--green-line);border-radius:var(--radius);padding:12px 14px;font-size:13.5px">'
-      + '<b>Migration simulation — ' + esc(tech) + '</b> · ' + d.selection_size
+      + '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">'
+      + '<b>Migration simulation — ' + esc(label) + '</b> · ' + d.selection_size
       + ' object(s) in ' + d.estimated_waves + ' wave(s)'
+      + '<button type="button" class="secondary" id="twinSimClear" style="margin:0;margin-left:auto">Clear</button></div>'
       + d.waves.map(w => '<div style="margin-top:8px"><b>Wave ' + w.wave + '</b>: '
         + w.objects.map(esc).join(', ')
         + (w.external_consumers_affected.length
@@ -6157,7 +6757,56 @@ $('#twinSimulate').onclick = async () => {
       + (d.inbound_boundary.length ? '<div style="margin-top:8px"><b>Inbound boundary (stays put, feeds the selection):</b> '
          + d.inbound_boundary.map(esc).join(', ') + '</div>' : '')
       + '<div style="color:var(--muted);font-size:12px;margin-top:6px">' + esc(d.co_migration_note) + '</div></div>';
+    $('#twinSimClear').onclick = () => { if (gTwinCanvas) gTwinCanvas.clearSimulation(); $('#twinDetail').innerHTML = ''; };
+    // #twinDetail lives outside the canvas container, so in fullscreen it is
+    // hidden behind the overlay — surface the wave plan in the side panel
+    // instead, and otherwise scroll it into view so the result is never
+    // silently off-screen after a click.
+    if (twinFullscreen) {
+      const host = $('#twinSidePanel');
+      if (host && host.style.width !== '0' && host.style.width !== '') {
+        const box = document.createElement('div');
+        box.id = 'twinSimInPanel';
+        box.style.cssText = 'padding:12px 16px;border-top:1px solid var(--line);background:var(--green-bg)';
+        // strip IDs from the clone — duplicating #twinSimClear would break
+        // $('#twinSimClear') for both copies
+        box.innerHTML = $('#twinDetail').innerHTML;
+        box.querySelectorAll('[id]').forEach(el => {
+          if (el.id === 'twinSimClear') el.dataset.role = 'simclear';
+          el.removeAttribute('id');
+        });
+        const old = document.getElementById('twinSimInPanel'); if (old) old.remove();
+        host.appendChild(box);
+        box.querySelector('[data-role="simclear"]')?.addEventListener('click', () => {
+          if (gTwinCanvas) gTwinCanvas.clearSimulation();
+          $('#twinDetail').innerHTML = ''; box.remove();
+        });
+      }
+    } else {
+      $('#twinDetail').scrollIntoView({behavior: 'smooth', block: 'nearest'});
+    }
   } catch (e) { $('#twinDetail').innerHTML = '<div class="err" style="display:block">' + esc(e.message) + '</div>'; }
+}
+
+// The technology simulate button is a no-op without a technology, so keep
+// it disabled until one is chosen rather than letting a click dead-end in
+// an error message far below the canvas. (RBAC may also disable it — never
+// re-enable something the role isn't allowed to run.)
+function twinSyncSimulateBtn() {
+  const btn = $('#twinSimulate');
+  if (btn.dataset.rbacBlocked) return;
+  const tech = $('#twinTech').value;
+  btn.disabled = !tech;
+  btn.title = tech
+    ? 'Simulate migrating every asset built on ' + tech
+    : 'Pick a technology first — then simulate migrating every asset built on it';
+}
+$('#twinTech').onchange = twinSyncSimulateBtn;
+
+$('#twinSimulate').onclick = () => {
+  const tech = $('#twinTech').value;
+  if (!tech) return;
+  twinRunSimulation({technology: tech}, tech);
 };
 
 $('#twinTabs').querySelectorAll('button').forEach(b => b.onclick = () => twinTab(b.dataset.tab));
