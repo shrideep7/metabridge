@@ -3624,6 +3624,31 @@ document.querySelectorAll('input[name="tmode"]').forEach(r => r.onchange = () =>
   const cs = $('#convertSelected'); if (cs) cs.style.display = analyzeOnly ? 'none' : '';
 });
 
+// Hand a table manifest to Pipeline Studio. Every entry point goes through
+// here — Modernize -> connected system, Integrations -> Scaffold, and Data
+// Estate -> "Modernize this asset" — so the destination is always set up the
+// same way: file attached, drop zone labelled, and the SOURCE SYSTEM selected
+// to the system the manifest was introspected from. (Previously only the
+// Integrations path selected the source, so arriving from Modernize left
+// Pipeline Studio on its default source and the connector went undetected.)
+async function selectScaffoldSource(connector) {
+  const src = $('#scafSource');
+  if (!src || !connector) return false;
+  // the selects are populated at boot, but a handoff can win that race (or the
+  // boot fetch failed) — make sure the options exist before selecting one
+  if (!src.options.length) { try { await fillScaffoldSelects(); } catch (e) {} }
+  if (![...src.options].some(o => o.value === connector)) return false;
+  src.value = connector;
+  return true;
+}
+async function handoffToScaffold(file, label, connector) {
+  chosen.scafFile = file;
+  const dz = document.querySelector('[data-drop="scafFile"] .txt');
+  if (dz) dz.innerHTML = label;
+  await selectScaffoldSource(connector);
+  document.querySelector('nav a[data-page="scaffold"]').click();
+}
+
 /* connected systems as a source entry (Option B) */
 async function fillModConnList() {
   try {
@@ -3650,12 +3675,13 @@ async function fillModConnList() {
         const d = await api('/api/v1/connections/' + b.dataset.cid + '/introspect', {method:'POST', timeoutMs: 90000});
         if (!d.ok) throw new Error(d.error || 'analysis failed');
         const row = allConnections.find(x => x.id === b.dataset.cid);
-        chosen.scafFile = new File([d.manifest_yaml], row.connector + '_manifest.yml', {type:'text/yaml'});
-        const dz = document.querySelector('[data-drop="scafFile"] .txt');
-        if (dz) dz.innerHTML = '<b>' + row.connector + '_manifest.yml</b> (' + d.readiness.tables + ' tables from ' + esc(row.name) + ')';
-        document.querySelector('nav a[data-page="scaffold"]').click();
-      } catch (e) { mbAlert(e.message); }
-      finally { b.disabled = false; }
+        await handoffToScaffold(
+          new File([d.manifest_yaml], row.connector + '_manifest.yml', {type:'text/yaml'}),
+          '<b>' + row.connector + '_manifest.yml</b> (' + d.readiness.tables
+            + ' tables from ' + esc(row.name) + ')',
+          row.connector);
+      } catch (e) { mbAlert((e && e.message) || 'Could not analyze this system — check its connection under Integrations.'); }
+      finally { b.disabled = false; b.textContent = label; }
     });
   } catch (e) { $('#modConnList').textContent = '—'; }
 }
@@ -3846,7 +3872,7 @@ async function loadSavedConnections() {
         chosen.scafFile = f;
         const dz = document.querySelector('[data-drop="scafFile"] .txt');
         if (dz) dz.innerHTML = '<b>' + f.name + '</b> (from connection \u201C' + esc(row.name) + '\u201D — ' + d.readiness.tables + ' tables)';
-        const src = $('#scafSource'); if (src && [...src.options].some(o => o.value === row.connector)) src.value = row.connector;
+        await selectScaffoldSource(row.connector);
         document.querySelector('nav a[data-page="scaffold"]').click();
         out.innerHTML = '';
         return;
@@ -5550,14 +5576,15 @@ function openAssetDrawer(t, conn, d) {
     + '<button id="modAsset">Modernize this asset</button> <button class="secondary" id="closeModal">Close</button>';
   $('#modalBody').className = 'modal'; $('#modalBg').style.display = 'flex';
   $('#closeModal').onclick = () => $('#modalBg').style.display = 'none';
-  $('#modAsset').onclick = () => {
+  $('#modAsset').onclick = async () => {
     const manifest = 'tables:\n  - name: ' + t.name + '\n    schema: ' + t.schema + '\n    columns:\n'
       + t.columns.map(cc => '      - {name: ' + cc.name + ', type: ' + cc.type.toLowerCase() + '}').join('\n') + '\n';
-    chosen.scafFile = new File([manifest], t.name.toLowerCase() + '_manifest.yml', {type:'text/yaml'});
-    const dz = document.querySelector('[data-drop="scafFile"] .txt');
-    if (dz) dz.innerHTML = '<b>' + t.name.toLowerCase() + '_manifest.yml</b> (1 asset from ' + esc(conn.name || conn.connector) + ')';
     $('#modalBg').style.display = 'none';
-    document.querySelector('nav a[data-page="scaffold"]').click();
+    await handoffToScaffold(
+      new File([manifest], t.name.toLowerCase() + '_manifest.yml', {type:'text/yaml'}),
+      '<b>' + t.name.toLowerCase() + '_manifest.yml</b> (1 asset from '
+        + esc(conn.name || conn.connector) + ')',
+      conn.connector);
   };
 }
 
