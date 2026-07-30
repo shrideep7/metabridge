@@ -2,9 +2,10 @@
 
 The onboarding path for "get SAP (or any connector) into a cloud warehouse":
 declare the tables once in YAML, get a full ingestion layer on whichever stack
-the customer runs — a dbt project, an IDMC bundle, PowerCenter XML — plus
-connection artifacts (secrets as env-var references), a conversion report, and
-a governance report, in one command.
+the customer runs — a dbt project, warehouse-native landing DDL with bulk
+export/import scripts, an IDMC bundle, PowerCenter XML — plus connection
+artifacts (secrets as env-var references), a conversion report, and a
+governance report, in one command.
 
 Table manifest format:
 
@@ -20,6 +21,7 @@ Table manifest format:
 """
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -43,7 +45,6 @@ def _precision_scale(native_type: str):
     'varchar(18)'. Returns (0, 0) when none is declared so the generators use
     their documented fallback. Preserving this is what stops every numeric
     column collapsing to decimal(38,6)."""
-    import re
     mo = re.search(r"\(\s*(\d+)\s*(?:,\s*(\d+)\s*)?\)", native_type or "")
     if not mo:
         return 0, 0
@@ -139,6 +140,28 @@ _SAMPLE_MANIFEST = """tables:
       - {name: NAME, type: nvarchar}"""
 
 
+_SPLIT_TYPE_RE = re.compile(r"\(\s*\d+\s*$")
+_TYPE_TAIL_RE = re.compile(r"^\s*\d+\s*\)\s*$")
+
+
+def _repair_flow_split_type(c: dict, native: str) -> str:
+    """``{name: id, type: number(38,0)}`` in YAML *flow* style is not one
+    value: the comma is the flow separator, so PyYAML yields
+    ``{'type': 'number(38', '0)': None}`` and the scale is silently lost —
+    every numeric then falls back to decimal(38,6).
+
+    The damage is unambiguous (an unclosed paren beside a bare ``<digits>)``
+    key), so rejoin it rather than lose the precision. Block style and
+    quoted values never take this path.
+    """
+    if not _SPLIT_TYPE_RE.search(native):
+        return native
+    for k, v in c.items():
+        if v is None and isinstance(k, str) and _TYPE_TAIL_RE.match(k):
+            return "%s,%s" % (native, k.strip())
+    return native
+
+
 def _norm_column(c) -> Optional[dict]:
     if isinstance(c, str):
         return {"name": c}
@@ -147,7 +170,7 @@ def _norm_column(c) -> Optional[dict]:
             out = {"name": str(c["name"])}
             for k in ("type", "data_type", "datatype"):
                 if c.get(k):
-                    out["type"] = str(c[k])
+                    out["type"] = _repair_flow_split_type(c, str(c[k]))
                     break
             return out
         if len(c) == 1:                       # {KUNNR: numc}
@@ -319,13 +342,20 @@ def scaffold(source_key: str, target_key: str, tables_file: str, out_dir: str,
         (out / "dbt" / "profiles.yml").write_text(
             dbt_profile(target, target_params or {}, _safe(project)), encoding="utf-8")
 
-    # 2. Informatica assets
+    # 2. landing-layer DDL + bulk movement for the target warehouse.
+    # dbt transforms inside ONE warehouse; without this the models have
+    # nothing to select from and `dbt run` fails on the first relation.
+    from .generators.ddl_generator import generate_target_ddl
+    ddl = generate_target_ddl(pipeline, str(out / "ddl"), source=source,
+                              target=target)
+
+    # 3. Informatica assets
     from .generators.idmc_generator import generate_idmc
     from .generators.powercenter_generator import generate_powercenter
     generate_idmc(pipeline, str(out / "idmc"))
     (out / ("wf_%s.xml" % _safe(project))).write_text(generate_powercenter(pipeline), encoding="utf-8")
 
-    # 3. connection artifacts (secrets as env-var references only)
+    # 4. connection artifacts (secrets as env-var references only)
     conns = out / "connections"
     conns.mkdir(exist_ok=True)
     import json as _json
@@ -340,11 +370,13 @@ def scaffold(source_key: str, target_key: str, tables_file: str, out_dir: str,
         powercenter_connection(target, target_params or {}, "conn_" + target.key) +
         "\n", encoding="utf-8")
 
-    # 4. reports: conversion + governance
+    # 5. reports: conversion + governance
     from .report.reporter import write_report
-    report = write_report(pipeline, "scaffold (dbt + idmc + powercenter)", str(out))
+    report = write_report(pipeline, "scaffold (dbt + ddl + idmc + powercenter)",
+                          str(out))
     if manifest_notes:
         report["manifest_notes"] = manifest_notes
+    report["ddl"] = ddl
     if governance:
         from .governance.engine import govern, write_governance_report
         gov = govern(pipeline, source_region=source_region,

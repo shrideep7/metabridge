@@ -1420,6 +1420,8 @@
         <div><label>Source region</label><select name="source_region"><option value="on_prem">On-premises</option><option value="eu">EU</option><option value="us">US</option></select></div>
         <div><label>Target region</label><select name="target_region"><option value="eu">EU</option><option value="us">US</option><option value="apac">APAC</option></select></div>
       </div>
+      <div id="scafConnNote" style="display:none;font-size:12px;color:var(--ink3);
+           margin:2px 0 8px;line-height:1.7"></div>
       <button type="submit">Generate pipelines</button>
     </form>
     <div class="err" id="scafErr" style="white-space:pre-wrap"></div>
@@ -3663,7 +3665,7 @@ async function handoffToScaffold(file, label, connector) {
 /* connected systems as a source entry (Option B) */
 async function fillModConnList() {
   try {
-    if (!allConnections.length) allConnections = (await api('/api/v1/connections')).connections || [];
+    await loadConnections(true);
     if (!allConnectors.length) allConnectors = (await api('/api/v1/connectors')).connectors || [];
     // only systems that are started AND whose connector can actually be
     // introspected — otherwise "Analyze" would hit an unsupported path
@@ -3716,6 +3718,19 @@ const STATE_DOT = {CONNECTED:'', FAILED:'err', TESTING:'warn',
 let allConnections = [];
 let mktFilters = {q:'', cap:'', status:''};
 
+/* Connections are cached module-wide, but a connection created after this page
+   loaded (another tab, the API, a teammate) is invisible to that cache. Any
+   feature whose OUTPUT depends on a connection's settings must therefore read
+   through here with force=true, not off the cache — a stale read silently
+   generated artifacts with the connection details missing. */
+async function loadConnections(force) {
+  if (force || !allConnections.length) {
+    try { allConnections = (await api('/api/v1/connections')).connections || []; }
+    catch (e) { if (force) throw e; allConnections = allConnections || []; }
+  }
+  return allConnections;
+}
+
 // The server already computed x.state (connected|failed|testing|unconnected|
 // stopped). Uppercase it for the label/dot maps; fall back defensively.
 function connState(x) {
@@ -3767,7 +3782,7 @@ async function loadSavedConnections() {
   // spec (which made status and actions look wrong).
   try { if (!allConnectors.length) allConnectors = (await api('/api/v1/connectors')).connectors || []; } catch (e) {}
   try {
-    allConnections = (await api('/api/v1/connections')).connections || [];
+    await loadConnections(true);
   } catch (e) { allConnections = []; }
   const el = $('#savedConns');
   if (!allConnections.length) {
@@ -5491,11 +5506,25 @@ $('#scafForm').onsubmit = async ev => {
   // if a saved connection exists for the chosen source/target connector,
   // pass its id so generated dbt/IDMC/PowerCenter connection artifacts carry
   // that system's real connection settings (secrets stay as env-var refs)
+  try { await loadConnections(true); } catch (e) { /* offline: env-var refs */ }
   const connFor = k => { const m = allConnections.filter(x => x.connector === k);
     return (m.find(x => x.state === 'connected') || m[0] || {}).id; };
   const sc = connFor($('#scafSource').value), tc = connFor($('#scafTarget').value);
   if (sc) fd.set('source_conn', sc);
   if (tc) fd.set('target_conn', tc);
+  // say plainly which side will carry real settings and which falls back to
+  // env-var placeholders, instead of shipping a half-filled artifact silently
+  $('#scafConnNote').innerHTML = [['Source', sc, $('#scafSource')],
+                                  ['Target', tc, $('#scafTarget')]]
+    .map(([lbl, id, sel]) => {
+      const nm = esc(sel.selectedOptions[0].text);
+      const c = id && allConnections.find(x => x.id === id);
+      return c ? lbl + ': <b>' + nm + '</b> \u2192 settings from saved '
+                 + 'connection <code>' + esc(c.name) + '</code>'
+               : lbl + ': <b>' + nm + '</b> \u2192 no saved connection, '
+                 + 'artifacts use env-var placeholders';
+    }).join('<br>');
+  $('#scafConnNote').style.display = 'block';
   const btn = ev.target.querySelector('button'); btn.disabled = true; btn.textContent = 'Generating…';
   try {
     const d = await api('/api/scaffold', {method:'POST', body: fd});
@@ -5509,6 +5538,17 @@ $('#scafForm').onsubmit = async ev => {
       + '</div><div style="font-size:13px"><strong>Generated:</strong> '
       + (d.artifacts || []).map(esc).join(' · ') + '</div>'
       + ((d.manifest_notes && d.manifest_notes.length) ? '<div style="font-size:13px;color:var(--ink3)">' + d.manifest_notes.map(esc).join('; ') + '</div>' : '')
+      // dbt transforms inside the target; it cannot read the source. Say so
+      // here, because it is the step users skip and then hit "relation does
+      // not exist" on the first model.
+      + ((d.ddl && d.ddl.tables) ? '<div style="margin-top:6px;font-size:13px">'
+         + '<strong>Run <code>ddl/</code> first:</strong> landing DDL + bulk '
+         + 'export/import for ' + d.ddl.tables + ' table(s). dbt transforms '
+         + 'inside ' + esc($('#scafTarget').selectedOptions[0].text)
+         + ' \u2014 it does not read '
+         + esc($('#scafSource').selectedOptions[0].text)
+         + ', so the tables must land there first. See <code>ddl/README.md'
+         + '</code>.</div>' : '')
       + (d.governance_enabled === false ? '<div style="font-size:13px;color:var(--ink3)">Governance report skipped — pipelines only.</div>' : '')
       + '<div style="font-size:13px;color:var(--ink3)">Also listed under Dashboard &rarr; recent jobs. Use the links below to open the reports or download everything.</div>';
     banner.style.display = 'block';
@@ -5540,7 +5580,7 @@ let estateSystem = '';
 let estateSummary = [];
 async function loadEstate() {
   loadTwin();
-  try { allConnections = (await api('/api/v1/connections')).connections || []; } catch (e) { allConnections = []; }
+  try { await loadConnections(true); } catch (e) { allConnections = []; }
   if (!allConnectors.length) { try { allConnectors = (await api('/api/v1/connectors')).connectors || []; } catch (e) {} }
   const startable = allConnections.filter(x => x.status === 'active');
   // only offer systems that can actually be introspected live
