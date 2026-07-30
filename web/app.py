@@ -1335,6 +1335,7 @@ _REPORT_OTHER = (
     ("assessment.json", "Assessment (JSON)"),
     ("ai_readiness.json", "AI-readiness (JSON)"),
     ("orchestration_intelligence.json", "Orchestration intelligence (JSON)"),
+    ("orchestration_resilience.json", "Orchestration resilience audit (JSON)"),
 )
 _MEDIA_BY_SUFFIX = {
     ".html": "text/html; charset=utf-8", ".json": "application/json",
@@ -4097,7 +4098,8 @@ def _orch_load(orch_id: str):
     return job_dir, cor_from_dict(json.loads(f.read_text(encoding="utf-8")))
 
 
-def _orch_analyze_payload(cor, validation, intelligence) -> dict:
+def _orch_analyze_payload(cor, validation, intelligence,
+                          resilience=None) -> dict:
     return {
         "detected_platform": cor.source_platform,
         "workflows": [{
@@ -4117,6 +4119,7 @@ def _orch_analyze_payload(cor, validation, intelligence) -> dict:
         "manual_review_items": intelligence["manual_review_items"],
         "validation_verdict": validation["verdict"],
         "validation_findings": validation["findings"],
+        "resilience": resilience or {},
     }
 
 
@@ -4125,7 +4128,7 @@ async def orchestration_analyze(request: Request):
     """Parse an orchestration export -> COR; validate; score."""
     from metabridge.orchestration.parsers import parse_orchestration
     from metabridge.orchestration.validate import (
-        migration_intelligence, validate_cor,
+        migration_intelligence, resilience_audit, validate_cor,
     )
     body = await request.json()
     job_dir = _new_job("orchestration")
@@ -4138,6 +4141,7 @@ async def orchestration_analyze(request: Request):
         raise HTTPException(422, str(e))
     validation = validate_cor(cor)
     intelligence = migration_intelligence(cor, validation)
+    resilience = resilience_audit(cor)
     out = job_dir / "output"
     out.mkdir(parents=True, exist_ok=True)
     (out / "cor.json").write_text(json.dumps(cor.to_dict(), indent=1), encoding="utf-8")
@@ -4145,9 +4149,12 @@ async def orchestration_analyze(request: Request):
         json.dumps(validation, indent=1), encoding="utf-8")
     (out / "orchestration_intelligence.json").write_text(
         json.dumps(intelligence, indent=1), encoding="utf-8")
+    (out / "orchestration_resilience.json").write_text(
+        json.dumps(resilience, indent=1), encoding="utf-8")
     meta = _finish_job(job_dir, source_format=cor.source_platform)
     return {"orchestration_id": meta["id"],
-            **_orch_analyze_payload(cor, validation, intelligence)}
+            **_orch_analyze_payload(cor, validation, intelligence,
+                                    resilience)}
 
 
 @app.post("/api/orchestration/convert")
@@ -4162,7 +4169,7 @@ async def orchestration_convert(request: Request):
     )
     from metabridge.orchestration.parsers import parse_orchestration
     from metabridge.orchestration.validate import (
-        migration_intelligence, validate_cor,
+        migration_intelligence, resilience_audit, validate_cor,
     )
     body = await request.json()
     target = str(body.get("target", "") or "")
@@ -4188,6 +4195,7 @@ async def orchestration_convert(request: Request):
     manifest = generate_orchestration(cor, target, str(out / "generated"))
     validation = validate_cor(cor)
     intelligence = migration_intelligence(cor, validation)
+    resilience = resilience_audit(cor)
     (out / "cor.json").write_text(json.dumps(cor.to_dict(), indent=1), encoding="utf-8")
     graphs = {}
     for wf in cor.workflows:
@@ -4202,8 +4210,11 @@ async def orchestration_convert(request: Request):
         json.dumps(validation, indent=1), encoding="utf-8")
     (out / "orchestration_intelligence.json").write_text(
         json.dumps(intelligence, indent=1), encoding="utf-8")
+    (out / "orchestration_resilience.json").write_text(
+        json.dumps(resilience, indent=1), encoding="utf-8")
     (out / "execution_documentation.md").write_text(
-        generate_execution_doc(cor, intelligence, validation), encoding="utf-8")
+        generate_execution_doc(cor, intelligence, validation, resilience),
+        encoding="utf-8")
     meta = _finish_job(job_dir, source_format=cor.source_platform,
                        target_format=target)
     return {"orchestration_id": meta["id"],
@@ -4212,7 +4223,17 @@ async def orchestration_convert(request: Request):
             "workflows": manifest["workflows"],
             "validation_verdict": validation["verdict"],
             "automation_score": intelligence["automation_score"],
+            "resilience_score": resilience["resilience_score"],
+            "cutover_checklist": resilience["cutover_checklist"],
             "download_url": "/api/jobs/%s/download" % meta["id"]}
+
+
+@app.get("/api/orchestration/{orch_id}/resilience")
+def orchestration_resilience(orch_id: str):
+    """Critical path, blast radius and cutover risk for an imported COR."""
+    from metabridge.orchestration.validate import resilience_audit
+    _dir, cor = _orch_load(orch_id)
+    return resilience_audit(cor)
 
 
 @app.post("/api/orchestration/validate")

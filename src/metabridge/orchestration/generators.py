@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 from .cor import COR, Task, Workflow, normalize_cron
 from .graph import to_mermaid
@@ -537,7 +537,8 @@ def generate_scaffold_yaml(wf: Workflow) -> str:
 
 
 def generate_execution_doc(cor: COR, intelligence: dict,
-                           validation: dict) -> str:
+                           validation: dict,
+                           resilience: Optional[dict] = None) -> str:
     lines = ["# Orchestration modernization — %s" % cor.name, "",
              "Source platform: **%s** · workflows: %d · tasks: %d"
              % (cor.source_platform, len(cor.workflows),
@@ -565,6 +566,51 @@ def generate_execution_doc(cor: COR, intelligence: dict,
             lines += ["", "Failure paths: " + ", ".join(
                 "%s → %s" % f for f in fails)]
         lines += ["", "```mermaid", to_mermaid(w), "```", ""]
+        rw = next((x for x in (resilience or {}).get("workflows", [])
+                   if x["workflow"] == w.name), None)
+        if rw:
+            lines += [
+                "Critical path (%d of %d tasks): %s"
+                % (rw["critical_path_length"], rw["tasks"],
+                   " → ".join(rw["critical_path"])),
+                "",
+                "Declared runtime along that path: %s · %d sequential "
+                "stage(s) · widest parallel step: %d task(s)"
+                % (("%s%s%s" % (
+                    "at least " if rw["critical_path_unbounded_tasks"]
+                    and rw["critical_path_declared_timeout_seconds"] else "",
+                    rw["critical_path_declared_timeout"]
+                    if rw["critical_path_declared_timeout_seconds"]
+                    else "no timeouts declared",
+                    " (%d task(s) unbounded)"
+                    % rw["critical_path_unbounded_tasks"]
+                    if rw["critical_path_unbounded_tasks"]
+                    and rw["critical_path_declared_timeout_seconds"]
+                    else "")),
+                   rw["serial_stages"], rw["max_parallel_width"]), ""]
+            if rw["single_points_of_failure"]:
+                lines += ["Single points of failure — one failure blocks:", ""]
+                for s in rw["single_points_of_failure"]:
+                    lines.append(
+                        "- `%s` blocks %d downstream task(s) · %s"
+                        % (s["task"], s["blocks_downstream"],
+                           "%d retries" % s["retries"] if s["retries"]
+                           else "**no retries**"))
+                lines.append("")
+    if resilience and (resilience["findings"]
+                       or resilience["cutover_checklist"]):
+        lines += ["## Runtime resilience — score %d/100 (%s)"
+                  % (resilience["resilience_score"], resilience["grade"]), ""]
+        for x in resilience["findings"]:
+            lines.append("- **%s** [%s] %s%s"
+                         % (x["severity"], x["code"], x["message"],
+                            " _" + x["suggestion"] + "_"
+                            if x["suggestion"] else ""))
+        if resilience["cutover_checklist"]:
+            lines += ["", "### Cutover checklist", ""]
+            for c in resilience["cutover_checklist"]:
+                lines.append("- [ ] %s" % c)
+        lines.append("")
     if intelligence["manual_review_items"]:
         lines += ["## Manual review", ""]
         for m in intelligence["manual_review_items"]:
