@@ -4845,6 +4845,7 @@ async def api_scaffold(
            "pipelines": [mm["name"] for mm in report.get("mappings", [])],
            "artifacts": artifacts,
            "manifest_notes": report.get("manifest_notes", []),
+           "ddl": report.get("ddl", {}),
            "governance_enabled": bool(governance),
            "report_url": "/api/jobs/%s/report" % meta["id"],
            "download_url": "/api/jobs/%s/download" % meta["id"]}
