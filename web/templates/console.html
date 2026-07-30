@@ -1276,6 +1276,42 @@
       <div class="links" id="evtLinks" style="margin-top:10px"></div>
     </div>
   </div>
+
+  <div class="panel" id="objInvPanel">
+    <h3 style="margin-bottom:4px">Object inventory &amp; migration feasibility</h3>
+    <div style="color:var(--ink3);font-size:13px;margin-bottom:10px">
+      Enumerate every schema-level object in a connected system &mdash; views, procedures,
+      functions, tasks, streams, sequences, pipes, policies, grants, constraints &mdash; and
+      see, per object, whether the move to your target platform is <b>automated</b>,
+      <b>needs review</b>, <b>manual</b>, or has <b>no equivalent</b>. Read-only against
+      the source; view conversions are proven by transpiling each definition, not assumed.</div>
+    <div style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap">
+      <div><label>Connected system</label><select id="objConn" style="max-width:300px"></select></div>
+      <div><label>Target platform</label><select id="objTarget" style="max-width:260px"></select></div>
+      <button type="button" id="objInvRun" style="margin-top:0">Run inventory</button>
+      <span id="objStatus" style="font-size:13px;color:var(--ink3)"></span>
+    </div>
+    <div class="err" id="objErr"></div>
+    <div id="objResult" style="display:none;margin-top:16px">
+      <div class="cards" id="objCards"></div>
+      <div id="objUnread" style="display:none;background:var(--amber-bg);border:1px solid var(--amber-line);border-radius:var(--radius);padding:10px 14px;margin:10px 0;font-size:12.5px;color:var(--amber)"></div>
+      <h4 style="margin:14px 0 8px;font-size:13.5px">By object type</h4>
+      <div style="overflow-x:auto"><table id="objKinds"></table></div>
+      <details style="margin-top:14px" open>
+        <summary style="font-size:13px;color:var(--accent);cursor:pointer;font-weight:600">
+          Objects needing a decision (<span id="objRevN">0</span>)</summary>
+        <input id="objFilter" placeholder="Filter by name, kind or status&hellip;"
+               style="max-width:340px;margin:10px 0 8px">
+        <div style="max-height:420px;overflow:auto;border:1px solid var(--border);border-radius:var(--radius)">
+          <table id="objList" style="margin:0"></table></div>
+      </details>
+      <div style="display:flex;gap:10px;align-items:center;margin-top:14px;flex-wrap:wrap">
+        <button type="button" id="objGen" style="margin-top:0">Generate migration package</button>
+        <span id="objGenStatus" style="font-size:13px;color:var(--ink3)"></span>
+      </div>
+      <div class="links" id="objLinks" style="margin-top:10px"></div>
+    </div>
+  </div>
 </div>
 
 <!-- ======================= MARKETPLACE ======================= -->
@@ -1420,6 +1456,24 @@
         <div><label>Source region</label><select name="source_region"><option value="on_prem">On-premises</option><option value="eu">EU</option><option value="us">US</option></select></div>
         <div><label>Target region</label><select name="target_region"><option value="eu">EU</option><option value="us">US</option><option value="apac">APAC</option></select></div>
       </div>
+      <details id="mvWrap" style="margin:6px 0 10px">
+        <summary style="font-size:13px;color:var(--accent);cursor:pointer;font-weight:600">
+          Data movement settings <span id="mvState" style="font-weight:400;color:var(--muted)"></span></summary>
+        <div style="font-size:12px;color:var(--muted);margin:8px 0">
+          Set once per workspace &mdash; generated unload/load scripts come out fully
+          substituted, nothing to edit. Locations and role names only; credentials are
+          never stored. For Snowflake sources, a <b>named stage</b> is the zero-credential
+          path: create it once in Snowflake and name it here.</div>
+        <div class="row">
+          <div><label>Stage URI</label><input id="mvStageUri" placeholder="s3://my-bucket/mb"></div>
+          <div><label>Named source stage (optional)</label><input id="mvSourceStage" placeholder="MB_S3_STAGE"></div>
+          <div><label>Target IAM role ARN</label><input id="mvIamRole" placeholder="arn:aws:iam::123456789012:role/RedshiftCopy"></div>
+        </div>
+        <div style="display:flex;gap:10px;align-items:center">
+          <button type="button" id="mvSave" class="secondary" style="margin-top:0">Save movement settings</button>
+          <span id="mvStatus" style="font-size:13px;color:var(--ink3)"></span>
+        </div>
+      </details>
       <div id="scafConnNote" style="display:none;font-size:12px;color:var(--ink3);
            margin:2px 0 8px;line-height:1.7"></div>
       <button type="submit">Generate pipelines</button>
@@ -2242,6 +2296,8 @@ document.querySelectorAll('nav a[data-page]').forEach(a => a.onclick = () => {
   if (a.dataset.page === 'system') loadSystem();
   if (a.dataset.page === 'marketplace') { loadMarketplace(); loadSavedConnections(); }
   if (a.dataset.page === 'governance') loadGovernanceExtras();
+  if (a.dataset.page === 'convert') { try { fillObjSelects(); } catch (e) {} }
+  if (a.dataset.page === 'scaffold') { try { loadMovementSettings(); } catch (e) {} }
   if (a.dataset.page === 'settings') showSettings(curSetSec, true);
 });
 
@@ -2359,6 +2415,7 @@ const RBAC_UI = [
   ['#finRun', 'jobs:run'], ['#secRun', 'jobs:run'], ['#docsRun', 'jobs:run'],
   ['#evtAnalyze', 'jobs:run'], ['#evtIntel', 'jobs:run'], ['#evtGenerate', 'jobs:run'],
   ['#orchAnalyze', 'jobs:run'], ['#orchGenerate', 'jobs:run'], ['#orchDepAdd', 'jobs:run'],
+  ['#objInvRun', 'jobs:run'], ['#objGen', 'jobs:run'],
   ['#twinBuild', 'jobs:run'], ['#twinSimulate', 'jobs:run'],
   ['#agRun', 'jobs:run'], ['#plugScaffold', 'jobs:run'],
   // platform configuration -> settings:manage
@@ -5256,6 +5313,161 @@ $('#evtGenerate').onclick = async () => {
   }
 };
 
+/* ---------------- Modernize: object inventory & feasibility ------------- */
+let objInvId = null, objRecords = [];
+const OBJ_STATUS = {
+  AUTOMATED: ['Automated', 'var(--green)'],
+  PARTIAL: ['Needs review', 'var(--amber)'],
+  MANUAL: ['Manual', 'var(--red)'],
+  NO_EQUIVALENT: ['No equivalent', 'var(--ink3)'],
+};
+
+async function fillObjSelects() {
+  try {
+    await loadConnections(true);
+    if (!allConnectors.length) allConnectors = (await api('/api/v1/connectors')).connectors || [];
+    const live = allConnections.filter(x => {
+      if (x.status !== 'active') return false;
+      const spec = allConnectors.find(c => c.key === x.connector);
+      return spec && spec.supports && spec.supports.introspect;
+    });
+    $('#objConn').innerHTML = live.length
+      ? live.map(x => '<option value="' + x.id + '">' + esc(x.name)
+          + ' (' + esc(x.connector) + ')</option>').join('')
+      : '<option value="">No live connection yet - add one in Integrations</option>';
+    $('#objTarget').innerHTML = allConnectors
+      .filter(c => c.dbt_adapter || c.category === 'cloud_dw' || c.category === 'lakehouse')
+      .map(c => '<option value="' + c.key + '"' + (c.key === 'redshift' ? ' selected' : '')
+        + '>' + esc(c.name) + '</option>').join('');
+  } catch (e) { /* selects stay empty; Run reports the real error */ }
+}
+
+function objRenderList() {
+  const q = ($('#objFilter').value || '').toLowerCase();
+  const rows = objRecords.filter(r => r.status !== 'AUTOMATED')
+    .filter(r => !q || (r.name + ' ' + r.kind + ' ' + r.status + ' '
+      + (r.schema || '') + ' ' + (r.language || '') + ' '
+      + (r.target_equivalent || '')).toLowerCase().includes(q));
+  $('#objList').innerHTML =
+    '<tr><th>Kind</th><th>Object</th><th>Status</th><th>Target pattern</th>'
+    + '<th>Why</th><th>Effort</th></tr>'
+    + (rows.slice(0, 400).map(r => {
+        const st = OBJ_STATUS[r.status] || [r.status, 'var(--ink3)'];
+        return '<tr><td>' + esc(r.kind.replace(/_/g, ' ')) + '</td>'
+          + '<td><code>' + esc((r.schema ? r.schema + '.' : '') + r.name) + '</code>'
+          + (r.language ? ' <span style="color:var(--muted)">(' + esc(r.language) + ')</span>' : '')
+          + '</td><td>' + badge(st[0], st[1]) + '</td>'
+          + '<td>' + esc(r.target_equivalent || '') + '</td>'
+          + '<td style="max-width:380px;font-size:12px">' + esc(r.reason || '') + '</td>'
+          + '<td>' + r.effort_hours + 'h</td></tr>';
+      }).join('') || '<tr><td colspan="6">Nothing matches.</td></tr>')
+    + (rows.length > 400 ? '<tr><td colspan="6" style="color:var(--muted)">Showing 400 of '
+        + rows.length + ' - refine the filter or open the full report.</td></tr>' : '');
+}
+$('#objFilter') && ($('#objFilter').oninput = () => objRenderList());
+
+$('#objInvRun').onclick = async () => {
+  const err = $('#objErr'); err.style.display = 'none';
+  $('#objResult').style.display = 'none'; $('#objLinks').innerHTML = '';
+  const cid = $('#objConn').value, target = $('#objTarget').value;
+  if (!cid) { err.textContent = 'Connect a live system first (Integrations).';
+    err.style.display = 'block'; return; }
+  $('#objStatus').textContent = 'Enumerating every object the connected role can see…';
+  try {
+    const d = await api('/api/objects/inventory', {method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({connection_id: cid, target})});
+    objInvId = d.inventory_id; objRecords = d.records || [];
+    $('#objStatus').textContent = '';
+    const card = (n, l, dd) => '<div class="mcard"><div class="n">' + n
+      + '</div><div class="l">' + l + '</div>'
+      + (dd ? '<div class="d">' + esc(dd) + '</div>' : '') + '</div>';
+    const bs = d.by_status || {};
+    $('#objCards').innerHTML =
+      card(d.objects_total, 'Objects', (d.database || '') + (d.schema ? ' / ' + d.schema : ''))
+      + card((bs.AUTOMATED || 0), 'Automated', d.automation_pct + '% of estate')
+      + card((bs.PARTIAL || 0), 'Needs review')
+      + card((bs.MANUAL || 0), 'Manual port')
+      + card((bs.NO_EQUIVALENT || 0), 'No equivalent')
+      + card(d.estimated_effort_hours + 'h', 'Est. effort', 'deterministic per-object estimate');
+    const kinds = d.kinds || {};
+    $('#objKinds').innerHTML =
+      '<tr><th>Kind</th><th>Count</th><th>Automated</th><th>Needs review</th>'
+      + '<th>Manual</th><th>No equiv.</th><th>Target equivalent</th><th>Effort</th></tr>'
+      + Object.keys(kinds).map(k => {
+          const v = kinds[k];
+          return '<tr><td><b>' + esc(k.replace(/_/g, ' ')) + '</b></td><td>' + v.count
+            + '</td><td>' + v.AUTOMATED + '</td><td>' + v.PARTIAL + '</td><td>' + v.MANUAL
+            + '</td><td>' + v.NO_EQUIVALENT + '</td><td style="font-size:12px">'
+            + esc(v.target_equivalent || '') + '</td><td>' + v.effort_hours + 'h</td></tr>';
+        }).join('');
+    $('#objRevN').textContent = objRecords.filter(r => r.status !== 'AUTOMATED').length;
+    objRenderList();
+    const un = d.unreadable || [];
+    if (un.length) {
+      $('#objUnread').innerHTML = '<b>' + un.length + ' categor'
+        + (un.length === 1 ? 'y' : 'ies') + ' not readable with this role</b> - the counts are a floor, not a total: '
+        + un.map(u => esc(u.category)).join(', ')
+        + '. Re-run with a role that can read them.';
+      $('#objUnread').style.display = 'block';
+    } else { $('#objUnread').style.display = 'none'; }
+    $('#objLinks').innerHTML =
+      '<a href="' + withKey(d.report_html_url + '&inline=true') + '" target="_blank">View full report</a>'
+      + '<a href="' + withKey(d.report_json_url) + '">Download JSON</a>';
+    $('#objResult').style.display = 'block';
+  } catch (e) {
+    $('#objStatus').textContent = '';
+    err.textContent = e.message; err.style.display = 'block';
+  }
+};
+
+$('#objGen').onclick = async () => {
+  if (!objInvId) return;
+  const err = $('#objErr'); err.style.display = 'none';
+  $('#objGenStatus').textContent = 'Generating…';
+  try {
+    const d = await api('/api/objects/convert', {method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({inventory_id: objInvId})});
+    $('#objGenStatus').innerHTML = d.files.length + ' file(s) · '
+      + d.views_converted + ' view(s) converted'
+      + (d.views_manual ? ' · ' + d.views_manual + ' view(s) in the manual queue' : '')
+      + ' · ' + d.manual_objects + ' object(s) need a human';
+    $('#objLinks').innerHTML +=
+      '<a href="' + withKey(d.download_url) + '">Download migration package</a>';
+  } catch (e) {
+    $('#objGenStatus').textContent = '';
+    err.textContent = e.message; err.style.display = 'block';
+  }
+};
+
+/* ---------------- Pipeline Studio: data movement settings ---------------- */
+async function loadMovementSettings() {
+  try {
+    const d = await api('/api/settings/movement');
+    $('#mvStageUri').value = d.stage_uri || '';
+    $('#mvSourceStage').value = d.source_stage || '';
+    $('#mvIamRole').value = d.iam_role || '';
+    const set = !!(d.stage_uri || d.iam_role || d.source_stage);
+    $('#mvState').textContent = set
+      ? '— configured; generated scripts come out fully substituted'
+      : '— not set; generated scripts will carry <placeholders>';
+  } catch (e) { /* panel stays usable; Save reports the real error */ }
+}
+
+$('#mvSave').onclick = async () => {
+  $('#mvStatus').textContent = 'Saving…';
+  try {
+    await api('/api/settings/movement', {method: 'PUT',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({stage_uri: $('#mvStageUri').value.trim(),
+                            source_stage: $('#mvSourceStage').value.trim(),
+                            iam_role: $('#mvIamRole').value.trim()})});
+    $('#mvStatus').textContent = 'Saved - the next Generate uses these values.';
+    loadMovementSettings();
+  } catch (e) { $('#mvStatus').textContent = e.message; }
+};
+
 /* ---------------- Pipeline Studio: orchestration modernization ---------- */
 let orchId = null, orchGraphs = null, orchResil = null;
 
@@ -6038,6 +6250,7 @@ const SYS_KIND_LABELS = {convert: 'Modernization', analyze: 'Analysis', govern: 
   scaffold: 'Pipeline scaffold', twin: 'Digital twin build', assessment: 'Assessment',
   ai_readiness: 'AI readiness', debt: 'Tech-debt scan', finops: 'FinOps', security: 'Security scan',
   docs: 'Documentation', events: 'Event estate', sap: 'SAP analysis', orchestration: 'Orchestration',
+  objects: 'Object inventory', objects_convert: 'Object migration package',
   agents: 'Agent run'};
 const SYS_VERDICTS = {
   HEALTHY:   {c: '#1e8449', bg: '#eaf6ef', label: 'All systems healthy', icon: '●'},

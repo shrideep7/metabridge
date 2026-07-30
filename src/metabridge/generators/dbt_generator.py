@@ -328,6 +328,11 @@ def _write_sources_yaml(pipeline: Pipeline, root: Path) -> None:
     for schema, tables in sorted(by_schema.items()):
         dbs = sorted({t.database for t in tables if t.database})
         entry: Dict[str, object] = {"name": schema, "schema": schema}
+        if pipeline.metadata.get("landing_target"):
+            # cross-platform landing: the tables' database is the SOURCE
+            # database; the dbt source must resolve in the profile's TARGET
+            # database, so no database is pinned here
+            dbs = []
         if dbs:
             entry["database"] = dbs[0]             # preserved from the manifest
             if len(dbs) > 1:
