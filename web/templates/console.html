@@ -3398,8 +3398,13 @@ function renderPage(id, allRows, headerHtml, emptyHtml, noun, onRender, pageSize
 function bindPager(id, rerender) {
   const st = pagerState(id);
   const prev = $('#' + id + 'Prev'), next = $('#' + id + 'Next');
-  if (prev) prev.onclick = () => { st.page--; rerender(); document.querySelector('.workarea').scrollTo({ top: 0, behavior: 'smooth' }); };
-  if (next) next.onclick = () => { st.page++; rerender(); document.querySelector('.workarea').scrollTo({ top: 0, behavior: 'smooth' }); };
+  const navTop = () => {
+    if (document.activeElement) document.activeElement.blur();
+    const wa = document.querySelector('.workarea');
+    if (wa) wa.scrollTop = 0;
+  };
+  if (prev) prev.onclick = () => { st.page--; navTop(); rerender(); navTop(); };
+  if (next) next.onclick = () => { st.page++; navTop(); rerender(); navTop(); };
 }
 function pagerHtml(id) {
   return '<div id="' + id + 'Pager" style="display:none;align-items:center;gap:12px;margin-top:12px;flex-wrap:wrap">'
@@ -5968,8 +5973,13 @@ function estateReRender(resetPage) {
   if (estateSystem === 'all') renderEstateSummaryTable();
   else if (window._estate) renderEstateTable();
 }
-$('#estPrev').onclick = () => { estatePage--; renderEstateTable(); document.querySelector('.workarea').scrollTo({ top: 0, behavior: 'smooth' }); };
-$('#estNext').onclick = () => { estatePage++; renderEstateTable(); document.querySelector('.workarea').scrollTo({ top: 0, behavior: 'smooth' }); };
+const estateNavTop = () => {
+  if (document.activeElement) document.activeElement.blur();
+  const wa = document.querySelector('.workarea');
+  if (wa) wa.scrollTop = 0;
+};
+$('#estPrev').onclick = () => { estatePage--; estateNavTop(); renderEstateTable(); estateNavTop(); };
+$('#estNext').onclick = () => { estatePage++; estateNavTop(); renderEstateTable(); estateNavTop(); };
 $('#estPageSize').onchange = ev => { estatePageSize = parseInt(ev.target.value, 10) || 25; estateReRender(true); };
 function openAssetDrawer(t, conn, d) {
   $('#modalBody').innerHTML = '<h2 style="font-size:18px">' + esc(t.schema) + '.' + esc(t.name) + '</h2>'
