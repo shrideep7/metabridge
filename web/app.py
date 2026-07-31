@@ -1928,6 +1928,19 @@ def etl_report(migration_id: str, format: str = "json"):
     return get_migration_report(migration_id, format)
 
 
+def _require_a_database(result: dict) -> None:
+    """Reject a database-PICKER response where a catalog was expected.
+
+    A connection saved without a database answers introspect with the list of
+    databases (mode:"databases") instead of an inventory. It is `ok`, but it
+    carries no tables and no manifest — analysing it would silently produce an
+    empty result, so callers that need a real catalog must stop here."""
+    if result.get("mode") == "databases":
+        raise HTTPException(422, "This connection has no database set. Open "
+                                 "Data Estate, pick a database, then run "
+                                 "this again.")
+
+
 # ---------------------------------------------------------------------------
 # Migration Assessment Engine — parse-only analysis, deterministic,
 # board-grade exports (PDF/PPTX/XLSX/DOCX/JSON). No conversion, no AI.
@@ -1962,6 +1975,7 @@ async def assessment_run(request: Request):
                 raise HTTPException(422, "Could not introspect the "
                                     "connection: %s"
                                     % (result.get("error") or "unknown"))
+            _require_a_database(result)
             root = job_dir / "input"
             root.mkdir(parents=True, exist_ok=True)
             (root / "tables.yml").write_text(result.get("manifest_yaml", ""), encoding="utf-8")
@@ -2057,6 +2071,7 @@ async def ai_readiness_run(request: Request):
                 raise HTTPException(422, "Could not introspect the "
                                     "connection: %s"
                                     % (result.get("error") or "unknown"))
+            _require_a_database(result)
             root = job_dir / "input"
             root.mkdir(parents=True, exist_ok=True)
             (root / "tables.yml").write_text(
@@ -3626,7 +3641,9 @@ def _ensure_connection_inventories() -> None:
             if not live_support(c.get("connector", "")).get("introspect"):
                 continue
             rep = introspect(c.get("connector", ""), resolve_params(cid))
-            if rep.get("ok"):
+            # a database PICKER carries no objects — nothing to inventory,
+            # and recording it would mark the connection as done
+            if rep.get("ok") and rep.get("mode") != "databases":
                 record_inventory(cid, rep)
         except Exception:                    # noqa: BLE001 - per-connection
             continue
@@ -5148,6 +5165,15 @@ def v1_connections_list():
     return {"connections": list_connections()}
 
 
+# readiness keys that are neither tables nor views — the object classes the
+# introspect adds per platform. Absent keys simply contribute 0, so a
+# connector that reports fewer classes needs no change here.
+_OTHER_OBJECT_COUNTS = (
+    "materialized_views", "dynamic_tables", "sequences", "file_formats",
+    "functions", "procedures", "streams", "tasks", "pipes", "stages",
+    "volumes", "masking_policies", "row_access_policies", "tags", "shares")
+
+
 def _estate_cards(scope: list, aggregate: bool, convert_jobs: int) -> list:
     """Statistics cards computed for exactly the systems in `scope`. When
     `aggregate` is False, `scope` is a single system and the cards describe
@@ -5174,6 +5200,12 @@ def _estate_cards(scope: list, aggregate: bool, convert_jobs: int) -> list:
         ]
     c = scope[0]
     la = c.get("last_analysis") or {}
+    # Everything the analysis found that is NOT a table or a view: procedures,
+    # functions, streams, tasks, volumes and the rest. Counting only tables
+    # and views would understate a migration whose real weight is its logic.
+    other = sum(int(la.get(k) or 0) for k in _OTHER_OBJECT_COUNTS)
+    other_present = [k.replace("_", " ") for k in _OTHER_OBJECT_COUNTS
+                     if la.get(k)]
     return [
         {"n": (c.get("state") or "unknown").title(), "label": "Status",
          "sub": c.get("connector", "")},
@@ -5182,6 +5214,9 @@ def _estate_cards(scope: list, aggregate: bool, convert_jobs: int) -> list:
          "sub": "live metadata analysis" if la else "run Analyze on this system"},
         {"n": (la.get("views") if la.get("views") is not None else "--"),
          "label": "Views", "sub": ""},
+        {"n": (other or ("0" if la else "--")), "label": "Other objects",
+         "sub": ", ".join(other_present[:4]) if other_present else
+                ("none discovered" if la else "")},
         {"n": "{:,}".format(la["total_rows"]) if la.get("total_rows")
               else ("0" if la else "--"), "label": "Rows", "sub": ""},
         {"n": (la.get("at", "") or "never").split("T")[0],
@@ -5310,8 +5345,19 @@ def v1_connection_test(conn_id: str):
     return report
 
 
+# The connection field a chosen database lands in. Databricks calls its
+# top-level container a CATALOG, so ?database=X has to be written to the
+# field that connector's driver actually reads.
+_DATABASE_FIELD = {"databricks": "catalog"}
+
+
 @app.post("/api/v1/connections/{conn_id}/introspect")
-def v1_connection_introspect(conn_id: str):
+def v1_connection_introspect(conn_id: str, database: str = ""):
+    """Read-only inventory of a saved connection.
+
+    `?database=` drills into one database on a connection that has none set:
+    that connection answers with the database PICKER (mode:"databases"), and
+    the chosen name comes back here to be inventoried."""
     from metabridge.connections_store import get_connection, resolve_params
     from metabridge.livecheck import introspect
     row = get_connection(conn_id)
@@ -5321,9 +5367,13 @@ def v1_connection_introspect(conn_id: str):
         params = resolve_params(conn_id)
     except PermissionError as e:
         raise HTTPException(409, str(e))
+    if database:
+        params[_DATABASE_FIELD.get(row["connector"], "database")] = database
     report = introspect(row["connector"], params)
     report.pop("password", None)
-    if report.get("ok"):
+    # the picker is a LIST of databases, not an analysis of one — recording
+    # it would overwrite the last real analysis with empty counts
+    if report.get("ok") and report.get("mode") != "databases":
         from metabridge.connections_store import (record_analysis,
                                                   record_inventory)
         record_analysis(conn_id, {**report.get("readiness", {}),

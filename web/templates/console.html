@@ -591,8 +591,10 @@
     <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:12px">
       <select id="estateSystem" style="width:auto;min-width:200px" aria-label="Filter by system"></select>
       <input type="search" id="estateSearch" placeholder="Search this system…" style="max-width:340px;display:none" aria-label="Search data estate">
+      <select id="estateSchema" style="width:auto;min-width:170px;display:none" aria-label="Filter by schema"></select>
       <span id="estateHint" style="font-size:12.5px;color:var(--muted)"></span>
     </div>
+    <div id="estateContext"></div>
     <table id="estateTable"></table>
     <div id="estatePager" style="display:none;align-items:center;gap:12px;margin-top:12px;flex-wrap:wrap">
       <button type="button" class="secondary" id="estPrev" style="margin:0;padding:5px 12px">&larr; Previous</button>
@@ -5853,6 +5855,12 @@ async function loadEstate() {
 async function estateSelect(id) {
   estateSystem = id;
   window._estate = null;
+  window._estatePicker = null;      // {id, d} while a database list is in play
+  window._estateDbName = '';        // the database we drilled into
+  window._estateFilter = '';        // Level 3: the active object type
+  window._estateView = '';          // 'databases' | 'objects'
+  $('#estateSchema').style.display = 'none';
+  $('#estateContext').innerHTML = '';
   estateSummary = [];
   // Search is gated on a selection and cleared whenever the system changes, so
   // results never carry over from a previously selected system. It stays
@@ -5894,11 +5902,222 @@ async function estateSelect(id) {
     const d = await api('/api/v1/connections/' + id + '/introspect', {method:'POST'});
     if (!d.ok) throw new Error(d.error || 'analysis failed');
     if (estateSystem !== id) return;             // selection changed mid-flight
-    window._estate = d;
-    renderEstateTable();
+    if (d.mode === 'databases') {
+      // Level 1: this connection has no database set, so there is nothing to
+      // inventory yet — offer the databases it CAN see instead of an error.
+      window._estatePicker = {id: id, d: d};
+      window._estateView = 'databases';
+      renderDatabaseList();
+    } else {
+      window._estate = d;
+      window._estateView = 'objects';
+      populateSchemaFilter(d);
+      renderEstateTable();
+    }
   } catch (e) {
     if (estateSystem === id) table.innerHTML = '<tr><td style="color:#b03a2e">' + esc(e.message) + '</td></tr>';
   }
+}
+
+// Level 1 — the database picker. Reuses the object table's column shape so
+// the layout never jumps between the two views.
+function renderDatabaseList() {
+  const p = window._estatePicker;
+  if (!p) return;
+  const q = ($('#estateSearch').value || '').toLowerCase();
+  $('#estateSchema').style.display = 'none';
+  $('#estatePager').style.display = 'none';
+  const ctx = p.d.context || {};
+  $('#estateContext').innerHTML = estateRoleBanner(ctx)
+    + '<div style="font-size:12.5px;color:var(--ink3);margin:2px 0 12px">'
+    + 'No database is set on this connection — pick one to explore its objects.</div>';
+  const dbs = (p.d.databases || []).filter(x => !q || (x.name || '').toLowerCase().includes(q));
+  $('#estateTable').innerHTML = '<tr><th>Database</th><th>Type</th><th>System</th><th>Owner</th><th>Rows</th><th>Columns</th><th>Status</th></tr>'
+    + (dbs.map(db => '<tr data-db="' + esc(db.name) + '" style="cursor:pointer"><td><b>' + esc(db.name)
+        + '</b> <span style="color:var(--muted);font-size:11px">&rarr; explore</span></td>'
+        + '<td>Database</td><td>' + esc(p.d.connector || '') + '</td>'
+        + '<td>' + esc(db.owner || db.kind || '—') + '</td><td>—</td><td>—</td>'
+        + '<td>' + statChip('DISCOVERED') + '</td></tr>').join('')
+      || '<tr><td colspan=7 style="color:var(--muted)">No databases are visible to this login.</td></tr>');
+  $('#estateTable').querySelectorAll('tr[data-db]').forEach(tr =>
+    tr.onclick = () => introspectDatabase(p.id, tr.getAttribute('data-db')));
+}
+
+// Level 1 drill-in. Only this level re-fetches; every filter below it runs
+// in the browser over the one result.
+async function introspectDatabase(id, dbName) {
+  $('#estateContext').innerHTML = '';
+  $('#estatePager').style.display = 'none';
+  $('#estateTable').innerHTML = '<tr><td style="color:var(--muted)">Analyzing ' + esc(dbName) + ' (read-only)…</td></tr>';
+  try {
+    const d = await api('/api/v1/connections/' + id + '/introspect?database=' + encodeURIComponent(dbName),
+                        {method:'POST'});
+    if (!d.ok) throw new Error(d.error || 'analysis failed');
+    if (estateSystem !== id) return;              // selection changed mid-flight
+    window._estate = d;
+    window._estateDbName = dbName;
+    window._estateView = 'objects';
+    window._estateFilter = '';
+    populateSchemaFilter(d);
+    estateReRender(true);
+  } catch (e) {
+    if (estateSystem === id) $('#estateTable').innerHTML = '<tr><td style="color:#b03a2e">' + esc(e.message) + '</td></tr>';
+  }
+}
+
+// Level 2 — the schema dropdown. A database has many schemas; this narrows to
+// one. Hidden when there is nothing to choose between.
+function populateSchemaFilter(d) {
+  const sel = $('#estateSchema');
+  const schemas = [...new Set(estateAssets(d).map(a => a.schema).filter(Boolean))].sort();
+  sel.innerHTML = '<option value="">All schemas</option>'
+    + schemas.map(s => '<option value="' + esc(s) + '">' + esc(s) + '</option>').join('');
+  sel.style.display = schemas.length > 1 ? '' : 'none';
+  sel.onchange = () => estateReRender(true);
+}
+
+// Flatten the whole introspect result into one typed asset list. Driven
+// entirely by which arrays came back, so a platform that reports fewer
+// object types simply produces fewer rows and fewer pills — no per-platform
+// UI code. Roles and grants are account-level and are NOT rows.
+function estateAssets(d) {
+  const A = [];
+  (d.tables || []).forEach(o => A.push({
+    name: o.name, type: String(o.type || '').includes('VIEW') ? 'View' : 'Table',
+    schema: o.schema || '', rows: o.rows, columns: o.columns || [],
+    definition: (d.view_definitions && d.view_definitions[o.name]) || '', _o: o}));
+  const push = (arr, type) => (arr || []).forEach(o => A.push({
+    name: o.name, type: type, schema: o.schema || '', rows: null, columns: null,
+    definition: o.definition || '', language: o.language || '',
+    returns: o.returns || '', source: o.source || '',
+    secret_findings: o.secret_findings || null}));
+  push(d.materialized_views, 'Materialized view');
+  push(d.dynamic_tables, 'Dynamic table');
+  push(d.sequences, 'Sequence');
+  push(d.file_formats, 'File format');
+  push(d.functions, 'Function');
+  push(d.procedures, 'Stored procedure');
+  push(d.streams, 'Stream');
+  push(d.tasks, 'Task');
+  push(d.pipes, 'Pipe');
+  push(d.stages, 'Stage');
+  push(d.volumes, 'Volume');
+  push(d.masking_policies, 'Masking policy');
+  push(d.row_access_policies, 'Row access policy');
+  push(d.tags, 'Tag');
+  (d.shares || []).forEach(o => A.push({name: o.name, type: 'Share',
+    schema: o.database || '', rows: null, columns: null}));
+  return A;
+}
+
+function estateRoleBanner(ctx) {
+  if (!ctx || !ctx.current_role) return '';
+  const bits = [];
+  if (ctx.edition && ctx.edition !== 'unknown' && ctx.edition !== 'n/a')
+    bits.push('<b>' + esc(ctx.edition) + '</b> edition');
+  if (ctx.warehouse) bits.push('warehouse <b>' + esc(ctx.warehouse) + '</b>');
+  if (ctx.account) bits.push('account ' + esc(ctx.account));
+  if (ctx.database) bits.push('database <b>' + esc(ctx.database) + '</b>');
+  return '<div style="background:var(--accent-soft);border:1px solid var(--accent-line);'
+    + 'border-radius:var(--radius);padding:9px 13px;margin-bottom:10px;font-size:13px;color:var(--ink2)">'
+    + 'Connected as <b>' + esc(ctx.current_role) + '</b>'
+    + (bits.length ? ' · ' + bits.join(' · ') : '') + '</div>';
+}
+
+// Classes the connected role or this platform could not give us. Reporting a
+// blocked class as a plain zero would read as "you have none of these".
+function estateGatedNote(d) {
+  const caps = d.capabilities || {};
+  const blocked = Object.keys(caps).filter(k => caps[k].status === 'blocked_privilege');
+  const absent = Object.keys(caps).filter(k => caps[k].status === 'not_applicable');
+  const capped = Object.keys(caps).filter(k => caps[k].truncated);
+  const label = k => k.replace(/_/g, ' ');
+  const out = [];
+  if (blocked.length) out.push('<b>' + blocked.map(label).join(', ') + '</b> could not be read with this role');
+  if (absent.length) out.push('<b>' + absent.map(label).join(', ') + '</b> are not available on this platform');
+  if (capped.length) out.push('<b>' + capped.map(label).join(', ') + '</b> were capped — the list is partial');
+  if (!out.length) return '';
+  return '<div style="font-size:11.5px;color:var(--amber);background:var(--amber-bg);'
+    + 'border:1px solid var(--amber-line);border-radius:var(--radius);padding:7px 11px;margin-bottom:10px">'
+    + out.join(' · ') + '</div>';
+}
+
+// Level 3 — breadcrumb, role banner and the scope-aware "filter by type"
+// count pills.
+const ESTATE_TYPES = ['Table', 'View', 'Materialized view', 'Dynamic table',
+  'Sequence', 'File format', 'Function', 'Stored procedure', 'Stream', 'Task',
+  'Pipe', 'Stage', 'Volume', 'Masking policy', 'Row access policy', 'Tag',
+  'Share'];
+// "Masking policy" pluralises to "policies", not "policys"
+const estatePlural = t => t.endsWith('s') ? t
+  : t.endsWith('y') ? t.slice(0, -1) + 'ies' : t + 's';
+
+function renderEstateContext(d) {
+  const el = $('#estateContext');
+  const active = window._estateFilter || '';
+  // Counts follow the CURRENT schema + search scope but deliberately ignore
+  // the type filter itself — otherwise every pill but the active one would
+  // read 0 and you could never switch between them.
+  const q = ($('#estateSearch').value || '').toLowerCase();
+  const sf = $('#estateSchema').value || '';
+  const scoped = estateAssets(d).filter(a => estateInScope(a, sf, q));
+  const byType = {};
+  scoped.forEach(a => byType[a.type] = (byType[a.type] || 0) + 1);
+  const base = 'display:inline-block;border-radius:20px;padding:2px 11px;margin:2px 4px 2px 0;font-size:12px;';
+  const pill = (label, ftype, count, isActive, clickable) => '<span'
+    + (clickable ? ' data-ftype="' + esc(ftype) + '"' : '')
+    + ' style="' + base + (isActive
+        ? 'background:var(--accent);border:1px solid var(--accent);color:#fff;cursor:pointer'
+        : clickable
+          ? 'background:var(--header-bg);border:1px solid var(--border);color:var(--ink2);cursor:pointer'
+          : 'background:var(--header-bg);border:1px solid var(--line);color:var(--muted)')
+    + '"><b>' + count + '</b> ' + esc(label) + '</span>';
+  // an active pill stays visible at count 0 so it can always be un-clicked
+  const pills = pill('All', '', scoped.length, !active, true)
+    + ESTATE_TYPES.filter(t => byType[t] || active === t)
+        .map(t => pill(estatePlural(t), t, byType[t] || 0, active === t, true)).join('')
+    // account-level objects belong to no schema, so they are counts, not rows
+    + ((d.roles || []).length ? pill('Roles', null, d.roles.length, false, false) : '')
+    + ((d.grants || []).length ? pill('Grants', null, d.grants.length, false, false) : '');
+  // Level 1 navigation. Connectors that answer with a picker get a
+  // breadcrumb back to it; a connector that always resolves a default
+  // database (Databricks) reports the list instead and gets a switcher, so
+  // it can still change database without a dead end.
+  const crumb = window._estatePicker
+    ? '<div style="margin-bottom:8px;font-size:12.5px"><a href="#" id="estateBack" style="color:var(--accent);text-decoration:none">&larr; All databases</a>'
+      + (window._estateDbName ? ' <span style="color:var(--muted)">/ ' + esc(window._estateDbName) + '</span>' : '') + '</div>'
+    : ((d.available_databases || []).length > 1
+       ? '<div style="margin-bottom:8px;font-size:12.5px;color:var(--ink3)">Database '
+         + '<select id="estateDbSwitch" style="width:auto;min-width:150px;display:inline-block;margin-left:4px">'
+         + d.available_databases.map(n => '<option' + (n === (d.database || '') ? ' selected' : '')
+             + '>' + esc(n) + '</option>').join('')
+         + '</select></div>'
+       : '');
+  el.innerHTML = crumb + estateRoleBanner(d.context || {}) + estateGatedNote(d)
+    + '<div style="margin:2px 0 6px"><span style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-right:6px">Filter by type</span>'
+    + pills + '</div>';
+  if ($('#estateDbSwitch')) $('#estateDbSwitch').onchange = ev =>
+    introspectDatabase($('#estateSystem').value, ev.target.value);
+  if ($('#estateBack')) $('#estateBack').onclick = ev => {
+    ev.preventDefault();
+    window._estate = null;
+    window._estateDbName = '';
+    window._estateFilter = '';
+    window._estateView = 'databases';
+    estateReRender(true);
+  };
+  el.querySelectorAll('[data-ftype]').forEach(p => p.onclick = () => {
+    const ft = p.getAttribute('data-ftype');
+    window._estateFilter = (window._estateFilter === ft) ? '' : ft;
+    estateReRender(true);
+  });
+}
+
+function estateInScope(a, schemaFilter, q) {
+  return (!schemaFilter || a.schema === schemaFilter)
+    && (!q || a.name.toLowerCase().includes(q)
+      || a.type.toLowerCase().includes(q)
+      || (a.columns || []).some(cc => cc.name.toLowerCase().includes(q)));
 }
 
 function renderEstateCards(stats) {
@@ -5929,15 +6148,22 @@ function renderEstateSummaryTable() {
 // before paging and resets to page 1 (see the oninput handler).
 let estatePage = 1;
 let estatePageSize = 25;
+// All four levels compose here: database (already fetched) -> schema -> type
+// -> search. Filtering happens BEFORE paging, so the pager always reports the
+// narrowed total rather than the whole database.
 function _estateFiltered() {
-  const d = window._estate || {tables: []};
+  const d = window._estate;
+  if (!d) return [];
+  const ft = window._estateFilter || '';
+  const sf = $('#estateSchema').value || '';
   const q = ($('#estateSearch').value || '').toLowerCase();
-  return d.tables.filter(t => !q || t.name.toLowerCase().includes(q)
-      || t.columns.some(cc => cc.name.toLowerCase().includes(q)));
+  return estateAssets(d).filter(a => (!ft || a.type === ft)
+    && estateInScope(a, sf, q));
 }
 function renderEstateTable() {
   const d = window._estate;
   const conn = allConnections.find(x => x.id === $('#estateSystem').value) || {connector: ''};
+  renderEstateContext(d);
   const filtered = _estateFiltered();
   const total = filtered.length;
   const pages = Math.max(1, Math.ceil(total / estatePageSize));
@@ -5946,10 +6172,12 @@ function renderEstateTable() {
   const start = (estatePage - 1) * estatePageSize;
   const pageRows = filtered.slice(start, start + estatePageSize);
   $('#estateTable').innerHTML = '<tr><th>Asset</th><th>Type</th><th>System</th><th>Schema</th><th>Rows</th><th>Columns</th><th>Status</th></tr>'
-    + (pageRows.map((t, i) => '<tr data-i="' + (start + i) + '" style="cursor:pointer"><td><b>' + esc(t.name) + '</b></td>'
-      + '<td>' + (t.type.includes('VIEW') ? 'View' : 'Table') + '</td>'
-      + '<td>' + esc(conn.connector) + '</td><td>' + esc(t.schema) + '</td>'
-      + '<td>' + t.rows.toLocaleString() + '</td><td>' + t.columns.length + '</td>'
+    + (pageRows.map((a, i) => '<tr data-i="' + (start + i) + '" style="cursor:pointer"><td><b>' + esc(a.name) + '</b></td>'
+      + '<td>' + esc(a.type) + '</td>'
+      + '<td>' + esc(conn.connector) + '</td><td>' + esc(a.schema || '—') + '</td>'
+      // rows/columns are table facts; every other object type has neither
+      + '<td>' + (a.rows != null ? a.rows.toLocaleString() : '—') + '</td>'
+      + '<td>' + (a.columns ? a.columns.length : '—') + '</td>'
       + '<td>' + statChip('DISCOVERED') + '</td></tr>').join('')
       || '<tr><td colspan=7 style="color:var(--muted)">No assets match.</td></tr>');
   // pager
@@ -5964,13 +6192,18 @@ function renderEstateTable() {
     $('#estNext').disabled = estatePage >= pages;
   }
   $('#estateTable').querySelectorAll('tr[data-i]').forEach(tr => tr.onclick = () => {
-    const t = filtered[+tr.dataset.i];
-    if (t) openAssetDrawer(t, conn, d);
+    const a = filtered[+tr.dataset.i];
+    if (!a) return;
+    // tables and views carry columns and convert today; everything else gets
+    // the generic object drawer with its (redacted) definition
+    if (a._o) openAssetDrawer(a._o, conn, d);
+    else openObjectDrawer(a, conn);
   });
 }
 function estateReRender(resetPage) {
   if (resetPage) estatePage = 1;
   if (estateSystem === 'all') renderEstateSummaryTable();
+  else if (window._estateView === 'databases') renderDatabaseList();
   else if (window._estate) renderEstateTable();
 }
 const estateNavTop = () => {
@@ -5981,6 +6214,32 @@ const estateNavTop = () => {
 $('#estPrev').onclick = () => { estatePage--; estateNavTop(); renderEstateTable(); estateNavTop(); };
 $('#estNext').onclick = () => { estatePage++; estateNavTop(); renderEstateTable(); estateNavTop(); };
 $('#estPageSize').onchange = ev => { estatePageSize = parseInt(ev.target.value, 10) || 25; estateReRender(true); };
+// Every object type that is not a table or a view: a sequence, a function, a
+// stored procedure, a stream. Bodies arrive REDACTED from the backend — this
+// only says so where a credential was found and removed.
+function openObjectDrawer(a, conn) {
+  const cols = a.columns || [];
+  const meta = [esc(a.type), esc(conn.connector || '')];
+  if (a.language) meta.push(esc(a.language));
+  if (a.returns) meta.push('returns ' + esc(a.returns));
+  if (a.source) meta.push('reads ' + esc(a.source));
+  $('#modalBody').innerHTML = '<h2 style="font-size:18px">' + esc(a.schema ? a.schema + '.' : '') + esc(a.name) + '</h2>'
+    + '<div class="v" style="color:var(--ink3);font-size:13px;margin-bottom:10px">' + meta.join(' · ') + '</div>'
+    + ((a.secret_findings || []).length
+       ? '<div style="background:var(--amber-bg);border:1px solid var(--amber-line);border-radius:var(--radius);'
+         + 'padding:8px 12px;margin-bottom:10px;font-size:12.5px;color:var(--amber)">'
+         + a.secret_findings.length + ' credential' + (a.secret_findings.length === 1 ? '' : 's')
+         + ' found in this definition and redacted — the value was never stored.</div>' : '')
+    + (cols.length ? '<div class="drawer-meta"><b>Columns (' + cols.length + ')</b></div><table>'
+        + cols.map(cc => '<tr><td>' + esc(cc.name) + '</td><td style="color:var(--ink3)">' + esc(cc.type) + '</td></tr>').join('')
+        + '</table>' : '')
+    + (a.definition
+       ? '<div class="drawer-meta"><b>Definition</b></div><pre>' + esc(String(a.definition).slice(0, 2000)) + '</pre>'
+       : '<div style="color:var(--muted);font-size:12.5px">No definition is visible to this role.</div>')
+    + '<button class="secondary" id="closeModal">Close</button>';
+  $('#modalBody').className = 'modal'; $('#modalBg').style.display = 'flex';
+  $('#closeModal').onclick = () => $('#modalBg').style.display = 'none';
+}
 function openAssetDrawer(t, conn, d) {
   $('#modalBody').innerHTML = '<h2 style="font-size:18px">' + esc(t.schema) + '.' + esc(t.name) + '</h2>'
     + '<div class="v" style="color:var(--ink3);font-size:13px;margin-bottom:10px">' + (t.type.includes('VIEW') ? 'View' : 'Table')

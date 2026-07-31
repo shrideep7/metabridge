@@ -170,6 +170,43 @@ def _classify_estate(pipelines: list) -> List[dict]:
     return rows
 
 
+def scan_text_secrets(text: str, where: str = "") -> List[dict]:
+    """Plaintext-secret findings in a SINGLE blob of text — a procedure or
+    function body, a task definition, a pipe's COPY statement fetched from a
+    live source system. Same patterns as the estate scan. Values are NEVER
+    returned: only the location, the type and a redacted length.
+    Externalized references (env/vault/template) and dummies are ignored."""
+    findings: List[dict] = []
+    seen = set()
+    for label, rx in _SECRET_PATTERNS:
+        for m in rx.finditer(text or ""):
+            val = m.group("v")
+            if _is_externalized(val):
+                continue                        # externalized, not a leak
+            if (where, label) in seen:
+                continue
+            seen.add((where, label))
+            findings.append({"location": where, "type": label,
+                             "evidence": "redacted (%d chars)" % len(val)})
+    return findings
+
+
+def redact_secrets(text: str) -> str:
+    """The text with every detected (non-externalized) secret VALUE replaced
+    by ***REDACTED***, so a fetched object body can be stored and displayed
+    without carrying a credential out of the source system. The raw secret
+    never enters a response."""
+    out = text or ""
+    for _label, rx in _SECRET_PATTERNS:
+        def _repl(m):
+            v = m.group("v")
+            if _is_externalized(v):
+                return m.group(0)
+            return m.group(0).replace(v, "***REDACTED***")
+        out = rx.sub(_repl, out)
+    return out
+
+
 def _scan_secrets(pipelines: list,
                   raw_texts: Optional[list] = None) -> List[dict]:
     """Plaintext secrets embedded in SQL overrides, connection metadata
@@ -180,18 +217,15 @@ def _scan_secrets(pipelines: list,
     seen = set()
 
     def scan(text, where):
-        for label, rx in _SECRET_PATTERNS:
-            for m in rx.finditer(text or ""):
-                val = m.group("v")
-                if _is_externalized(val):
-                    continue                    # externalized, not a leak
-                key = (where, label)
-                if key in seen:
-                    continue
-                seen.add(key)
-                findings.append({"location": where, "type": label,
-                                 "evidence": "redacted (%d chars)"
-                                             % len(val)})
+        # dedup is shared across every blob: several connections in one
+        # pipeline scan under the same `where`, and one finding per
+        # (location, type) is what the report wants.
+        for f in scan_text_secrets(text, where):
+            key = (where, f["type"])
+            if key in seen:
+                continue
+            seen.add(key)
+            findings.append(f)
 
     for p in pipelines:
         for conn in p.metadata.get("connections", []) or []:

@@ -6,7 +6,8 @@ from pathlib import Path
 import pytest
 
 from metabridge.security.engine import (analyze_security, analyze_from_paths,
-                                        _scan_secrets, _is_externalized)
+                                        _scan_secrets, _is_externalized,
+                                        scan_text_secrets, redact_secrets)
 from metabridge.security.exports import export_all
 from metabridge.twin.model import DigitalTwin
 from metabridge.ir.model import (Pipeline, Mapping, Transformation, Port,
@@ -222,6 +223,32 @@ def test_secret_scanner_catches_real_ignores_externalized():
     assert _is_externalized("changeme") is True
     # never leak the value itself
     assert all("redacted" in f["evidence"] for f in _scan_secrets([p]))
+
+
+def test_scan_text_secrets_reports_location_never_the_value():
+    # a single blob (a procedure body fetched from a live source system)
+    body = ("CREATE PROCEDURE load() AS $$\n"
+            "  conn = connect(password='hunter2secret')\n"
+            "  key  = 'api_key=sk_live_ABCD1234EFGH5678'\n"
+            "$$")
+    found = scan_text_secrets(body, "SALES.LOAD_ORDERS")
+    types = {f["type"] for f in found}
+    assert "password" in types and "api_key" in types
+    assert all(f["location"] == "SALES.LOAD_ORDERS" for f in found)
+    assert all("redacted" in f["evidence"] for f in found)
+    assert "hunter2secret" not in json.dumps(found)
+    # externalized references are not leaks
+    assert scan_text_secrets("password=${DB_PW}", "x") == []
+
+
+def test_redact_secrets_replaces_values_keeps_externalized():
+    out = redact_secrets("conn = connect(password='hunter2secret')")
+    assert "hunter2secret" not in out
+    assert "***REDACTED***" in out
+    assert out.startswith("conn = connect(")      # only the VALUE is cut
+    # an env/vault reference is not a secret and must survive untouched
+    assert redact_secrets("password=${DB_PW}") == "password=${DB_PW}"
+    assert redact_secrets("") == ""
 
 
 def test_secret_in_raw_file_content_is_caught():

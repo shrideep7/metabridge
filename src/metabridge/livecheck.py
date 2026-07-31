@@ -197,6 +197,194 @@ def _measure_column_sizes(run, tables: dict, length_fn: str = "LENGTH",
     return measured
 
 
+_MAX_BODY = 8000
+
+
+def _with_body(obj: dict, raw: object, where: str) -> dict:
+    """Attach a fetched object's SQL body to it, REDACTED.
+
+    Any object that carries logic — a function, a procedure, a task, a pipe —
+    can have a credential written into its body. The raw text is scanned, the
+    secret VALUES are replaced before storage, and the finding (location and
+    type only, never the value) rides along so the UI can say a credential was
+    found here. The plaintext never enters the response.
+    """
+    text = str(raw or "")
+    findings = []
+    if text:
+        try:
+            from .security.engine import redact_secrets, scan_text_secrets
+            findings = scan_text_secrets(text, where)
+            text = redact_secrets(text)
+        except Exception:  # noqa: BLE001
+            # The scanner is unavailable, so this body CANNOT be cleared.
+            # Withhold it rather than risk carrying a plaintext credential
+            # out of the source system — the object itself still lists.
+            text = ""
+            findings = [{"location": where, "type": "unscanned",
+                         "evidence": "body withheld — secret scan "
+                                     "unavailable"}]
+    obj["definition"] = text[:_MAX_BODY]
+    if findings:
+        obj["secret_findings"] = findings
+    return obj
+
+
+# Per-class cap. One object class must not be able to dominate a response
+# (a database with PostGIS installed reports thousands of functions), and a
+# truncated list is recorded as such — a capped list that reads as complete
+# is worse than no list at all.
+_MAX_OBJECTS = 1000
+
+# Capability status vocabulary, shared by every connector's introspect:
+#
+#   available          the probe returned objects
+#   empty              the probe ran; this database has none of this class
+#   blocked_privilege  the connected role is not allowed to see them
+#   not_applicable     this platform/version has no such catalog object
+#                      (Redshift has no pg_matviews; a Snowflake edition
+#                      does not carry masking policies)
+#   error              anything else — `reason` carries the driver's text
+#
+# "The platform doesn't have it", "your role can't see it" and "it broke"
+# are three different facts, and a zero that means all three is a lie.
+#
+# Privilege is tested FIRST: Snowflake reports a permission problem as
+# "does not exist or not authorized", which would otherwise be read as
+# "this platform has no such object".
+_PRIVILEGE_TOKENS = ("permission denied", "insufficient privilege",
+                     "not authorized", "must be owner", "access denied",
+                     "does not have privilege", "access control",
+                     "not granted")
+_ABSENT_TOKENS = ("does not exist", "not supported", "unsupported feature",
+                  "undefined table", "unknown table", "no such",
+                  "not supported in", "requires enterprise",
+                  "only available in the", "not enabled for")
+
+
+def _classify_probe_error(msg: str) -> dict:
+    """Map a driver error to a capability status. The error TEXT is trusted
+    first because it is the only thing that distinguishes "you may not read
+    this" from "this does not exist here"."""
+    low = (msg or "").lower()
+    if any(t in low for t in _PRIVILEGE_TOKENS):
+        status = "blocked_privilege"
+    elif any(t in low for t in _ABSENT_TOKENS):
+        status = "not_applicable"
+    else:
+        status = "error"
+    return {"status": status, "reason": str(msg)[:200]}
+
+
+def _guarded(caps: dict, name: str, fetch, on_error=None,
+             cap: Optional[int] = None) -> List[tuple]:
+    """Run ONE object-class fetch and record what happened to it.
+
+    Every class is independent: a class the role cannot read, or that this
+    platform does not have, yields [] with the reason recorded and the rest
+    of the inventory still returns. `on_error` is where psycopg2 callers pass
+    conn.rollback() — a failed statement poisons the transaction, so the next
+    class cannot run until it is cleared.
+    """
+    try:
+        rows = list(fetch() or [])
+    except Exception as e:  # noqa: BLE001 — one class must not cost the run
+        caps[name] = _classify_probe_error(str(e))
+        if on_error is not None:
+            try:
+                on_error()
+            except Exception:  # noqa: BLE001
+                pass
+        return []
+    entry = {"status": "available" if rows else "empty"}
+    if cap and len(rows) >= cap:
+        entry["truncated"] = True
+    caps[name] = entry
+    return rows
+
+
+def _at(row, i: int, default: str = "") -> str:
+    """Positional access that tolerates a short row — catalog result shapes
+    vary by server version, and a missing trailing column must not raise."""
+    try:
+        v = row[i]
+    except (IndexError, TypeError):
+        return default
+    return default if v is None else str(v)
+
+
+# ---------------------------------------------------------------------------
+# Snowflake SHOW helpers. Several object classes (streams, tasks, pipes,
+# stages, policies, tags) have no INFORMATION_SCHEMA view at all, so SHOW is
+# the only catalog source.
+# ---------------------------------------------------------------------------
+
+def _show(cur, sql: str):
+    """Run a SHOW and return its rows.
+
+    Deliberately does NOT swallow errors: `_guarded` is what records why a
+    class came back empty, and an error swallowed here would report a
+    privilege-blocked class as merely "this account has none".
+    """
+    return cur.execute(sql).fetchall()
+
+
+def _named(cur, r, column: str) -> str:
+    """A SHOW row's column looked up by NAME instead of offset.
+
+    SHOW output column ORDER shifts between Snowflake releases; the NAMES do
+    not. Definitions are read this way because a wrong offset would not fail
+    loudly — it would silently carry the wrong text into a conversion.
+    Returns "" when the driver exposes no description, so a missing
+    definition stays visibly missing."""
+    cols = [str(d[0]).lower()
+            for d in (getattr(cur, "description", None) or [])]
+    if column.lower() not in cols:
+        return ""
+    return _at(r, cols.index(column.lower()))
+
+
+def _scope(database: str, schema: str) -> str:
+    """The scoping clause for SHOW. Restricts to the CONNECTED database (and
+    schema when given) so a bare SHOW never leaks another database's objects
+    into this inventory. Roles, grants and shares are account-level and are
+    never scoped this way — Snowflake has no per-database notion of them."""
+    db = (database or "").replace('"', "")
+    sc = (schema or "").replace('"', "")
+    if db and sc:
+        return ' IN SCHEMA "%s"."%s"' % (db, sc)
+    if db:
+        return ' IN DATABASE "%s"' % db
+    return ""
+
+
+def _build_task_dag(tasks: List[dict]) -> List[dict]:
+    """Task -> task edges from each task's declared predecessors. Names are
+    reduced to the bare task name so a fully-qualified predecessor still
+    matches the task it points at."""
+    def short(n: str) -> str:
+        return str(n).split(".")[-1].strip('"').upper()
+    return [{"from": short(p), "to": short(t["name"])}
+            for t in tasks for p in t.get("predecessors", [])]
+
+
+def _parse_predecessors(v) -> List[str]:
+    """A task's predecessors arrive as a JSON array, a list, or a bare name
+    depending on the Snowflake version."""
+    if not v:
+        return []
+    if isinstance(v, (list, tuple)):
+        return [str(x) for x in v]
+    s = str(v).strip()
+    try:
+        parsed = json.loads(s)
+        if isinstance(parsed, list):
+            return [str(x) for x in parsed]
+    except Exception:  # noqa: BLE001
+        pass
+    return [s] if s and s not in ("[]", "null") else []
+
+
 def _has_live_driver(key: str) -> bool:
     return key in ("snowflake", "databricks") or key in _SQL_DIALECTS
 
@@ -352,11 +540,97 @@ def _databricks_test(params: Dict[str, str]) -> dict:
     return report
 
 
+def _databricks_objects(cur, caps: dict, schema: str) -> Dict[str, list]:
+    """Unity Catalog object classes beyond tables/views/columns.
+
+    Deliberately does NOT fetch Snowflake-only classes (streams, tasks,
+    pipes, stages) — Databricks has no equivalent, and an absent class is
+    absent, not blocked. `volumes` runs the other way: it has no Snowflake
+    equivalent and simply becomes another pill in the console.
+    """
+    arg = [schema or None]
+
+    def q(sql, args=None):
+        def go():
+            cur.execute(sql, args if args is not None else arg)
+            return cur.fetchall()
+        return go
+
+    out: Dict[str, list] = {}
+
+    def routines(kind):
+        rows = _guarded(caps, "functions" if kind == "FUNCTION"
+                        else "procedures",
+                        q("SELECT routine_schema, routine_name, data_type, "
+                          "external_language, routine_definition "
+                          "FROM information_schema.routines "
+                          "WHERE routine_schema = COALESCE(?, routine_schema) "
+                          "AND routine_type = ? "
+                          "ORDER BY routine_schema, routine_name LIMIT %d"
+                          % _MAX_OBJECTS, [schema or None, kind]),
+                        cap=_MAX_OBJECTS)
+        objs = []
+        for r in rows:
+            o = {"schema": _at(r, 0), "name": _at(r, 1),
+                 "returns": _at(r, 2), "language": _at(r, 3)}
+            objs.append(_with_body(o, _at(r, 4), "%s %s.%s"
+                                   % (kind.lower(), o["schema"], o["name"])))
+        return objs
+
+    out["functions"] = routines("FUNCTION")
+    out["procedures"] = routines("PROCEDURE")
+
+    out["volumes"] = [
+        {"schema": _at(r, 0), "name": _at(r, 1), "type": _at(r, 2)}
+        for r in _guarded(caps, "volumes",
+                          q("SELECT volume_schema, volume_name, volume_type "
+                            "FROM information_schema.volumes "
+                            "WHERE volume_schema = COALESCE(?, volume_schema) "
+                            "ORDER BY volume_schema, volume_name LIMIT %d"
+                            % _MAX_OBJECTS), cap=_MAX_OBJECTS)]
+
+    out["tags"] = [
+        {"schema": _at(r, 0), "name": _at(r, 2), "object": _at(r, 1),
+         "allowed_values": _at(r, 3)}
+        for r in _guarded(caps, "tags",
+                          q("SELECT schema_name, table_name, tag_name, "
+                            "tag_value FROM information_schema.table_tags "
+                            "WHERE schema_name = COALESCE(?, schema_name) "
+                            "LIMIT %d" % _MAX_OBJECTS), cap=_MAX_OBJECTS)]
+
+    out["grants"] = [
+        {"role": _at(r, 2), "privilege": _at(r, 3), "granted_on": "TABLE",
+         "object": "%s.%s" % (_at(r, 0), _at(r, 1))}
+        for r in _guarded(caps, "grants",
+                          q("SELECT table_schema, table_name, grantee, "
+                            "privilege_type "
+                            "FROM information_schema.table_privileges "
+                            "WHERE table_schema = COALESCE(?, table_schema) "
+                            "LIMIT %d" % _MAX_OBJECTS), cap=_MAX_OBJECTS)]
+    return out
+
+
+def _databricks_catalogs(cur) -> List[str]:
+    """The catalogs this login can see.
+
+    Databricks always resolves a DEFAULT catalog, so unlike Snowflake and
+    Postgres it never needs a blocking picker — inventorying the default is
+    the right behaviour for the Twin and the assessment. The list rides along
+    in the payload instead, so the console can offer a switcher without any
+    caller losing its automatic analysis.
+    """
+    try:
+        cur.execute("SHOW CATALOGS")
+        return [n for n in (_at(r, 0) for r in cur.fetchall()) if n]
+    except Exception:  # noqa: BLE001 — a switcher is a bonus, never required
+        return []
+
+
 def _databricks_introspect(params: Dict[str, str],
                            max_tables: int = 500) -> dict:
     """Read-only inventory for Databricks, returning the SAME shape as the
-    Snowflake/SQL introspect (tables/columns/views + readiness + manifest)
-    so the console and scaffold consume it unchanged."""
+    Snowflake/SQL introspect (context + capabilities + the object classes +
+    readiness + manifest) so the console and scaffold consume it unchanged."""
     catalog = (params.get("catalog") or "").strip()
     schema = (params.get("schema") or "").strip()
     # Databricks catalogs do not expose row counts, so live size
@@ -367,12 +641,17 @@ def _databricks_introspect(params: Dict[str, str],
         conn = _databricks_connect(params)
     except Exception as e:  # noqa: BLE001
         return {"ok": False, "connector": "databricks", "error": str(e)[:400]}
+    caps: Dict[str, dict] = {}
     try:
         cur = conn.cursor()
         row = cur.execute(
-            "SELECT current_catalog(), current_database()").fetchone()
-        catalog = catalog or str(row[0] or "")
-        schema = schema or str(row[1] or "")
+            "SELECT current_catalog(), current_database(), "
+            "current_user()").fetchone()
+        catalog = catalog or _at(row, 0)
+        schema = schema or _at(row, 1)
+        context = {"user": _at(row, 2), "current_role": _at(row, 2),
+                   "database": catalog, "schema": schema,
+                   "warehouse": "", "account": "", "edition": "n/a"}
         cur.execute(
             "SELECT table_schema, table_name, table_type "
             "FROM information_schema.tables "
@@ -474,6 +753,10 @@ def _databricks_introspect(params: Dict[str, str],
         for r in cur.fetchall():
             views.append({"schema": r[0], "name": r[1],
                           "definition": str(r[2] or "")[:8000]})
+        caps["tables"] = {"status": "available" if tables else "empty"}
+        caps["views"] = {"status": "available" if views else "empty"}
+        objects = _databricks_objects(cur, caps, schema)
+        available_databases = _databricks_catalogs(cur)
     except Exception as e:  # noqa: BLE001
         try:
             conn.close()
@@ -510,29 +793,37 @@ def _databricks_introspect(params: Dict[str, str],
                      for c in t["columns"]]}
         for t in base_tables]}
     import yaml as _yaml
+    secret_findings = [f for cls in ("functions", "procedures")
+                       for o in objects.get(cls, [])
+                       for f in o.get("secret_findings", [])]
+    readiness = {
+        "tables": len(base_tables),
+        "views": len(views),
+        "total_rows": sum(t["rows"] for t in base_tables),
+        "tables_with_columns": sum(1 for t in base_tables if t["columns"]),
+        "column_sizes_measured": measured,
+        "views_convertible": len(convertible),
+        "views_needing_review": needs_review,
+        "verdict": "READY" if base_tables or convertible else
+                   "NOTHING_TO_CONVERT",
+    }
+    readiness.update({k: len(v) for k, v in objects.items()})
     return {
         "ok": True, "connector": "databricks",
         "database": catalog, "schema": schema or "(all)",
         "elapsed_ms": int((time.time() - started) * 1000),
+        "context": context, "capabilities": caps,
+        "available_databases": available_databases,
         "tables": sorted(tables.values(),
                          key=lambda t: (-t["rows"], t["name"])),
         "views": [{"schema": v["schema"], "name": v["name"]}
                   for v in views],
         "view_definitions": {v["name"]: v["definition"] for v in views},
-        "readiness": {
-            "tables": len(base_tables),
-            "views": len(views),
-            "total_rows": sum(t["rows"] for t in base_tables),
-            "tables_with_columns": sum(1 for t in base_tables
-                                       if t["columns"]),
-            "column_sizes_measured": measured,
-            "views_convertible": len(convertible),
-            "views_needing_review": needs_review,
-            "verdict": "READY" if base_tables or convertible else
-                       "NOTHING_TO_CONVERT",
-        },
+        "secret_findings": secret_findings,
+        "readiness": readiness,
         "manifest_yaml": _yaml.safe_dump(manifest, sort_keys=False,
                                          width=100),
+        **objects,
     }
 
 
@@ -748,30 +1039,114 @@ def _sqldb_test(key: str, params: Dict[str, str]) -> dict:
     return report
 
 
+def _sqldb_context(cur) -> dict:
+    """Who this session is connected AS, and to what. PostgreSQL and Redshift
+    have no edition concept, so `edition` reports "n/a" rather than inventing
+    one. Never raises — an unreadable context must not cost the inventory."""
+    ctx = {"user": "", "current_role": "", "database": "", "schema": "",
+           "version": "", "account": "", "warehouse": "", "edition": "n/a"}
+    try:
+        cur.execute("SELECT current_user, current_database(), "
+                    "current_schema(), version()")
+        r = cur.fetchone() or ()
+        ctx["user"] = _at(r, 0)
+        # Postgres authorises by ROLE and current_user IS that role; the UI
+        # banner reads current_role for every connector.
+        ctx["current_role"] = _at(r, 0)
+        ctx["database"] = _at(r, 1)
+        ctx["schema"] = _at(r, 2)
+        ctx["version"] = _at(r, 3)[:200]
+    except Exception:  # noqa: BLE001
+        pass
+    return ctx
+
+
+# The database a picker connects to purely to READ the database list.
+# PostgreSQL cannot switch database inside a session, so listing requires
+# being connected to something first.
+_BOOTSTRAP_DB = {"postgres": "postgres", "redshift": "dev"}
+
+
+def _list_databases_sqldb(key: str, params: Dict[str, str]) -> dict:
+    """The databases this login can see, for the Data Estate picker.
+
+    A connection saved without a database has nothing to introspect, and
+    "database is required" is a dead end for someone who does not yet know
+    which databases exist. Drilling into one RECONNECTS with that name —
+    unlike Snowflake, a Postgres session cannot cross databases.
+    """
+    started = time.time()
+    bootstrap = params.get("database") or _BOOTSTRAP_DB.get(key, "postgres")
+    try:
+        conn = _psycopg_connect(key, dict(params, database=bootstrap))
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "connector": key, "error": str(e)[:400]}
+    context, rows = {}, []
+    try:
+        cur = conn.cursor()
+        context = _sqldb_context(cur)
+        try:
+            cur.execute("SELECT d.datname, pg_get_userbyid(d.datdba) "
+                        "FROM pg_database d "
+                        "WHERE d.datallowconn AND NOT d.datistemplate "
+                        "ORDER BY d.datname")
+            rows = [{"name": _at(r, 0), "kind": "", "owner": _at(r, 1)}
+                    for r in cur.fetchall()]
+        except Exception:  # noqa: BLE001 — owner lookup is the optional half
+            try:
+                conn.rollback()
+            except Exception:  # noqa: BLE001
+                pass
+            cur.execute("SELECT datname FROM pg_database "
+                        "WHERE datallowconn AND NOT datistemplate "
+                        "ORDER BY datname")
+            rows = [{"name": _at(r, 0), "kind": "", "owner": ""}
+                    for r in cur.fetchall()]
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "connector": key, "error": str(e)[:400]}
+    finally:
+        try:
+            conn.close()
+        except Exception:  # noqa: BLE001
+            pass
+    return {"ok": True, "connector": key, "mode": "databases",
+            "elapsed_ms": int((time.time() - started) * 1000),
+            "context": context, "databases": rows}
+
+
 def _sqldb_introspect(key: str, params: Dict[str, str],
                       max_tables: int = 500) -> dict:
     """Read-only inventory for PostgreSQL / Redshift, returning the SAME
-    shape as the Snowflake introspect (tables/columns/views + readiness +
-    manifest) so the console and scaffold consume it unchanged."""
+    shape as the Snowflake introspect (context + capabilities + the object
+    classes + readiness + manifest) so the console and scaffold consume it
+    unchanged. Every class beyond tables/views is fetched independently and
+    reports its own capability status."""
     params = _normalize_sql_params(params)
     database = params.get("database", "")
     schema = (params.get("schema") or "").strip()
     if not database:
-        return {"ok": False, "error": "database is required to introspect"}
+        # nothing to inventory yet — offer the databases instead of failing
+        return _list_databases_sqldb(key, params)
     started = time.time()
     try:
         conn = _psycopg_connect(key, params)
     except Exception as e:  # noqa: BLE001
         return {"ok": False, "connector": key, "error": str(e)[:400]}
+    caps: Dict[str, dict] = {}
     try:
         cur = conn.cursor()
-        # scope: a chosen schema, else everything but the system schemas
-        if schema:
-            where, args = "AND table_schema = %s", (schema,)
-        else:
-            where = ("AND table_schema NOT IN "
-                     "('pg_catalog', 'information_schema')")
-            args = ()
+        context = _sqldb_context(cur)
+
+        # scope: a chosen schema, else everything but the system schemas.
+        # Each catalog view names its schema column differently, so the
+        # predicate is built per column rather than assumed.
+        def _scope_pred(col: str):
+            if schema:
+                return "AND %s = %%s" % col, (schema,)
+            return ("AND %s NOT IN ('pg_catalog', 'information_schema')"
+                    % col, ())
+
+        where, args = _scope_pred("table_schema")
         cur.execute(
             "SELECT table_schema, table_name, table_type "
             "FROM information_schema.tables "
@@ -837,6 +1212,80 @@ def _sqldb_introspect(key: str, params: Dict[str, str],
         for r in cur.fetchall():
             views.append({"schema": r[0], "name": r[1],
                           "definition": str(r[2] or "")[:8000]})
+        caps["tables"] = {"status": "available" if tables else "empty"}
+        caps["views"] = {"status": "available" if views else "empty"}
+
+        # ── object classes beyond tables and views ──────────────────────
+        # Each is fetched independently and records its own status. Redshift
+        # has no pg_matviews and no PROCEDURE routines, and a restricted role
+        # may read tables but not routine bodies — none of that may cost us
+        # the inventory already in hand.
+        def _rollback():
+            # a no-op while the session is in autocommit (which
+            # _psycopg_connect sets), and the thing that clears a poisoned
+            # transaction if it ever is not — a failed statement otherwise
+            # blocks every class after it
+            conn.rollback()
+
+        def _q(sql, sql_args):
+            def go():
+                cur.execute(sql, sql_args)
+                return cur.fetchall()
+            return go
+
+        mv_where, mv_args = _scope_pred("schemaname")
+        materialized_views = [
+            {"schema": _at(r, 0), "name": _at(r, 1)}
+            for r in _guarded(
+                caps, "materialized_views",
+                _q("SELECT schemaname, matviewname FROM pg_matviews "
+                   "WHERE true %s ORDER BY schemaname, matviewname "
+                   "LIMIT %d" % (mv_where, _MAX_OBJECTS), mv_args),
+                on_error=_rollback, cap=_MAX_OBJECTS)]
+
+        seq_where, seq_args = _scope_pred("sequence_schema")
+        sequences = [
+            {"schema": _at(r, 0), "name": _at(r, 1),
+             "start": _at(r, 2), "increment": _at(r, 3)}
+            for r in _guarded(
+                caps, "sequences",
+                _q("SELECT sequence_schema, sequence_name, start_value, "
+                   "increment FROM information_schema.sequences "
+                   "WHERE sequence_catalog = current_database() %s "
+                   "ORDER BY sequence_schema, sequence_name LIMIT %d"
+                   % (seq_where, _MAX_OBJECTS), seq_args),
+                on_error=_rollback, cap=_MAX_OBJECTS)]
+
+        rt_where, rt_args = _scope_pred("routine_schema")
+
+        def _routines(routine_type):
+            return _q(
+                "SELECT routine_schema, routine_name, data_type, "
+                "external_language, routine_definition "
+                "FROM information_schema.routines "
+                "WHERE routine_catalog = current_database() "
+                "AND routine_type = %%s %s "
+                "ORDER BY routine_schema, routine_name LIMIT %d"
+                % (rt_where, _MAX_OBJECTS), (routine_type,) + rt_args)
+
+        def _routine_objects(rows):
+            out = []
+            for r in rows:
+                o = {"schema": _at(r, 0), "name": _at(r, 1),
+                     "returns": _at(r, 2), "language": _at(r, 3)}
+                # the body may carry a credential — redact before storing
+                out.append(_with_body(o, _at(r, 4),
+                                      "%s.%s" % (o["schema"], o["name"])))
+            return out
+
+        functions = _routine_objects(_guarded(
+            caps, "functions", _routines("FUNCTION"),
+            on_error=_rollback, cap=_MAX_OBJECTS))
+        procedures = _routine_objects(_guarded(
+            caps, "procedures", _routines("PROCEDURE"),
+            on_error=_rollback, cap=_MAX_OBJECTS))
+        secret_findings = [f for o in functions + procedures
+                           for f in o.get("secret_findings", [])]
     except Exception as e:  # noqa: BLE001
         try:
             conn.close()
@@ -878,11 +1327,17 @@ def _sqldb_introspect(key: str, params: Dict[str, str],
         "ok": True, "connector": key,
         "database": database, "schema": schema or "(all)",
         "elapsed_ms": int((time.time() - started) * 1000),
+        "context": context, "capabilities": caps,
         "tables": sorted(tables.values(),
                          key=lambda t: (-t["rows"], t["name"])),
         "views": [{"schema": v["schema"], "name": v["name"]}
                   for v in views],
         "view_definitions": {v["name"]: v["definition"] for v in views},
+        "materialized_views": materialized_views,
+        "sequences": sequences,
+        "functions": functions,
+        "procedures": procedures,
+        "secret_findings": secret_findings,
         "readiness": {
             "tables": len(base_tables),
             "views": len(views),
@@ -890,6 +1345,10 @@ def _sqldb_introspect(key: str, params: Dict[str, str],
             "tables_with_columns": sum(1 for t in base_tables
                                        if t["columns"]),
             "column_sizes_measured": measured,
+            "materialized_views": len(materialized_views),
+            "sequences": len(sequences),
+            "functions": len(functions),
+            "procedures": len(procedures),
             "views_convertible": len(convertible),
             "views_needing_review": needs_review,
             "verdict": "READY" if base_tables or convertible else
@@ -1071,6 +1530,244 @@ def run_live_validation(tests_path: str, key: str, params: Dict[str, str],
             "results": results}
 
 
+# Object classes the account EDITION gates — used to infer the edition.
+_EDITION_GATED = ("masking_policies", "row_access_policies", "tags")
+
+
+def _snowflake_context(cur) -> dict:
+    """CURRENT_* session context plus the roles this user may assume. The
+    assumable roles are what makes a "re-connect with a higher role"
+    recommendation actionable rather than a guess."""
+    ctx = {"user": "", "current_role": "", "warehouse": "", "database": "",
+           "schema": "", "region": "", "account": "", "available_roles": [],
+           "edition": "unknown"}
+    try:
+        row = cur.execute(
+            "SELECT CURRENT_USER(), CURRENT_ROLE(), CURRENT_WAREHOUSE(), "
+            "CURRENT_DATABASE(), CURRENT_SCHEMA(), CURRENT_REGION(), "
+            "CURRENT_ACCOUNT()").fetchone() or ()
+        for i, k in enumerate(("user", "current_role", "warehouse",
+                               "database", "schema", "region", "account")):
+            ctx[k] = _at(row, i)
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        row = cur.execute("SELECT CURRENT_AVAILABLE_ROLES()").fetchone()
+        ctx["available_roles"] = sorted(json.loads(row[0])) \
+            if row and row[0] else []
+    except Exception:  # noqa: BLE001
+        ctx["available_roles"] = []
+    return ctx
+
+
+def _edition_from_caps(caps: dict) -> str:
+    """An Enterprise-only class that RESOLVES — even to zero rows — means the
+    account has that edition; one that is edition-gated means it does not."""
+    statuses = [caps.get(k, {}).get("status") for k in _EDITION_GATED]
+    if any(s in ("available", "empty") for s in statuses):
+        return "Enterprise (or higher)"
+    if any(s == "not_applicable" for s in statuses):
+        return "Standard"
+    return "unknown"
+
+
+def _context_recommendations(caps: dict, ctx: dict) -> List[str]:
+    """Turn blocked classes into the action that would unblock them."""
+    recs: List[str] = []
+    priv = sorted(k for k, v in caps.items()
+                  if v.get("status") == "blocked_privilege")
+    if priv:
+        elevated = sorted({"ACCOUNTADMIN", "SECURITYADMIN"}
+                          & set(ctx.get("available_roles") or []))
+        if elevated:
+            recs.append("Re-connect with a higher role (%s) to inventory "
+                        "%s — set the role before connecting."
+                        % (", ".join(elevated), ", ".join(priv)))
+        else:
+            recs.append("Grant the connection role SECURITYADMIN (or the "
+                        "specific privileges) to inventory %s."
+                        % ", ".join(priv))
+    gated = sorted(k for k, v in caps.items()
+                   if v.get("status") == "not_applicable"
+                   and k in _EDITION_GATED)
+    if gated:
+        recs.append("%s require Enterprise Edition and are not available on "
+                    "this account." % ", ".join(gated))
+    return recs
+
+
+def _list_databases_snowflake(params: Dict[str, str]) -> dict:
+    """The databases this role can see, for the Data Estate picker. Unlike
+    Postgres, one Snowflake session can read across databases, so drilling in
+    only re-scopes the queries."""
+    started = time.time()
+    try:
+        conn = _snowflake_connect(params)
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "connector": "snowflake", "error": str(e)[:400]}
+    context, dbs = {}, []
+    try:
+        cur = conn.cursor()
+        context = _snowflake_context(cur)
+        for r in _show(cur, "SHOW DATABASES"):
+            dbs.append({"name": _named(cur, r, "name") or _at(r, 1),
+                        "kind": _named(cur, r, "kind") or _at(r, 9),
+                        "owner": _named(cur, r, "owner") or _at(r, 5)})
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "connector": "snowflake", "error": str(e)[:400]}
+    finally:
+        try:
+            conn.close()
+        except Exception:  # noqa: BLE001
+            pass
+    return {"ok": True, "connector": "snowflake", "mode": "databases",
+            "elapsed_ms": int((time.time() - started) * 1000),
+            "context": context, "databases": dbs}
+
+
+def _snowflake_objects(cur, caps: dict, database: str,
+                       schema: str) -> Dict[str, list]:
+    """Every object class beyond tables/views/columns.
+
+    Each class is fetched independently through `_guarded`, so a class the
+    role may not read or the edition does not carry comes back empty WITH the
+    reason, and never costs the classes around it. A platform that lacks a
+    class simply contributes no rows — the console renders whatever arrives.
+    """
+    sc = _scope(database, schema)
+    inf_pred = (lambda col: ("AND %s = %%s" % col) if schema
+                else ("AND %s <> 'INFORMATION_SCHEMA'" % col))
+    args = (schema,) if schema else ()
+
+    def info(sql_cols, table, col_prefix, order):
+        def go():
+            return cur.execute(
+                "SELECT %s FROM INFORMATION_SCHEMA.%s "
+                "WHERE %s_catalog = CURRENT_DATABASE() %s ORDER BY %s "
+                "LIMIT %d" % (sql_cols, table, col_prefix,
+                              inf_pred("%s_schema" % col_prefix), order,
+                              _MAX_OBJECTS), args).fetchall()
+        return go
+
+    def shown(sql):
+        return lambda: _show(cur, sql + sc)
+
+    out: Dict[str, list] = {}
+    g = lambda name, fn: _guarded(caps, name, fn,      # noqa: E731
+                                  cap=_MAX_OBJECTS)
+
+    out["sequences"] = [
+        {"schema": _at(r, 0), "name": _at(r, 1), "start": _at(r, 2),
+         "increment": _at(r, 3)}
+        for r in g("sequences", info(
+            "sequence_schema, sequence_name, start_value, increment",
+            "SEQUENCES", "sequence", "sequence_schema, sequence_name"))]
+
+    out["file_formats"] = [
+        {"schema": _at(r, 0), "name": _at(r, 1), "type": _at(r, 2)}
+        for r in g("file_formats", info(
+            "file_format_schema, file_format_name, file_format_type",
+            "FILE_FORMATS", "file_format",
+            "file_format_schema, file_format_name"))]
+
+    def logic(rows, kind):
+        out_ = []
+        for r in rows:
+            o = {"schema": _at(r, 0), "name": _at(r, 1),
+                 "signature": _at(r, 2), "returns": _at(r, 3),
+                 "language": _at(r, 4)}
+            out_.append(_with_body(o, _at(r, 5),
+                                   "%s %s.%s" % (kind, o["schema"],
+                                                 o["name"])))
+        return out_
+
+    out["functions"] = logic(g("functions", info(
+        "function_schema, function_name, argument_signature, data_type, "
+        "function_language, function_definition", "FUNCTIONS", "function",
+        "function_schema, function_name")), "function")
+    out["procedures"] = logic(g("procedures", info(
+        "procedure_schema, procedure_name, argument_signature, data_type, "
+        "procedure_language, procedure_definition", "PROCEDURES",
+        "procedure", "procedure_schema, procedure_name")), "procedure")
+
+    out["materialized_views"] = [
+        _with_body({"schema": _at(r, 4), "name": _at(r, 1)},
+                   _named(cur, r, "text"),
+                   "materialized view %s" % _at(r, 1))
+        for r in g("materialized_views", shown("SHOW MATERIALIZED VIEWS"))]
+
+    out["dynamic_tables"] = [
+        _with_body({"schema": _at(r, 4), "name": _at(r, 1),
+                    "target_lag": _named(cur, r, "target_lag") or _at(r, 9),
+                    "warehouse": _named(cur, r, "warehouse"),
+                    "refresh_mode": _named(cur, r, "refresh_mode")},
+                   _named(cur, r, "text"), "dynamic table %s" % _at(r, 1))
+        for r in g("dynamic_tables", shown("SHOW DYNAMIC TABLES"))]
+
+    out["streams"] = [
+        {"schema": _at(r, 3), "name": _at(r, 1), "source": _at(r, 6),
+         "type": _at(r, 9), "stale": _at(r, 10)}
+        for r in g("streams", shown("SHOW STREAMS"))]
+
+    out["tasks"] = [
+        _with_body({"schema": _at(r, 4), "name": _at(r, 1),
+                    "warehouse": _at(r, 7), "schedule": _at(r, 8),
+                    "state": _at(r, 10),
+                    "predecessors": _parse_predecessors(
+                        r[9] if len(r) > 9 else None)},
+                   _at(r, 11), "task %s" % _at(r, 1))
+        for r in g("tasks", shown("SHOW TASKS"))]
+
+    out["pipes"] = [
+        _with_body({"schema": _at(r, 3), "name": _at(r, 1),
+                    "notification_channel": _at(r, 6)},
+                   _at(r, 4), "pipe %s" % _at(r, 1))
+        for r in g("pipes", shown("SHOW PIPES"))]
+
+    out["stages"] = [
+        {"schema": _at(r, 3), "name": _at(r, 1), "url": _at(r, 4),
+         "type": _at(r, 10)}
+        for r in g("stages", shown("SHOW STAGES"))]
+
+    for name, sql in (("masking_policies", "SHOW MASKING POLICIES"),
+                      ("row_access_policies", "SHOW ROW ACCESS POLICIES")):
+        out[name] = [{"schema": _at(r, 3), "name": _at(r, 1),
+                      "kind": _at(r, 4)}
+                     for r in g(name, shown(sql))]
+
+    out["tags"] = [{"schema": _at(r, 3), "name": _at(r, 1),
+                    "allowed_values": _at(r, 6)}
+                   for r in g("tags", shown("SHOW TAGS"))]
+
+    # account-level classes: never schema-scoped, and privilege-gated
+    out["roles"] = [{"name": _at(r, 1), "assigned_to_users": _at(r, 5),
+                     "granted_to_roles": _at(r, 6), "comment": _at(r, 9)}
+                    for r in g("roles", lambda: _show(cur, "SHOW ROLES"))]
+    out["shares"] = [{"kind": _at(r, 1), "name": _at(r, 2),
+                      "database": _at(r, 3)}
+                     for r in g("shares", lambda: _show(cur, "SHOW SHARES"))]
+
+    # Grants ON this database's containers — "who can reach what in here",
+    # which is the access control we re-create on the target. Container-level
+    # today; per-table grants would need a SHOW GRANTS per object.
+    def _grants():
+        rows = []
+        if database:
+            db = database.replace('"', "")
+            targets = ['DATABASE "%s"' % db]
+            if schema:
+                targets.append('SCHEMA "%s"."%s"'
+                               % (db, schema.replace('"', "")))
+            for tgt in targets:
+                rows.extend(_show(cur, "SHOW GRANTS ON " + tgt))
+        return rows
+
+    out["grants"] = [{"role": _at(r, 5), "privilege": _at(r, 1),
+                      "granted_on": _at(r, 2), "object": _at(r, 3)}
+                     for r in g("grants", _grants)]
+    return out
+
+
 def introspect(key: str, params: Dict[str, str],
                max_tables: int = 500) -> dict:
     """Read-only inventory of the connected database: tables (rows/bytes),
@@ -1088,14 +1785,17 @@ def introspect(key: str, params: Dict[str, str],
     database = params.get("database", "")
     schema = (params.get("schema") or "").upper()
     if not database:
-        return {"ok": False, "error": "database is required to introspect"}
+        # nothing to inventory yet — offer the databases instead of failing
+        return _list_databases_snowflake(params)
     started = time.time()
     try:
         conn = _snowflake_connect(params)
     except Exception as e:  # noqa: BLE001
         return {"ok": False, "connector": key, "error": str(e)[:400]}
+    caps: Dict[str, dict] = {}
     try:
         cur = conn.cursor()
+        context = _snowflake_context(cur)
         schema_pred = "AND table_schema = %s" if schema else \
             "AND table_schema <> 'INFORMATION_SCHEMA'"
         args = (schema,) if schema else ()
@@ -1138,6 +1838,10 @@ def introspect(key: str, params: Dict[str, str],
                 % schema_pred, args).fetchall():
             views.append({"schema": r[0], "name": r[1],
                           "definition": str(r[2] or "")[:8000]})
+        caps["tables"] = {"status": "available" if tables else "empty"}
+        caps["views"] = {"status": "available" if views else "empty"}
+        objects = _snowflake_objects(cur, caps, database, schema)
+        context["edition"] = _edition_from_caps(caps)
     except Exception as e:  # noqa: BLE001
         try:
             conn.close()
@@ -1175,27 +1879,39 @@ def introspect(key: str, params: Dict[str, str],
                      for c in t["columns"]]}
         for t in base_tables]}
     import yaml as _yaml
+    # every object that carries a body may have carried a credential with it
+    secret_findings = [f for cls in ("functions", "procedures", "tasks",
+                                     "pipes", "materialized_views",
+                                     "dynamic_tables")
+                       for o in objects.get(cls, [])
+                       for f in o.get("secret_findings", [])]
+    readiness = {
+        "tables": len(base_tables),
+        "views": len(views),
+        "total_rows": sum(t["rows"] for t in base_tables),
+        "tables_with_columns": sum(1 for t in base_tables if t["columns"]),
+        "column_sizes_measured": measured,
+        "views_convertible": len(convertible),
+        "views_needing_review": needs_review,
+        "verdict": "READY" if base_tables or convertible else
+                   "NOTHING_TO_CONVERT",
+    }
+    readiness.update({k: len(v) for k, v in objects.items()})
     return {
         "ok": True, "connector": key,
         "database": database, "schema": schema or "(all)",
         "elapsed_ms": int((time.time() - started) * 1000),
+        "context": context, "capabilities": caps,
+        "recommendations": _context_recommendations(caps, context),
         "tables": sorted(tables.values(),
                          key=lambda t: (-t["rows"], t["name"])),
         "views": [{"schema": v["schema"], "name": v["name"]}
                   for v in views],
         "view_definitions": {v["name"]: v["definition"] for v in views},
-        "readiness": {
-            "tables": len(base_tables),
-            "views": len(views),
-            "total_rows": sum(t["rows"] for t in base_tables),
-            "tables_with_columns": sum(1 for t in base_tables
-                                       if t["columns"]),
-            "column_sizes_measured": measured,
-            "views_convertible": len(convertible),
-            "views_needing_review": needs_review,
-            "verdict": "READY" if base_tables or convertible else
-                       "NOTHING_TO_CONVERT",
-        },
+        "task_dag": _build_task_dag(objects.get("tasks", [])),
+        "secret_findings": secret_findings,
+        "readiness": readiness,
         "manifest_yaml": _yaml.safe_dump(manifest, sort_keys=False,
                                          width=100),
+        **objects,
     }
