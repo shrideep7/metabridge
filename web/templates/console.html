@@ -6349,7 +6349,7 @@ class TwinCanvas {
     this.NW = 190; this.NH = 46;
     this.view = {x: 60, y: 60, k: .85};
     this.pos = {}; this.q = ''; this.layoutMode = 'lr';
-    this.hover = null; this.userMoved = false;
+    this.userMoved = false;
     this.simIds = null; this.simLevels = null; this.simWave = -1; this.simTimer = null;
 
     this.svgNS = 'http://www.w3.org/2000/svg';
@@ -6656,12 +6656,8 @@ class TwinCanvas {
     const d = Math.max(40, Math.abs(b.x - a.x) * 0.45); return 'M' + a.x + ',' + a.y + ' C' + (a.x + d) + ',' + a.y + ' ' + (b.x - d) + ',' + b.y + ' ' + b.x + ',' + b.y;
   }
 
-  // Hover fires pointerenter/leave in rapid succession as the freshly
-  // rebuilt DOM node lands back under the cursor (this.render() replaces
-  // every .twc-node's innerHTML). Coalescing onto rAF lets that settle
-  // once per frame instead of tearing down/rebuilding the whole node
-  // layer on every micro-event — without this the hover highlight never
-  // stabilizes and any click racing a hover loses its target mid-click.
+  // Coalesces bursts of render requests onto a single rAF so a rebuild
+  // of the node layer happens at most once per frame.
   scheduleRender() {
     if (this._renderQueued) return;
     this._renderQueued = true;
@@ -6677,7 +6673,11 @@ class TwinCanvas {
       String(n.name).toLowerCase().includes(q) || String(n.technology || '').toLowerCase().includes(q)
       || String(n.domain || '').toLowerCase().includes(q)).map(n => n.id)) : null;
 
-    const focusId = twinSelected || this.hover;
+    // Relationship highlighting is selection-driven only. Hover used to
+    // drive it too, but with large graphs every pointerenter rebuilt the
+    // whole node+edge layer, and the rebuilt node landing back under the
+    // cursor re-fired enter/leave — a visible flicker loop.
+    const focusId = twinSelected;
     let rel = null, up = null, down = null;
     if (focusId) {
       up = twinClosure(this, focusId, 'up'); down = twinClosure(this, focusId, 'down');
@@ -6721,12 +6721,12 @@ class TwinCanvas {
       const p = P[n.id]; if (!p) return;
       const col = TWIN_KIND_COLOR[n.kind] || 'var(--muted)';
       const dim = (focusId && !(rel && rel.has(n.id))) || (matches && !matches.has(n.id));
-      const isSel = twinSelected === n.id, isHover = this.hover === n.id;
+      const isSel = twinSelected === n.id;
       const simHit = simOn && this.simIds.has(n.id) && this.simReached(n.id);
       const isSeed = simOn && this.simLevels && this.simLevels[n.id] === 0;
       const border = simHit ? 'var(--red)' : (isSel ? 'var(--accent)' : (matches && matches.has(n.id) ? 'var(--amber)' : col));
       const bg = simHit ? 'var(--red-bg)' : (isSel ? '#fff' : '#fff');
-      const shadow = isSel ? '0 0 0 3px var(--accent-line), 0 8px 20px rgba(16,24,40,.14)' : (isHover ? '0 4px 14px rgba(16,24,40,.12)' : '0 1px 2px rgba(16,24,40,.06)');
+      const shadow = isSel ? '0 0 0 3px var(--accent-line), 0 8px 20px rgba(16,24,40,.14)' : '0 1px 2px rgba(16,24,40,.06)';
       const flag = simHit ? (isSeed ? 'SOURCE' : 'IMPACTED') : '';
       html += '<div class="twc-node" data-nid="' + esc(n.id) + '" style="'
         + 'position:absolute;left:0;top:0;display:flex;align-items:stretch;box-sizing:border-box;'
@@ -6749,8 +6749,6 @@ class TwinCanvas {
       const nid = el.dataset.nid;
       el.onpointerdown = ev => { ev.stopPropagation(); const p = this.pos[nid];
         this.dragN = {id: nid, px: p.x, py: p.y, mx: ev.clientX, my: ev.clientY, moved: false}; };
-      el.onpointerenter = () => { if (!this.dragN && !this.pan && this.hover !== nid) { this.hover = nid; this.scheduleRender(); } };
-      el.onpointerleave = () => { if (this.hover === nid) { this.hover = null; this.scheduleRender(); } };
     });
 
     // legend
@@ -6761,8 +6759,8 @@ class TwinCanvas {
       + '<span style="width:6px;height:6px;border-radius:99px;background:' + TWIN_KIND_COLOR[k] + ';display:inline-block"></span>'
       + k.replace(/_/g, ' ') + ' <span style="color:var(--muted);font:500 10px var(--mono)">' + counts[k] + '</span></div>').join('');
 
-    // minimap — skipped entirely while collapsed (render() runs on hover,
-    // so there's no reason to rebuild an invisible SVG each time)
+    // minimap — skipped entirely while collapsed (render() runs on pan,
+    // zoom and drag, so there's no reason to rebuild an invisible SVG)
     if (this.mapOpen === false) { this.applyFlowOffset(); if (simOn) this.startFlow(); else this.stopFlow(); return; }
     const b = this.bbox(); const MW = 180, MH = 120;
     const mk = Math.min(MW / b.w, MH / b.h) * 0.9;
