@@ -3,6 +3,10 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="/static/favicon.ico" sizes="any">
+<link rel="icon" type="image/png" sizes="32x32" href="/static/favicon-32.png">
+<link rel="icon" type="image/png" sizes="256x256" href="/static/favicon.png">
+<link rel="apple-touch-icon" href="/static/apple-touch-icon.png">
 <title>MetaBridge AI Platform</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -1478,6 +1482,9 @@
     <form id="scafForm">
       <div class="drop" data-drop="scafFile"><input type="file" accept=".yml,.yaml" hidden>
         <span class="txt"><b>Drop a table manifest (.yml)</b> — see examples/sap_to_snowflake/tables.yml</span></div>
+      <!-- The manifest decides LOAD BEHAVIOUR (full reload vs merge), and this
+           is the last point before pipelines are generated from it. -->
+      <div id="scafManifestPreview"></div>
       <div class="row">
         <div><label>Source system</label><select name="source" id="scafSource"></select></div>
         <div><label>Target platform</label><select name="target" id="scafTarget"></select></div>
@@ -3059,7 +3066,9 @@ document.querySelectorAll('.drop').forEach(drop => {
   ['dragleave','drop'].forEach(e => drop.addEventListener(e, ev => { ev.preventDefault(); drop.classList.remove('hover'); }));
   drop.addEventListener('drop', ev => setFile(ev.dataTransfer.files[0]));
   function setFile(f) { if (!f) return; chosen[key] = f;
-    drop.querySelector('.txt').innerHTML = '<b>' + f.name + '</b> (' + Math.round(f.size/1024) + ' KB)'; }
+    drop.querySelector('.txt').innerHTML = '<b>' + f.name + '</b> (' + Math.round(f.size/1024) + ' KB)';
+    // a dropped table manifest previews like a handed-off one
+    if (key === 'scafFile') renderScaffoldManifest(f); }
 });
 
 function card(n, l, color, click) {
@@ -3751,11 +3760,27 @@ async function selectScaffoldSource(connector) {
   src.value = connector;
   return true;
 }
+/* Render the attached manifest above the Source system row. Reads the File
+   itself rather than taking the YAML as an argument, so a hand-dropped
+   manifest previews exactly like a handed-off one. */
+async function renderScaffoldManifest(file) {
+  const box = $('#scafManifestPreview');
+  if (!box) return;
+  if (!file) { box.innerHTML = ''; return; }
+  try {
+    const yml = await file.text();
+    box.innerHTML = manifestPreviewHtml(yml, file.name || 'tables_manifest.yml');
+  } catch (e) {
+    box.innerHTML = '<div style="font-size:12px;color:var(--muted);margin-top:6px">'
+      + 'Manifest attached — preview unavailable (' + esc(e.message || e) + ')</div>';
+  }
+}
 async function handoffToScaffold(file, label, connector) {
   chosen.scafFile = file;
   const dz = document.querySelector('[data-drop="scafFile"] .txt');
   if (dz) dz.innerHTML = label;
   await selectScaffoldSource(connector);
+  await renderScaffoldManifest(file);
   document.querySelector('nav a[data-page="scaffold"]').click();
 }
 
@@ -3996,6 +4021,7 @@ async function loadSavedConnections() {
         const dz = document.querySelector('[data-drop="scafFile"] .txt');
         if (dz) dz.innerHTML = '<b>' + f.name + '</b> (from connection \u201C' + esc(row.name) + '\u201D — ' + d.readiness.tables + ' tables)';
         await selectScaffoldSource(row.connector);
+        await renderScaffoldManifest(f);
         document.querySelector('nav a[data-page="scaffold"]').click();
         out.innerHTML = '';
         return;
@@ -4042,10 +4068,9 @@ async function loadSavedConnections() {
         if (!d.ok) { out.innerHTML = connErrBox(d.error||'failed'); }
         else {
           const r = d.readiness;
-          const blob = new Blob([d.manifest_yaml], {type:'text/yaml'});
           out.innerHTML = '<pre style="margin-top:6px">' + d.database + '.' + d.schema + ' — ' + r.verdict + ': '
             + r.tables + ' tables (' + r.total_rows.toLocaleString() + ' rows) · ' + r.views + ' views (' + r.views_convertible + ' convertible)</pre>'
-            + '<a href="' + URL.createObjectURL(blob) + '" download="tables_manifest.yml"><button class="secondary">Download table manifest</button></a>';
+            + manifestPreviewHtml(d.manifest_yaml, 'tables_manifest.yml');
           loadSavedConnections();
         }
       }
@@ -4570,8 +4595,6 @@ async function openConnector(key, connId) {
       const top = d.tables.slice(0, 15).map(t =>
         t.schema + '.' + t.name + '  (' + t.rows.toLocaleString() + ' rows, ' + t.columns.length + ' cols)').join('\n');
       const reviews = (r.views_needing_review || []).map(v => v.view + ' — ' + v.reason).join('\n');
-      const blob = new Blob([d.manifest_yaml], {type: 'text/yaml'});
-      const url = URL.createObjectURL(blob);
       $('#artOut').innerHTML =
         '<label style="color:var(--green)">Database analyzed — ' + r.verdict + ' (' + d.elapsed_ms + 'ms)</label>'
         + '<pre>' + d.database + '.' + d.schema + '\n'
@@ -4579,8 +4602,8 @@ async function openConnector(key, connId) {
         + r.views + ' views (' + r.views_convertible + ' parse clean' + ((r.views_needing_review||[]).length ? ', ' + r.views_needing_review.length + ' need review' : '') + ')\n\n'
         + esc(top) + (d.tables.length > 15 ? '\n… ' + (d.tables.length - 15) + ' more' : '')
         + (reviews ? '\n\nViews needing review:\n' + esc(reviews) : '') + '</pre>'
-        + '<a href="' + url + '" download="' + key + '_tables_manifest.yml"><button>Download table manifest</button></a> '
-        + '<span style="font-size:13px;color:var(--ink3)">Upload this manifest in <strong>Pipeline Studio</strong> to generate dbt + IDMC + PowerCenter pipelines for these ' + r.tables + ' tables.</span>';
+        + manifestPreviewHtml(d.manifest_yaml, key + '_tables_manifest.yml')
+        + '<div style="font-size:13px;color:var(--ink3);margin-top:6px">Upload this manifest in <strong>Pipeline Studio</strong> to generate dbt + IDMC + PowerCenter pipelines for these ' + r.tables + ' tables.</div>';
     } catch (e) { $('#artOut').innerHTML = '<label style="color:#b03a2e">Analysis failed</label><pre>' + esc(e.message || e) + '</pre>'; }
   };
   const saveBtn = $('#saveConn');
@@ -4671,6 +4694,86 @@ async function closeDrawer(force) {
   });
 })();
 function esc(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;'); }
+
+/* ---------------- table manifest preview ----------------
+   The manifest is what Pipeline Studio turns into pipelines, so it has to be
+   READABLE before it is used, not only downloadable. Introspection can only
+   emit columns/types as fact; unique_key needs a declared PRIMARY KEY and
+   incremental_column can only be INFERRED, so those arrive as commented
+   suggestions. Highlighting them here is the whole point: a manifest with no
+   watermark means a FULL reload of every table on every run, and that is the
+   kind of thing you want to see BEFORE clicking Generate. */
+function manifestStats(yml) {
+  const lines = String(yml || '').split('\n');
+  let tables = 0, keys = 0, suggested = 0, missingKey = 0, active = 0;
+  lines.forEach(l => {
+    if (/^-\s+name:/.test(l)) tables++;
+    else if (/^\s*#\s*incremental_column:/.test(l)) suggested++;
+    else if (/^\s*#\s*unique_key:/.test(l)) missingKey++;
+    else if (/^\s{2}unique_key:/.test(l)) keys++;
+    else if (/^\s{2}incremental_column:\s*\S/.test(l)) active++;   // uncommented
+  });
+  return {tables, keys, suggested, missingKey, active};
+}
+
+function manifestPreviewHtml(yml, filename) {
+  const s = manifestStats(yml);
+  const blob = new Blob([yml], {type:'text/yaml'});
+  // colour only the suggestion comments; everything else stays plain
+  // The global `pre` rule is dark-on-navy; this block is light-on-white, so
+  // every colour here is set explicitly rather than inherited.
+  const body = String(yml || '').split('\n').map(l => {
+    const e = esc(l);
+    if (/^\s*#\s*(incremental_column|unique_key):/.test(l))
+      return '<span style="color:#8A4B08;font-weight:600">' + e + '</span>';
+    if (/^\s*#/.test(l)) return '<span style="color:#6B7A8A">' + e + '</span>';
+    // key: value — key in slate, value in ink so the structure reads at a glance
+    const kv = l.match(/^(\s*-?\s*)([A-Za-z_][\w]*)(:)(.*)$/);
+    if (kv) return esc(kv[1])
+      + '<span style="color:#1F6FB2">' + esc(kv[2]) + '</span>'
+      + '<span style="color:#51606F">' + esc(kv[3]) + '</span>'
+      + '<span style="color:#16212E">' + esc(kv[4]) + '</span>';
+    return '<span style="color:#16212E">' + e + '</span>';
+  }).join('\n');
+  const chip = (txt, bg, fg, bd) => '<span style="display:inline-block;'
+    + 'padding:3px 10px;border-radius:11px;font-size:12px;font-weight:600;'
+    + 'margin:0 6px 4px 0;background:' + bg + ';color:' + fg
+    + ';border:1px solid ' + bd + '">' + esc(txt) + '</span>';
+  const NEUTRAL = ['#EDF0F4', '#33404E', '#D9DFE7'];
+  const GOOD    = ['#E9F6EE', '#0F6B33', '#BFE4CC'];
+  const WARN    = ['#FCF3E3', '#8A4B08', '#EFD9AC'];
+  let chips = chip(s.tables + ' tables', ...NEUTRAL);
+  chips += s.keys
+    ? chip(s.keys + ' with primary key', ...GOOD)
+    : chip('no primary keys declared', ...WARN);
+  if (s.suggested) chips += chip(s.suggested + ' watermark suggestion'
+    + (s.suggested === 1 ? '' : 's'), ...WARN);
+  // A table full-reloads until its incremental_column is UNCOMMENTED. On a
+  // freshly introspected manifest that is all of them; an edited one that is
+  // re-previewed will show fewer, which is the signal the user is looking for.
+  const full = s.tables - s.active;
+  const warn = full
+    ? '<div style="font-size:12px;color:#8A4B08;margin-top:8px;line-height:1.5">'
+      + full + ' of ' + s.tables + ' table' + (s.tables === 1 ? '' : 's')
+      + ' ha' + (full === 1 ? 's' : 've') + ' no active '
+      + '<code>incremental_column</code> and will FULL reload on every run.'
+      + (s.missingKey ? ' ' + s.missingKey + ' also lack'
+          + (s.missingKey === 1 ? 's' : '') + ' a declared PRIMARY KEY, so a '
+          + 'merge key must be set by hand.' : '')
+      + ' Uncomment and verify the highlighted lines to get MERGE loads.</div>'
+    : '<div style="font-size:12px;color:#0F6B33;margin-top:8px;line-height:1.5">'
+      + 'Every table has an active incremental_column — MERGE loads.</div>';
+  return '<div style="margin-top:10px">'
+    + '<div style="margin-bottom:6px">' + chips + '</div>'
+    + '<pre style="max-height:320px;overflow:auto;background:#FBFCFD;'
+    + 'color:#16212E;border:1px solid var(--border);border-radius:6px;'
+    + 'padding:12px;font-size:12px;line-height:1.55;margin-top:0;'
+    + 'white-space:pre-wrap;overflow-wrap:anywhere">' + body + '</pre>'
+    + warn
+    + '<a href="' + URL.createObjectURL(blob) + '" download="' + esc(filename)
+    + '"><button class="secondary">Download table manifest</button></a>'
+    + '</div>';
+}
 
 /* ---------------- governance ---------------- */
 $('#govForm').onsubmit = async ev => {

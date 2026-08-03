@@ -110,7 +110,19 @@ def build_pipeline(project: str, source: ConnectorSpec,
                             "back to append loads",
                             suggestion="Declare unique_key for merge semantics.")
         else:
+            # No watermark: every run reloads the whole table. That is always
+            # CORRECT, so it is the safe default — but on a large table it is
+            # also the most expensive thing this generator can emit, and an
+            # introspected manifest carries no watermark, so the choice is
+            # easy to inherit without ever deciding it. Say so.
             m.load_strategy = LoadStrategy.FULL
+            m.add_issue(IssueSeverity.MANUAL, "FULL_RELOAD_NO_WATERMARK",
+                        "Table %s has no incremental_column — every run "
+                        "reloads the entire table" % tname,
+                        suggestion="Declare incremental_column (a change "
+                                   "timestamp) and unique_key for MERGE "
+                                   "loads. Intentional for small reference "
+                                   "tables — verify for large ones.")
 
         out = Transformation(name="__OUTPUT__", type=TransformationType.EXPRESSION,
                              ports=list(cols),

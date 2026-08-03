@@ -20,7 +20,8 @@ from typing import Optional
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import (
-    HTMLResponse, JSONResponse, PlainTextResponse, StreamingResponse,
+    FileResponse, HTMLResponse, JSONResponse, PlainTextResponse,
+    StreamingResponse,
 )
 
 from fastapi.staticfiles import StaticFiles
@@ -349,6 +350,15 @@ async def access_guard(request: Request, call_next):
 @app.get("/", response_class=HTMLResponse)
 def landing() -> str:
     return (_TPL / "landing.html").read_text(encoding="utf-8")
+
+
+@app.get("/favicon.ico", include_in_schema=False)
+def favicon() -> FileResponse:
+    # Browsers request /favicon.ico from the site root regardless of the <link>
+    # tags, so serve it there too instead of letting it 404 into the logs.
+    return FileResponse(str(_STATIC / "favicon.ico"),
+                        media_type="image/x-icon",
+                        headers={"Cache-Control": "public, max-age=86400"})
 
 
 @app.get("/login", response_class=HTMLResponse)

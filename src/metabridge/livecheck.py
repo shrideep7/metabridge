@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import time
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -303,6 +304,128 @@ def _guarded(caps: dict, name: str, fetch, on_error=None,
     return rows
 
 
+# ---------------------------------------------------------------------------
+# Table manifest: the handoff from introspection to the Pipeline scaffold.
+#
+# Columns and types come straight from the catalog. The two settings that
+# decide LOAD BEHAVIOUR do not:
+#
+#   unique_key         a declared PRIMARY KEY, when the catalog has one.
+#                      Warehouses like Snowflake do not enforce PKs, so many
+#                      tables simply never declare one.
+#   incremental_column no catalog records "this is my watermark". It can only
+#                      be INFERRED from column names/types, so it is emitted
+#                      as a COMMENTED suggestion a human confirms — an
+#                      incorrect watermark silently drops rows, which is far
+#                      worse than a full reload.
+#
+# Without both, scaffold falls through to LoadStrategy.FULL: a full reload of
+# every table, every run.
+# ---------------------------------------------------------------------------
+
+# Ordered by how strongly the name implies a change-tracking timestamp.
+_WATERMARK_HINTS = ("updated_at", "update_ts", "last_updated", "last_modified",
+                    "modified_at", "modified_date", "changed_on", "change_date",
+                    "aedat", "laeda", "erdat", "load_ts", "load_date",
+                    "etl_timestamp", "dw_updated_at", "_fivetran_synced",
+                    "created_at", "create_date", "erdat_tst")
+_DATEISH = ("date", "time", "timestamp", "datetime", "dats", "tims")
+
+
+def _watermark_candidates(columns: List[dict]) -> List[str]:
+    """Date/timestamp columns whose NAME implies change tracking, best first.
+
+    Name AND type must both agree: a VARCHAR called 'updated_at' is not a
+    usable watermark, and a DATE called 'birth_date' is not a change marker.
+    """
+    dated = [c for c in columns
+             if any(d in str(c.get("type", "")).lower() for d in _DATEISH)]
+    ranked: List[str] = []
+    for hint in _WATERMARK_HINTS:
+        for c in dated:
+            name = str(c.get("name", ""))
+            if name.lower() == hint and name not in ranked:
+                ranked.append(name)
+    for hint in _WATERMARK_HINTS:                    # then substring matches
+        for c in dated:
+            name = str(c.get("name", ""))
+            if hint in name.lower() and name not in ranked:
+                ranked.append(name)
+    return ranked
+
+
+def _manifest_entry(table: dict, database: str,
+                    pks: Optional[Dict[tuple, List[str]]] = None) -> dict:
+    """One manifest table entry, with unique_key when the catalog declared a
+    primary key. The watermark is NOT set here — see _manifest_yaml."""
+    entry: Dict[str, object] = {"name": table["name"], "schema": table["schema"]}
+    if database:
+        entry["database"] = database
+    key = (table["schema"], table["name"])
+    declared = list((pks or {}).get(key, []))
+    if declared:
+        entry["unique_key"] = declared
+    entry["columns"] = [{"name": c["name"], "type": c["type"]}
+                        for c in table["columns"]]
+    return entry
+
+
+def _manifest_yaml(base_tables: List[dict], database: str,
+                   pks: Optional[Dict[tuple, List[str]]] = None) -> str:
+    """Scaffold-ready manifest YAML.
+
+    Inferred watermarks are appended as commented `incremental_column:` lines
+    under their table, so the manifest runs as-is (full reload — always
+    correct, just expensive) and becomes incremental the moment a human
+    uncomments a line they have verified.
+    """
+    import yaml as _yaml
+    doc = {"tables": [_manifest_entry(t, database, pks) for t in base_tables]}
+    text = _yaml.safe_dump(doc, sort_keys=False, width=100)
+
+    suggestions: Dict[str, List[str]] = {}
+    missing_key: List[str] = []
+    for t in base_tables:
+        cands = _watermark_candidates(t["columns"])
+        if cands:
+            suggestions[t["name"]] = cands[:3]
+        if not (pks or {}).get((t["schema"], t["name"])):
+            missing_key.append(t["name"])
+    if not suggestions and not missing_key:
+        return text
+
+    # Re-emit line by line. A table's comments are held until the NEXT table
+    # starts (or EOF) and inserted BEFORE that line, so they close the block
+    # they describe instead of landing inside its `columns:` list.
+    out: List[str] = []
+    pending: List[str] = []
+
+    for line in text.splitlines():
+        mo = re.match(r"^(\s*)-\s+name:\s+(\S+)\s*$", line)
+        if mo and mo.group(1) == "":          # top-level table entry only
+            out.extend(pending)
+            pending = []
+            pad, tname = "  ", mo.group(2)
+            for cand in suggestions.get(tname, []):
+                pending.append(
+                    "%s# incremental_column: %s   # inferred from the column "
+                    "name - VERIFY before enabling" % (pad, cand))
+            if tname in missing_key:
+                pending.append(
+                    "%s# unique_key: []   # no PRIMARY KEY declared in the "
+                    "catalog; set this for MERGE loads" % pad)
+        out.append(line)
+    out.extend(pending)
+    header = ("# Table manifest generated by introspection.\n"
+              "# columns/types are catalog fact. Commented lines are "
+              "SUGGESTIONS:\n"
+              "# uncomment (and verify) incremental_column + unique_key to "
+              "get MERGE\n"
+              "# loads - until then every table is a FULL reload on every "
+              "run.\n")
+    return header + "\n".join(out) + "\n"
+
+
 def _at(row, i: int, default: str = "") -> str:
     """Positional access that tolerates a short row — catalog result shapes
     vary by server version, and a missing trailing column must not raise."""
@@ -318,6 +441,36 @@ def _at(row, i: int, default: str = "") -> str:
 # stages, policies, tags) have no INFORMATION_SCHEMA view at all, so SHOW is
 # the only catalog source.
 # ---------------------------------------------------------------------------
+
+def _snowflake_primary_keys(cur, database: str,
+                            schema: str) -> Dict[tuple, List[str]]:
+    """{(schema, table): [pk columns in key order]} from SHOW PRIMARY KEYS.
+
+    Snowflake does not ENFORCE primary keys, so this finds only what someone
+    declared — an empty result is a normal, expected outcome, never an error.
+    Failure here must not cost the inventory, so it degrades to {}.
+    """
+    scope = ('SCHEMA "%s"."%s"' % (database.replace('"', ""),
+                                   schema.replace('"', "")) if schema
+             else 'DATABASE "%s"' % database.replace('"', ""))
+    try:
+        rows = _show(cur, "SHOW PRIMARY KEYS IN " + scope)
+    except Exception:  # noqa: BLE001 — no PKs declared, or no privilege
+        return {}
+    # SHOW PRIMARY KEYS: created_on, database_name, schema_name, table_name,
+    # column_name, key_sequence, constraint_name, rely, comment
+    ordered: Dict[tuple, List[tuple]] = {}
+    for r in rows:
+        tbl, col = _at(r, 3), _at(r, 4)
+        if not tbl or not col:
+            continue
+        try:
+            seq = int(_at(r, 5, "0") or 0)
+        except ValueError:
+            seq = 0
+        ordered.setdefault((_at(r, 2), tbl), []).append((seq, col))
+    return {k: [c for _, c in sorted(v)] for k, v in ordered.items()}
+
 
 def _show(cur, sql: str):
     """Run a SHOW and return its rows.
@@ -786,13 +939,6 @@ def _databricks_introspect(params: Dict[str, str],
 
     base_tables = [t for t in tables.values()
                    if "VIEW" not in t["type"].upper()]
-    manifest = {"tables": [
-        {"name": t["name"], "schema": t["schema"],
-         **({"database": catalog} if catalog else {}),
-         "columns": [{"name": c["name"], "type": c["type"]}
-                     for c in t["columns"]]}
-        for t in base_tables]}
-    import yaml as _yaml
     secret_findings = [f for cls in ("functions", "procedures")
                        for o in objects.get(cls, [])
                        for f in o.get("secret_findings", [])]
@@ -821,8 +967,7 @@ def _databricks_introspect(params: Dict[str, str],
         "view_definitions": {v["name"]: v["definition"] for v in views},
         "secret_findings": secret_findings,
         "readiness": readiness,
-        "manifest_yaml": _yaml.safe_dump(manifest, sort_keys=False,
-                                         width=100),
+        "manifest_yaml": _manifest_yaml(base_tables, catalog),
         **objects,
     }
 
@@ -1316,13 +1461,6 @@ def _sqldb_introspect(key: str, params: Dict[str, str],
 
     base_tables = [t for t in tables.values()
                    if "VIEW" not in t["type"].upper()]
-    manifest = {"tables": [
-        {"name": t["name"], "schema": t["schema"],
-         **({"database": database} if database else {}),
-         "columns": [{"name": c["name"], "type": c["type"]}
-                     for c in t["columns"]]}
-        for t in base_tables]}
-    import yaml as _yaml
     return {
         "ok": True, "connector": key,
         "database": database, "schema": schema or "(all)",
@@ -1354,8 +1492,7 @@ def _sqldb_introspect(key: str, params: Dict[str, str],
             "verdict": "READY" if base_tables or convertible else
                        "NOTHING_TO_CONVERT",
         },
-        "manifest_yaml": _yaml.safe_dump(manifest, sort_keys=False,
-                                         width=100),
+        "manifest_yaml": _manifest_yaml(base_tables, database),
     }
 
 
@@ -1840,6 +1977,7 @@ def introspect(key: str, params: Dict[str, str],
                           "definition": str(r[2] or "")[:8000]})
         caps["tables"] = {"status": "available" if tables else "empty"}
         caps["views"] = {"status": "available" if views else "empty"}
+        primary_keys = _snowflake_primary_keys(cur, database, schema)
         objects = _snowflake_objects(cur, caps, database, schema)
         context["edition"] = _edition_from_caps(caps)
     except Exception as e:  # noqa: BLE001
@@ -1872,13 +2010,6 @@ def introspect(key: str, params: Dict[str, str],
 
     base_tables = [t for t in tables.values()
                    if "VIEW" not in t["type"].upper()]
-    manifest = {"tables": [
-        {"name": t["name"], "schema": t["schema"],
-         **({"database": database} if database else {}),
-         "columns": [{"name": c["name"], "type": c["type"]}
-                     for c in t["columns"]]}
-        for t in base_tables]}
-    import yaml as _yaml
     # every object that carries a body may have carried a credential with it
     secret_findings = [f for cls in ("functions", "procedures", "tasks",
                                      "pipes", "materialized_views",
@@ -1891,6 +2022,10 @@ def introspect(key: str, params: Dict[str, str],
         "total_rows": sum(t["rows"] for t in base_tables),
         "tables_with_columns": sum(1 for t in base_tables if t["columns"]),
         "column_sizes_measured": measured,
+        # load behaviour: tables with no declared PK fall back to FULL reload
+        "tables_with_primary_key": sum(
+            1 for t in base_tables
+            if primary_keys.get((t["schema"], t["name"]))),
         "views_convertible": len(convertible),
         "views_needing_review": needs_review,
         "verdict": "READY" if base_tables or convertible else
@@ -1911,7 +2046,6 @@ def introspect(key: str, params: Dict[str, str],
         "task_dag": _build_task_dag(objects.get("tasks", [])),
         "secret_findings": secret_findings,
         "readiness": readiness,
-        "manifest_yaml": _yaml.safe_dump(manifest, sort_keys=False,
-                                         width=100),
+        "manifest_yaml": _manifest_yaml(base_tables, database, primary_keys),
         **objects,
     }
