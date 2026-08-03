@@ -48,6 +48,46 @@ TARGET_CAPS = {
                       "dlq_native": False},
 }
 
+# The ROLE a target plays relative to the source estate. Only a "broker"
+# can replace the source — a processor computes on top of it and a sink
+# lands events out of it, so both leave the original broker in place.
+# Describing a warehouse purely in broker capabilities (FIFO, native DLQ)
+# is a category error: those are not downgrades, they are concepts that
+# do not apply. The role is reported so the caller can say so plainly.
+TARGET_KIND = {
+    "kafka": "broker", "confluent": "broker", "pulsar": "broker",
+    "rabbitmq": "broker", "eventhubs": "broker", "servicebus": "broker",
+    "kinesis": "broker", "pubsub": "broker", "mqtt": "broker",
+    "iothub": "broker",
+    "flink": "processor", "spark_streaming": "processor",
+    "databricks_streaming": "sink", "snowflake_streaming": "sink",
+    "dbt_streaming": "sink",
+    "scaffold": "spec",
+}
+
+_ROLE_NOTE = {
+    "processor": "computes on top of the estate — it does not transport "
+                 "events, so the source broker (or a replacement) is "
+                 "still required",
+    "sink": "lands events into tables — it has no publish/subscribe, so "
+            "the source broker (or a replacement) is still required to "
+            "feed it",
+    "spec": "is a specification artifact, not a running platform",
+}
+
+# Hard platform ceilings. Generation silently clamps to these; declaring
+# them here means the clamp is reported BEFORE the artifact is written.
+TARGET_LIMITS = {
+    "eventhubs": {"max_partitions": 32, "max_retention_days": 7},
+    "kinesis": {"max_retention_hours": 8760},
+    "pubsub": {"max_retention_days": 31},
+}
+
+# Platforms that can be imported but not generated to — modernization is
+# one-way out of these, by design.
+SOURCE_ONLY_PLATFORMS = ("ibmmq", "activemq", "nifi", "streamsets",
+                         "goldengate", "debezium")
+
 
 def _f(severity: str, code: str, message: str, obj: str = "",
        suggestion: str = "") -> dict:
@@ -58,7 +98,22 @@ def _f(severity: str, code: str, message: str, obj: str = "",
 def validate_cer(cer: CER, target: str = "") -> dict:
     findings: List[dict] = []
     caps = TARGET_CAPS.get(target, {})
+    limits = TARGET_LIMITS.get(target, {})
     names = {c.name for c in cer.channels}
+
+    # State the target's ROLE up front. Without this, a broker -> warehouse
+    # run reads as a like-for-like migration when the source broker in fact
+    # has to stay running to feed the target.
+    role = TARGET_KIND.get(target, "")
+    if role in _ROLE_NOTE:
+        findings.append(_f(
+            "WARNING", "TARGET_NOT_A_REPLACEMENT",
+            "Target %s %s — this is an addition to the estate, not a "
+            "replacement for %s" % (target, _ROLE_NOTE[role],
+                                    cer.source_platform or "the source"),
+            target,
+            "Plan to keep the source broker, or pick a broker target if "
+            "you intend to decommission it."))
 
     for ch in cer.channels:
         # delivery guarantees
@@ -96,6 +151,28 @@ def validate_cer(cer: CER, target: str = "") -> dict:
             findings.append(_f("ERROR", "PARTITION_INVALID",
                                "Channel '%s' has %d partitions"
                                % (ch.name, ch.partitions), ch.name))
+        # partition / retention ceilings — the generator clamps to these,
+        # so they are reported here rather than discovered in the artifact
+        max_p = limits.get("max_partitions", 0)
+        if max_p and ch.partitions > max_p:
+            findings.append(_f(
+                "WARNING", "PARTITION_LIMIT_EXCEEDED",
+                "Channel '%s' has %d partitions but target %s allows %d "
+                "— parallelism will be reduced on migration"
+                % (ch.name, ch.partitions, target, max_p), ch.name,
+                "Re-plan consumer parallelism for %d partitions, or "
+                "split the channel." % max_p))
+        max_days = limits.get("max_retention_days", 0)
+        max_hours = limits.get("max_retention_hours", 0)
+        cap_ms = (max_days * 86400000) or (max_hours * 3600000)
+        if cap_ms and ch.retention.time_ms > cap_ms:
+            findings.append(_f(
+                "WARNING", "RETENTION_LIMIT_EXCEEDED",
+                "Channel '%s' retains %d ms but target %s caps at %d ms "
+                "— older events will not be replayable"
+                % (ch.name, ch.retention.time_ms, target, cap_ms),
+                ch.name,
+                "Offload history to object storage before cutover."))
         # replication / loss
         if ch.replication == 1 and ch.kind in ("topic", "stream"):
             findings.append(_f(
@@ -217,7 +294,14 @@ _AUTOMATABLE_ENGINES = {"ksqldb", "flink", "spark", "", "rule",
                         "debezium"}
 
 
-def event_intelligence(cer: CER, validation: dict) -> dict:
+def event_intelligence(cer: CER, validation: dict,
+                       generation: dict = None) -> dict:
+    """`generation` is the GenReport dict returned by generate_events().
+
+    Without it the scores describe the IMPORT only (how much of the source
+    was understood). With it they describe the OUTPUT — anything a target
+    could not express is subtracted, so a run that dropped content can no
+    longer report 100%."""
     inv = cer.inventory()
     units = (inv["channels"] + inv["streaming_jobs"] +
              inv["cdc_sources"] + inv["iot_sources"]) or 1
@@ -275,8 +359,45 @@ def event_intelligence(cer: CER, validation: dict) -> dict:
     risks = [f["code"] + ": " + f["message"]
              for f in validation["findings"]
              if f["severity"] in ("ERROR", "WARNING")][:20]
+
+    # Import-side score: how much of the source was understood.
+    score = round(100.0 * auto_units / units, 1)
+    gen_block = None
+    if generation:
+        skipped = list(generation.get("unemitted") or [])
+        # Coverage needs a denominator that counts everything a generator
+        # could skip — `units` covers only channels/jobs/cdc/iot, so
+        # subtracting a skipped producer from it would compare unlike
+        # things and understate the score.
+        emittable = (units + len(cer.producers) + len(cer.consumers)
+                     + len(cer.schemas) + len(cer.security)) or 1
+        lost = len({s.get("name") for s in skipped if s.get("name")})
+        coverage = round(100.0 * max(0, emittable - lost) / emittable, 1)
+        score = min(score, coverage)
+        gen_block = {
+            "target": generation.get("target", ""),
+            "target_role": generation.get("target_role", ""),
+            "coverage_percent": coverage,
+            "unemitted": skipped,
+            "adjustments": list(generation.get("notes") or []),
+        }
+        manual = manual + [
+            {"severity": "MANUAL", "code": "NOT_EMITTED_FOR_TARGET",
+             "message": "%s '%s' was not written to the %s artifacts — %s"
+                        % (s.get("kind", "object"), s.get("name", "?"),
+                           generation.get("target", "target"),
+                           s.get("reason", "unsupported")),
+             "obj": s.get("name", ""), "detail": "", "suggestion":
+                 "Implement this by hand in the generated artifact."}
+            for s in skipped]
+        risks = risks + [
+            "NOT_EMITTED_FOR_TARGET: %s '%s' — %s"
+            % (s.get("kind", "object"), s.get("name", "?"),
+               s.get("reason", "unsupported")) for s in skipped][:20]
     return {
-        "automation_score": round(100.0 * auto_units / units, 1),
+        "automation_score": score,
+        "import_understanding_score": round(100.0 * auto_units / units, 1),
+        "generation": gen_block,
         "streaming_complexity": complexity,
         "complexity_level": ("LOW" if complexity < 20 else
                              "MEDIUM" if complexity < 45 else
