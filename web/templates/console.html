@@ -558,7 +558,11 @@
       <h1>Overview</h1>
       <div class="sub">Monitor your data estate, modernization programs, pipelines, and validation health.</div>
     </div>
-    <div style="display:flex;gap:8px">
+    <div style="display:flex;gap:8px;align-items:center">
+      <span id="dashWindowWrap" style="display:none;align-items:center;gap:8px">
+        <label for="dashWindow" style="font-size:12.5px;color:var(--muted);white-space:nowrap">Summarize</label>
+        <select id="dashWindow" style="width:auto;min-width:140px" aria-label="How many recent modernization runs to summarize"></select>
+      </span>
       <button class="secondary" style="margin-top:0" onclick="document.querySelector('nav a[data-page=marketplace]').click()">Connect source</button>
       <button style="margin-top:0" onclick="document.querySelector('nav a[data-page=convert]').click()">Start modernization</button>
     </div>
@@ -573,7 +577,12 @@
       <button type="button" class="secondary" id="modTableNext" style="margin:0;padding:5px 12px">Next &rarr;</button>
     </div>
   </div>
-  <div class="panel"><h3 style="margin-bottom:10px">Recent activity</h3>
+  <div class="panel">
+    <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:12px">
+      <h3 style="flex:1;min-width:160px">Recent activity</h3>
+      <label for="jobStatus" style="font-size:12.5px;color:var(--muted);white-space:nowrap">Status</label>
+      <select id="jobStatus" style="width:auto;min-width:160px" aria-label="Filter recent activity by status"></select>
+    </div>
     <table id="jobTable"><tr><th>When</th><th>Type</th><th>Project</th><th>Status</th><th>Key figures</th><th></th></tr></table>
     <div id="jobTablePager" style="display:none;align-items:center;gap:12px;margin-top:12px;flex-wrap:wrap">
       <button type="button" class="secondary" id="jobTablePrev" style="margin:0;padding:5px 12px">&larr; Previous</button>
@@ -3369,6 +3378,57 @@ function mcard(n, l, d) {
     + (d ? '<div class="d">' + d + '</div>' : '') + '</div>';
 }
 
+/* ---- Overview summary window ----------------------------------------
+   How many of the most recent COMPLETED modernizations are opened and
+   summarized on the Overview. Only the report-derived figures depend on
+   it (assets analyzed, validation pass rate, manual review items, and
+   the Active-modernizations table) — the whole-estate counts
+   (connected systems, modernizations, models scaffolded) always cover
+   everything. 0 means "all". Persisted so the choice survives page
+   navigation and reloads. */
+const DASH_WINDOW_STEPS = [8, 10, 25, 50];
+let dashWindow = (() => {
+  const v = parseInt(localStorage.getItem('mb_dash_window'), 10);
+  return Number.isFinite(v) && v >= 0 ? v : 8;
+})();
+
+/* Offer only the steps that would actually narrow the list, plus "all" —
+   "Last 50" against 34 runs is a no-op the user shouldn't have to reason
+   about. A persisted window that no longer narrows collapses to "all",
+   so the label never over-promises the data behind it. */
+function renderDashWindow(total) {
+  const wrap = $('#dashWindowWrap'), sel = $('#dashWindow');
+  const steps = DASH_WINDOW_STEPS.filter(n => n < total);
+  // The preference itself is left alone — one that no longer narrows
+  // anything just READS as "all", so it comes back if the estate grows.
+  const eff = steps.indexOf(dashWindow) === -1 ? 0 : dashWindow;
+  if (!sel) return eff;
+  if (wrap) wrap.style.display = steps.length ? 'inline-flex' : 'none';
+  sel.innerHTML = steps.map(n => '<option value="' + n + '">Last ' + n + ' runs</option>').join('')
+    + '<option value="0">All ' + total + ' runs</option>';
+  sel.value = String(eff);
+  sel.onchange = () => {
+    dashWindow = parseInt(sel.value, 10) || 0;
+    localStorage.setItem('mb_dash_window', String(dashWindow));
+    pagerState('modTable').page = 1;   // a shrunken window must not strand the table mid-pager
+    sel.disabled = true;
+    loadDashboard().finally(() => { sel.disabled = false; });
+  };
+  return eff;
+}
+
+/* Fetch with a concurrency ceiling — "All runs" can mean 100 report
+   fetches, and firing them at once would stall the server that is also
+   serving the console. Results stay index-aligned with `items`. */
+async function mapLimit(items, limit, fn) {
+  const out = new Array(items.length);
+  let next = 0;
+  await Promise.all(Array.from({length: Math.min(limit, items.length)}, async () => {
+    while (next < items.length) { const i = next++; out[i] = await fn(items[i], i); }
+  }));
+  return out;
+}
+
 // Generic client-side table pager — same shape as the hand-rolled Data
 // Estate pager (estatePage/estatePageSize/#estatePager), pulled out so
 // every growing list (jobs, reports, governance queue, secrets, members)
@@ -3422,6 +3482,36 @@ function pagerHtml(id) {
     + '</div>';
 }
 
+/* ---- Recent activity status filter -----------------------------------
+   '' = every status. Options are derived from the jobs actually present
+   (with counts) rather than a hardcoded list, so a status the backend
+   starts emitting shows up here without a UI change. Persisted like the
+   summary window. */
+let jobStatusFilter = localStorage.getItem('mb_job_status') || '';
+
+function renderJobStatusFilter(jobs, rerender) {
+  const sel = $('#jobStatus');
+  if (!sel) return;
+  const counts = {};
+  jobs.forEach(j => { const s = j.status || 'unknown'; counts[s] = (counts[s] || 0) + 1; });
+  const names = Object.keys(counts).sort();
+  // A persisted status with nothing behind it right now would silently
+  // show an empty table, so fall back to "all" instead.
+  if (jobStatusFilter && !counts[jobStatusFilter]) {
+    jobStatusFilter = '';
+    localStorage.setItem('mb_job_status', '');
+  }
+  sel.innerHTML = '<option value="">All statuses (' + jobs.length + ')</option>'
+    + names.map(s => '<option value="' + esc(s) + '">' + esc(s) + ' (' + counts[s] + ')</option>').join('');
+  sel.value = jobStatusFilter;
+  sel.onchange = () => {
+    jobStatusFilter = sel.value;
+    localStorage.setItem('mb_job_status', jobStatusFilter);
+    pagerState('jobTable').page = 1;   // page 8 of "done" is not page 8 of "failed"
+    rerender();
+  };
+}
+
 async function loadDashboard() {
   const {jobs} = await api('/api/jobs');
   gJobsCache = jobs;
@@ -3429,8 +3519,10 @@ async function loadDashboard() {
   try { conns = (await api('/api/v1/connections')).connections || []; } catch (e) {}
   const converts = jobs.filter(j => j.kind === 'convert' && j.status === 'done');
   const scaffolds = jobs.filter(j => j.kind === 'scaffold' && j.status === 'done');
-  const reports = await Promise.all(converts.slice(0, 8).map(j => jobReport(j.id)));
-  const withR = converts.slice(0, 8).map((j, i) => ({job: j, r: reports[i]})).filter(x => x.r);
+  const win = renderDashWindow(converts.length);   // 0 = all
+  const windowed = win ? converts.slice(0, win) : converts;
+  const reports = await mapLimit(windowed, 8, j => jobReport(j.id));
+  const withR = windowed.map((j, i) => ({job: j, r: reports[i]})).filter(x => x.r);
   const assets = withR.reduce((n, x) => n + (x.r.mappings ? x.r.mappings.length : 0), 0);
   const verdicts = withR.map(x => (x.r.migration_validation || {}).verdict).filter(Boolean);
   const passRate = verdicts.length
@@ -3441,10 +3533,10 @@ async function loadDashboard() {
   const inFlightConverts = jobs.filter(j => j.kind === 'convert' && ['running', 'queued', 'pending', 'in_progress'].includes(j.status)).length;
   $('#dashCards').innerHTML =
     mcard(conns.filter(x => x.state === 'connected').length || '--', 'Connected systems', conns.length ? conns.length + ' saved' : 'Connect under Integrations')
-    + mcard(assets || '--', 'Assets analyzed', withR.length ? 'across ' + withR.length + ' recent runs' : '')
+    + mcard(assets || '--', 'Assets analyzed', withR.length ? 'across ' + withR.length + ' of ' + converts.length + ' runs' : '')
     + mcard(converts.length || '--', 'Modernizations', inFlightConverts + ' in flight')
     + mcard(pipelines || '--', 'Models scaffolded', scaffolds.length ? scaffolds.length + ' scaffold runs' : '')
-    + mcard(passRate, 'Validation pass rate', verdicts.length ? 'last ' + verdicts.length + ' runs' : 'no validated runs yet')
+    + mcard(passRate, 'Validation pass rate', verdicts.length ? 'from ' + verdicts.length + ' of ' + converts.length + ' runs' : 'no validated runs yet')
     + mcard(manual || (withR.length ? 0 : '--'), 'Manual review items', '');
   const mrows = withR.map(({job, r}) => {
     const co = r.conversion_output || {};
@@ -3465,7 +3557,7 @@ async function loadDashboard() {
   renderPage('modTable', mrows, modHeader, modEmpty, 'programs');
   bindPager('modTable', () => renderPage('modTable', mrows, modHeader, modEmpty, 'programs'));
 
-  const jrows = jobs.map(j => {
+  const jobRow = j => {
     const s = j.summary || {};
     let figures = '';
     if (j.kind === 'convert') figures = (s.automated_conversion_rate||0) + '% automated';
@@ -3480,17 +3572,36 @@ async function loadDashboard() {
     return '<tr><td>' + (j.created||'').replace('T',' ') + '</td><td>' + j.kind
       + '</td><td><a class="jd" data-id="' + esc(j.id) + '" title="Open job detail" style="color:var(--accent);cursor:pointer;font-weight:600">'
       + esc(j.project||'—') + '</a></td><td>' + st + '</td><td>' + figures + '</td><td>' + links + '</td></tr>';
-  });
+  };
   const jobHeader = '<tr><th>When</th><th>Type</th><th>Project</th><th>Status</th><th>Key figures</th><th></th></tr>';
-  const jobEmpty = '<tr><td colspan=6 style="color:var(--muted)">No jobs yet — run a conversion, scan, or scaffold.</td></tr>';
+  // Distinguish "nothing ran yet" from "the filter hides everything" —
+  // the second needs a way back, not onboarding copy.
+  const jobEmpty = () => jobStatusFilter
+    ? '<tr><td colspan=6 style="color:var(--muted)">No <b>' + esc(jobStatusFilter) + '</b> jobs. '
+      + '<a id="jobStatusClear" style="color:var(--accent);cursor:pointer">Show all statuses</a></td></tr>'
+    : '<tr><td colspan=6 style="color:var(--muted)">No jobs yet — run a conversion, scan, or scaffold.</td></tr>';
   const renderJobTable = () => {
-    renderPage('jobTable', jrows, jobHeader, jobEmpty, 'jobs', () => {
+    // Same normalization the option list uses — a job with no status is
+    // bucketed as "unknown" in both places or selecting it matches nothing.
+    const shown = jobStatusFilter
+      ? jobs.filter(j => (j.status || 'unknown') === jobStatusFilter) : jobs;
+    const noun = jobStatusFilter ? jobStatusFilter + ' jobs' : 'jobs';
+    renderPage('jobTable', shown.map(jobRow), jobHeader, jobEmpty(), noun, () => {
       $('#jobTable').querySelectorAll('.jf').forEach(a =>
         a.onclick = () => openJobFindings(a.dataset.id).catch(e => mbAlert(e.message)));
       $('#jobTable').querySelectorAll('.jd').forEach(a =>
         a.onclick = () => openJobDetail(a.dataset.id));
+      const clear = $('#jobStatusClear');
+      if (clear) clear.onclick = () => {
+        jobStatusFilter = '';
+        localStorage.setItem('mb_job_status', '');
+        pagerState('jobTable').page = 1;
+        $('#jobStatus').value = '';
+        renderJobTable();
+      };
     });
   };
+  renderJobStatusFilter(jobs, renderJobTable);
   renderJobTable();
   bindPager('jobTable', renderJobTable);
 }
