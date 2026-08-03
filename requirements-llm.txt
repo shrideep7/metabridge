@@ -1,0 +1,7 @@
+# MetaBridge — optional AI advisory features (extra: llm).
+# Advisory-only and off by default; install only if AI features are enabled.
+#   pip install -r requirements-llm.txt
+
+-r requirements.txt
+
+anthropic[bedrock]>=0.34

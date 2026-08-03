@@ -1,0 +1,79 @@
+# =====================================================================
+# MetaBridge — complete dependency manifest (single file).
+#
+#   pip install -r requirements.txt
+#   pip install -e . --no-deps          # then MetaBridge itself
+#
+# Covers everything needed to run the web console, REST API and CLI:
+# equivalent to  pip install ".[web,dtd,connectors,commercial]"
+#
+# Optional groups (AI advisory, tests) are listed at the bottom,
+# commented out. Uncomment the block you need — nothing else to install.
+#
+# Bounds are kept in sync with pyproject.toml — update BOTH together.
+# Verified 2026-08-03 against an AST scan of every import in
+# src/, web/ and tests/: no undeclared runtime import remains.
+# =====================================================================
+
+# --- core engine (pyproject [project].dependencies) ------------------
+sqlglot>=25.0,<31           # SQL/expression transpiler spine (IR + CIR)
+PyYAML>=6.0                 # function/type registries, transform maps
+typer>=0.9                  # CLI entry point (metabridge.cli:app)
+jinja2>=3.1                 # see NOTE-JINJA at the bottom of this file
+cryptography>=41.0          # Ed25519 signing: marketplace packages, license files
+
+# --- web console + REST API (extra: web) -----------------------------
+fastapi>=0.110
+uvicorn[standard]>=0.29     # [standard] pulls python-dotenv, websockets, httptools
+python-multipart>=0.0.9     # REQUIRED but never imported by name: FastAPI needs it
+                            # at startup for the UploadFile/Form routes in web/app.py
+pillow>=10.0                # avatar/image handling
+openpyxl>=3.1               # .xlsx exports (ai_readiness, assessment)
+python-docx>=1.0            # .docx exports        -> imported as `docx`
+python-pptx>=0.6.23         # .pptx exports        -> imported as `pptx`
+reportlab>=4.0              # PDF exports
+
+# --- DTD / XML parsing (extra: dtd) ----------------------------------
+lxml>=5.0                   # PowerCenter XML validation
+
+# --- live connector drivers (extra: connectors) ----------------------
+# Without these the deterministic engines still work; only the live
+# actions fail ("Test connection" / "Analyze database" / "Load").
+# Snowflake, Databricks, PostgreSQL and Redshift are the certified
+# live connectors today (see metabridge.livecheck.LIVE_CONNECTORS).
+snowflake-connector-python>=3.0
+psycopg2-binary>=2.9        # PostgreSQL AND Amazon Redshift share this wire path
+databricks-sql-connector>=3.0
+
+# --- control plane (extra: commercial) -------------------------------
+sqlalchemy>=2.0,<3          # multi-tenant control plane; SQLite dev, PostgreSQL prod
+                            # (set CONTROLPLANE_DATABASE_URL for RDS)
+
+# =====================================================================
+# OPTIONAL — uncomment the group you want.
+# =====================================================================
+
+# --- AI advisory features (extra: llm) -------------------------------
+# Advisory-only and OFF by default. Only needed if AI features
+# are enabled; the engines are fully deterministic without it.
+# anthropic[bedrock]>=0.34
+
+# --- development / test (extra: dev) ---------------------------------
+# Needed to run `python -m pytest -q` (~1,745 tests).
+# httpx is not imported directly — it is the transport that
+# fastapi.testclient.TestClient is built on, so tests fail without it.
+# pytest>=8.0
+# httpx>=0.27
+
+# =====================================================================
+# NOTE-JINJA
+# jinja2 is declared here because pyproject.toml declares it, and
+# removing it from only one of the two files would desync them.
+# Be aware, though, that nothing in the codebase imports it: MetaBridge
+# handles dbt's Jinja syntax with its own regexes (_JINJA_STMT_RE,
+# _render_jinja, _shield_jinja) rather than rendering templates, there
+# are no .j2 files, and web/app.py serves static HTML from `_TPL`
+# instead of Jinja2Templates. It is a safe candidate for removal from
+# pyproject.toml + this file together, but that is a deliberate change
+# and is intentionally NOT made here.
+# =====================================================================

@@ -1,0 +1,8 @@
+# MetaBridge — development / test dependencies.
+#   pip install -r requirements-dev.txt
+# Includes everything in requirements.txt.
+
+-r requirements.txt
+
+pytest>=8.0
+httpx>=0.27                 # fastapi.testclient.TestClient backend
