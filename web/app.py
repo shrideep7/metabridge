@@ -12,6 +12,7 @@ import datetime
 import io
 import json
 import os
+import re
 import shutil
 import uuid
 import zipfile
@@ -1410,14 +1411,40 @@ def _primary_report_url(job_id: str, job_dir: Path) -> str:
     return ""
 
 
+def _job_capabilities(job_dir: Path) -> dict:
+    """What a job can actually offer RIGHT NOW, decided from its own output.
+
+    The console renders per-row actions (findings / detail / zip) from these
+    flags instead of assuming every finished job supports all three. Only
+    conversion and governance jobs write a report.json, so 'findings' on a
+    twin/objects/analyze/scaffold row was a guaranteed 404; and a job whose
+    output directory is empty would still stream a valid-but-empty zip.
+    """
+    out = job_dir / "output"
+    has_findings = any((out / n).exists() for n in
+                       ("conversion_report.json", "governance_report.json"))
+    has_output = False
+    if out.exists():
+        has_output = any(f.is_file() for f in out.rglob("*"))
+    return {"has_findings": has_findings, "has_download": has_output}
+
+
 @app.get("/api/jobs")
 def list_jobs():
     jobs = []
     for meta_file in _jobs_dir().glob("*/meta.json"):
         try:
-            jobs.append(json.loads(meta_file.read_text(encoding="utf-8")))
+            meta = json.loads(meta_file.read_text(encoding="utf-8"))
         except Exception:  # noqa: BLE001
             continue
+        # Cheap enough to compute for the <=100 jobs we return, and it keeps
+        # the console from offering actions that cannot succeed.
+        try:
+            meta.update(_job_capabilities(meta_file.parent))
+        except OSError:
+            meta.setdefault("has_findings", False)
+            meta.setdefault("has_download", False)
+        jobs.append(meta)
     jobs.sort(key=lambda j: j.get("created", ""), reverse=True)
     return {"jobs": jobs[:100]}
 
@@ -1484,6 +1511,89 @@ _SINGLE_FILE_SUFFIXES = (
 )
 
 
+def _label_from_upload(filename: str) -> str:
+    """A human-recognizable project label derived from what the user uploaded.
+
+    This is DISPLAY identity only — deliberately separate from
+    ``pipeline.name``, which the generators use to name the dbt project, the
+    Databricks bundle and generated artifact files (~30 call sites). Changing
+    that would rename people's outputs; changing this only relabels a row.
+
+    ``_extract_zip`` returns the job's own ``input/`` directory whenever the
+    upload is a flat zip or a single file, so the parser's ``Path(root).stem``
+    yields the literal string "input" — an internal directory name shown to
+    users as their project. The uploaded filename is the best signal we have,
+    and it is something the user actually chose.
+    """
+    stem = Path(filename or "").stem.strip()
+    # ".tar.gz" and friends leave a residual suffix on the stem.
+    while True:
+        nxt = Path(stem).stem
+        if nxt == stem:
+            break
+        stem = nxt
+    stem = re.sub(r"[^0-9A-Za-z._-]+", "_", stem).strip("._-")
+    return stem[:64]
+
+
+def _inline_label(body, fallback: str = "") -> str:
+    """Job label for the JSON APIs that take inline ``files``: the caller's
+    own ``project``, else the first uploaded filename, else a kind fallback.
+    Keeps API-created jobs identifiable in the console instead of blank."""
+    try:
+        given = str((body or {}).get("project", "") or "").strip()
+    except AttributeError:
+        return fallback
+    if given:
+        return given
+    files = (body or {}).get("files")
+    if isinstance(files, list) and files:
+        first = files[0]
+        if isinstance(first, dict):
+            lbl = _label_from_upload(str(first.get("name", "") or ""))
+            if lbl:
+                return lbl
+    conn = str((body or {}).get("connection_id", "") or "").strip()
+    if conn:
+        return conn
+    return fallback
+
+
+def _orch_label(body, cor) -> str:
+    """Job label for orchestration jobs: caller's name, else the detected
+    platform (e.g. "airflow_workflows")."""
+    try:
+        given = str((body or {}).get("project", "") or "").strip()
+    except AttributeError:
+        given = ""
+    if given:
+        return given
+    platform = str(getattr(cor, "source_platform", "") or "").strip()
+    return "%s_workflows" % platform if platform else "orchestration"
+
+
+def _events_label(body, cer) -> str:
+    """Job label for streaming/event jobs: caller's name, else the detected
+    platform (e.g. "kafka_events") so the row is never blank."""
+    try:
+        given = str((body or {}).get("project", "") or "").strip()
+    except AttributeError:
+        given = ""
+    if given:
+        return given
+    platform = str(getattr(cer, "source_platform", "") or "").strip()
+    return "%s_events" % platform if platform else "events"
+
+
+def _job_label(upload_name: str, parsed_name: str = "") -> str:
+    """Display label for a job: the parser's name unless it is the useless
+    "input" placeholder, in which case fall back to the uploaded filename."""
+    candidate = (parsed_name or "").strip()
+    if candidate and candidate.lower() != "input":
+        return candidate
+    return _label_from_upload(upload_name) or candidate or ""
+
+
 async def _extract_zip(file: UploadFile, dest: Path) -> Path:
     name = (file.filename or "").lower()
     if not name.endswith(".zip"):
@@ -1535,6 +1645,7 @@ async def api_analyze(
     file: UploadFile = File(...),
     source: str = Form(""),
     dialect: str = Form(""),
+    project: str = Form(""),
 ):
     """Inventory the models in an upload (kept server-side so a follow-up
     convert can reference it via from_job — no re-upload)."""
@@ -1566,7 +1677,13 @@ async def api_analyze(
         "depends_on": m.depends_on,
         "issues": len(m.issues),
     } for m in pipeline.mappings]
-    meta = _finish_job(job_dir, project=pipeline.name, source_format=src,
+    # User-supplied name wins; otherwise the parser's name, unless that is the
+    # "input" placeholder leaking our own directory layout — see _job_label().
+    meta = _finish_job(job_dir,
+                       project=(project.strip()
+                                or _job_label(file.filename or "",
+                                              pipeline.name)),
+                       source_format=src,
                        summary={"objects_total": len(models)})
     return {**meta, "models": sorted(models, key=lambda x: x["name"]),
             "detection": detection,
@@ -1575,11 +1692,22 @@ async def api_analyze(
 
 async def _convert_impl(file, from_job: str, target: str, source: str,
                         dialect: str, llm_assist: bool, model_list,
-                        override_map, options: dict) -> dict:
+                        override_map, options: dict,
+                        project: str = "") -> dict:
     job_dir = _new_job("convert")
+    # Label inherited from the analyze job when converting via from_job: that
+    # job already resolved (or was given) a name, and the two rows describe the
+    # same upload, so they must not disagree in the console.
+    inherited = ""
     try:
         if from_job:
             root = _job_input_root(_job_dir(from_job))
+            try:
+                inherited = str(json.loads(
+                    (_job_dir(from_job) / "meta.json").read_text(
+                        encoding="utf-8")).get("project", "") or "")
+            except (ValueError, OSError):
+                inherited = ""
         elif file is not None and getattr(file, "filename", ""):
             root = await _extract_zip(file, job_dir / "input")
         else:
@@ -1601,8 +1729,15 @@ async def _convert_impl(file, from_job: str, target: str, source: str,
         raise HTTPException(500, "Conversion failed: %s — %s. The job was "
                             "marked failed; other projects are unaffected."
                             % (type(e).__name__, str(e)[:300]))
+    # Precedence: explicit user name > label inherited from the analyze job >
+    # the parser's name (with the "input" placeholder replaced). report["project"]
+    # is pipeline.name and still names the generated artifacts — only the job's
+    # DISPLAY label is adjusted here.
+    label = (project.strip() or inherited
+             or _job_label(getattr(file, "filename", "") or "",
+                           report["project"]))
     meta = _finish_job(
-        job_dir, project=report["project"], source_format=report["source_format"],
+        job_dir, project=label, source_format=report["source_format"],
         target_format=report["target_format"], summary=report["summary"],
         validation=report.get("validation"),
         migration_validation=report.get("migration_validation"),
@@ -1650,7 +1785,8 @@ async def api_convert(request: Request):
             llm_assist=bool(body.get("llm_assist", False)),
             model_list=body.get("models"),
             override_map=body.get("overrides"),
-            options=options)
+            options=options,
+            project=str(body.get("project", "") or ""))
     form = await request.form()
     try:
         models = str(form.get("models", "") or "")
@@ -1670,7 +1806,8 @@ async def api_convert(request: Request):
         dialect=str(form.get("dialect", "") or ""),
         llm_assist=str(form.get("llm_assist", "")).lower()
         in ("true", "1", "on"),
-        model_list=model_list, override_map=override_map, options=options)
+        model_list=model_list, override_map=override_map, options=options,
+        project=str(form.get("project", "") or ""))
 
 
 @app.post("/api/detect")
@@ -1753,7 +1890,8 @@ async def legacy_sql_analyze(request: Request):
             source = "sql"
     pipeline = parse_input(str(root), source)
     procs = pipeline.metadata.get("procedural_units", [])
-    meta = _finish_job(job_dir, source_format=source)
+    meta = _finish_job(job_dir, source_format=source,
+                       project=_inline_label(body, "analysis"))
     return {
         "project_id": meta["id"],
         "detected_dialect": pipeline.metadata.get(
@@ -1792,7 +1930,7 @@ async def legacy_sql_convert(request: Request):
         raise HTTPException(422, "target_format is required")
     upload = _new_job("upload")
     _write_inline_files(body.get("files"), upload / "input")
-    _finish_job(upload)
+    _finish_job(upload, project=_inline_label(body, "upload"))
     opts = dict(body.get("options") or {})
     options = {
         "generate_lineage": bool(opts.get("generate_lineage", True)),
@@ -1862,7 +2000,8 @@ async def etl_analyze(request: Request):
     from metabridge.report.complexity import score_pipeline
     cx = score_pipeline(pipeline)
     cx.pop("assets", None)
-    meta = _finish_job(job_dir, source_format=source)
+    meta = _finish_job(job_dir, source_format=source,
+                       project=_inline_label(body, "analysis"))
     issues = pipeline.all_issues()
     return {
         "project_id": meta["id"],
@@ -1898,7 +2037,7 @@ async def etl_convert(request: Request):
         raise HTTPException(422, "target_format is required")
     upload = _new_job("upload")
     root = _write_inline_files(body.get("files"), upload / "input")
-    _finish_job(upload)
+    _finish_job(upload, project=_inline_label(body, "upload"))
     source = str(body.get("source_format", "") or "auto")
     if source == "auto":
         source = detect_format(str(root))
@@ -2008,7 +2147,8 @@ async def assessment_run(request: Request):
             raise HTTPException(422, str(e))
         out = job_dir / "output"
         exports = export_all(a, str(out))
-        meta = _finish_job(job_dir, source_format=a["source_format"])
+        meta = _finish_job(job_dir, source_format=a["source_format"],
+                           project=_inline_label(body, "assessment"))
         # explicit empty-result signal for the UI (valid parse, nothing to
         # assess) vs. a genuine success with objects
         empty = (a.get("executive_summary", {}) or {}).get(
@@ -2111,7 +2251,8 @@ async def ai_readiness_run(request: Request):
         a = assess_ai_readiness(str(root), source, twin=twin)
         out = job_dir / "output"
         exports = export_all(a, str(out))
-        meta = _finish_job(job_dir, source_format=a["source_format"])
+        meta = _finish_job(job_dir, source_format=a["source_format"],
+                           project=_inline_label(body, "ai_readiness"))
         empty = (a.get("object_count", 0) == 0
                  and a.get("field_count", 0) == 0)
         return {"assessment_id": meta["id"], "exports": exports,
@@ -2532,7 +2673,8 @@ async def docs_run(request: Request):
                 files[fmt] = "%s.%s" % (slug, fmt)
             manifest.append({"slug": slug, "title": doc.title,
                              "files": files})
-        meta = _finish_job(job_dir)
+        meta = _finish_job(job_dir,
+                           project=str(ctx.get("project", "") or "docs"))
         return {"docs_id": meta["id"], "documents": manifest,
                 "formats": formats, "project": ctx["project"]}
     except HTTPException:
@@ -2880,7 +3022,8 @@ async def agents_run(request: Request):
             ctx, task_types=task_types,
             requested_by=user.get("email", "") or "operator",
             created_at=_today())
-        _finish_job(job_dir, run_id=report["run_id"])
+        _finish_job(job_dir, run_id=report["run_id"],
+                    project=_inline_label(body, "agent_run"))
         _announce_pending_approvals(report["run_id"],
                                     user.get("email", "") or "operator")
         report["approvals"] = [_approval_view(a, user) for a in
@@ -3715,7 +3858,10 @@ async def twin_build(request: Request):
         out.mkdir(parents=True, exist_ok=True)
         (out / "twin.json").write_text(json.dumps(doc, indent=1), encoding="utf-8")
         _write_twin(doc)
-        meta = _finish_job(job_dir)
+        # The twin already carries an estate name — use it as the job label
+        # rather than leaving the row blank.
+        meta = _finish_job(job_dir,
+                           project=str(body.get("name", "") or "estate"))
         return {"twin_id": meta["id"], **doc}
     except HTTPException:
         raise
@@ -3842,7 +3988,8 @@ async def events_analyze(request: Request):
     out = job_dir / "output"
     out.mkdir(parents=True, exist_ok=True)
     (out / "cer.json").write_text(json.dumps(cer.to_dict(), indent=1), encoding="utf-8")
-    meta = _finish_job(job_dir, source_format=cer.source_platform)
+    meta = _finish_job(job_dir, source_format=cer.source_platform,
+                       project=_events_label(body, cer))
     inv = cer.inventory()
     return {
         "event_id": meta["id"],
@@ -3889,7 +4036,8 @@ async def events_convert(request: Request):
         except (ValueError, FileNotFoundError) as e:
             _finish_job(job, status="failed", error=str(e))
             raise HTTPException(422, str(e))
-        _finish_job(job, source_format=cer.source_platform)
+        _finish_job(job, source_format=cer.source_platform,
+                    project=_events_label(body, cer))
     job_dir = _new_job("events_convert")
     out = job_dir / "output"
     out.mkdir(parents=True, exist_ok=True)
@@ -3905,7 +4053,8 @@ async def events_convert(request: Request):
     (out / "event_intelligence.json").write_text(
         json.dumps(intelligence, indent=1), encoding="utf-8")
     meta = _finish_job(job_dir, source_format=cer.source_platform,
-                       target_format=target)
+                       target_format=target,
+                       project=_events_label(body, cer))
     return {"event_id": meta["id"],
             "source_platform": cer.source_platform, "target": target,
             "generated": manifest["files"],
@@ -3936,7 +4085,8 @@ async def events_intelligence(request: Request):
         out.mkdir(parents=True, exist_ok=True)
         (out / "cer.json").write_text(json.dumps(cer.to_dict(),
                                                  indent=1), encoding="utf-8")
-        _finish_job(job_dir, source_format=cer.source_platform)
+        _finish_job(job_dir, source_format=cer.source_platform,
+                    project=_events_label(body, cer))
     intel = analyze_event_intelligence(cer)
     (job_dir / "output" / "event_intelligence_layer.json").write_text(
         json.dumps(intel, indent=1), encoding="utf-8")
@@ -4070,7 +4220,8 @@ async def sap_analyze(request: Request):
     cx = score_pipeline(pipeline)
     cx.pop("assets", None)
     conf = score_pipeline_confidence(pipeline)
-    meta = _finish_job(job_dir, source_format="sap")
+    meta = _finish_job(job_dir, source_format="sap",
+                       project=_inline_label(body, "sap_analysis"))
     issues = pipeline.all_issues()
     sap_objects = pipeline.metadata.get("sap_objects", {})
     return {
@@ -4105,7 +4256,7 @@ async def sap_convert(request: Request):
         raise HTTPException(422, "target_format is required")
     upload = _new_job("upload")
     root = _write_inline_files(body.get("files"), upload / "input")
-    _finish_job(upload)
+    _finish_job(upload, project=_inline_label(body, "upload"))
     opts = dict(body.get("options") or {})
     options = {
         "generate_lineage": bool(opts.get("generate_lineage", True)),
@@ -4201,6 +4352,8 @@ async def objects_inventory(request: Request):
     write_inventory_report(inv_doc, classification, str(out))
     meta = _finish_job(job_dir, source_format=row["connector"],
                        target_format=target,
+                       project=str(body.get("project", "") or "")
+                       or "%s_objects" % row["connector"],
                        summary={"objects": classification["objects_total"],
                                 "automation_pct":
                                     classification["automation_pct"]})
@@ -4250,7 +4403,9 @@ async def objects_convert(request: Request):
     manifest = generate_object_package(inv, classification, target,
                                        str(out / "objects"))
     meta = _finish_job(job_dir, source_format=inv.connector,
-                       target_format=target, summary=manifest)
+                       target_format=target, summary=manifest,
+                       project=str(body.get("project", "") or "")
+                       or "%s_objects" % inv.connector)
     return {"package_id": meta["id"], "target": target, **manifest,
             "download_url": "/api/jobs/%s/download" % meta["id"]}
 
@@ -4322,7 +4477,8 @@ async def orchestration_analyze(request: Request):
         json.dumps(intelligence, indent=1), encoding="utf-8")
     (out / "orchestration_resilience.json").write_text(
         json.dumps(resilience, indent=1), encoding="utf-8")
-    meta = _finish_job(job_dir, source_format=cor.source_platform)
+    meta = _finish_job(job_dir, source_format=cor.source_platform,
+                       project=_orch_label(body, cor))
     return {"orchestration_id": meta["id"],
             **_orch_analyze_payload(cor, validation, intelligence,
                                     resilience)}
@@ -4358,7 +4514,8 @@ async def orchestration_convert(request: Request):
         except (ValueError, FileNotFoundError) as e:
             _finish_job(job, status="failed", error=str(e))
             raise HTTPException(422, str(e))
-        _finish_job(job, source_format=cor.source_platform)
+        _finish_job(job, source_format=cor.source_platform,
+                    project=_orch_label(body, cor))
         src_dir = job
     job_dir = _new_job("orchestration_convert")
     out = job_dir / "output"
@@ -4387,7 +4544,8 @@ async def orchestration_convert(request: Request):
         generate_execution_doc(cor, intelligence, validation, resilience),
         encoding="utf-8")
     meta = _finish_job(job_dir, source_format=cor.source_platform,
-                       target_format=target)
+                       target_format=target,
+                       project=_orch_label(body, cor))
     return {"orchestration_id": meta["id"],
             "source_platform": cor.source_platform, "target": target,
             "generated": manifest["files"],

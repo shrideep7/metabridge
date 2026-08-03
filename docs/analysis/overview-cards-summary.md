@@ -4,8 +4,8 @@
 > they are, what each number means, where it comes from, and what we concluded while tracing them.
 >
 > Code: [`web/templates/console.html`](../../web/templates/console.html) — markup at
-> [line 569](../../web/templates/console.html#L569), render logic in `loadDashboard()` at
-> [line 3471](../../web/templates/console.html#L3471). Backend: [`web/app.py`](../../web/app.py).
+> `<div class="cards" id="dashCards">`, render logic in `loadDashboard()`.
+> Backend: [`web/app.py`](../../web/app.py).
 
 ---
 
@@ -94,15 +94,15 @@ Conclusions from tracing the code, including the non-obvious parts:
    user-selectable, and the label names the denominator (`8 of 34`). Choosing **All** makes the
    three windowed cards cover the full estate.
 
-4. **The window also drives the Active modernizations table** below the cards — same `withR` list,
+4. **The window also drives the Modernization history table** below the cards — same `withR` list,
    so its row count follows the dropdown. The table pager resets to page 1 on change.
 
 5. **`|| '--'` masks a genuine zero.** Every count tile falls back to `--` when the value is `0`,
    so "zero connected systems" and "no data yet" render identically. Known cosmetic wart; the
    Manual review tile is the exception — it shows a real `0` when runs exist.
 
-6. **Report fetches are concurrency-capped at 8** (`mapLimit`,
-   [console.html:3409](../../web/templates/console.html#L3409)) so "All runs" cannot fire 100
+6. **Report fetches are concurrency-capped at 8** (the `mapLimit()` helper) so
+   "All runs" cannot fire 100
    simultaneous requests at the same server rendering the console. Results are cached per job in
    `jobReportsCache`, so widening the window only fetches what is new.
 

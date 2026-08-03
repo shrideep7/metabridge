@@ -1,8 +1,9 @@
 # 01 — Overview Cards
 
 **Page:** Overview · **Element:** `#dashCards` ·
-**Code:** [`console.html:569`](../../web/templates/console.html#L569),
-`loadDashboard()` at [`console.html:3505`](../../web/templates/console.html#L3505) ·
+**Code:** markup `<div class="cards" id="dashCards">` ·
+render in `loadDashboard()`, tiles built by `mcard()`, window control by
+`renderDashWindow()` — all in [`web/templates/console.html`](../../web/templates/console.html) ·
 **Deep trace:** [`docs/analysis/overview-cards-summary.md`](../analysis/overview-cards-summary.md)
 
 ---
@@ -112,8 +113,8 @@ derived at read time, not stored.
   runs, where there is nothing to choose.
 - **Window default is Last 8**, persisted per browser. A saved choice that no longer narrows
   anything reads as "All" without being overwritten, so it returns if the estate grows.
-- **The window also drives the Active modernizations table** below the cards — see
-  [02 — Active modernizations](02-active-modernizations.md).
+- **The window also drives the Modernization history table** below the cards — see
+  [02 — Modernization history](02-active-modernizations.md).
 - **Runs missing a report are skipped silently.** The sub-label counts runs actually read, so it
   can be lower than the window you picked.
 - **Refresh** happens on page visit and after any convert / govern / scaffold job completes. There

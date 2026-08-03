@@ -19,7 +19,7 @@ Working through the console one feature at a time.
 | # | Feature | Page | Status |
 |---|---|---|---|
 | 01 | [Overview cards](01-overview-cards.md) — six KPI tiles | Overview | ✅ Documented |
-| 02 | [Active modernizations](02-active-modernizations.md) — per-program table | Overview | ✅ Documented |
+| 02 | [Modernization history](02-active-modernizations.md) — per-program table | Overview | ✅ Documented |
 | 03 | [Recent activity](03-recent-activity.md) — job history table | Overview | ✅ Documented |
 | — | Data Estate — object catalog, database/schema/type/search filters | Data Estate | ⬜ Pending |
 | — | Digital Twin — interactive graph canvas | Data Estate | ⬜ Pending |
