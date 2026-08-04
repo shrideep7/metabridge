@@ -2909,17 +2909,26 @@ function sectionError(label, why, el) {
     + '</span>';
   box.style.display = 'block';
 }
-document.querySelectorAll('nav a[data-page]').forEach(a => a.onclick = () => {
+/* The console is one document, so the URL is the ONLY place the current
+   section can live: without it a refresh, a Back press or a pasted link all
+   land on the default page and silently discard where the user was. The hash
+   (#estate, #settings/members) carries it — a hash never reaches the server,
+   so /console keeps returning the same shell and no route registration is
+   needed. showPage() is the single entry point; nav clicks, popstate and
+   first load all go through it, so the three can never disagree. */
+function showPage(key, push) {
+  const a = document.querySelector('nav a[data-page="' + key + '"]');
+  if (!a) return false;
   document.querySelectorAll('nav a').forEach(x => x.classList.remove('active'));
   a.classList.add('active');
   document.querySelectorAll('.page').forEach(p => p.classList.remove('visible'));
   const label = a.querySelector('.lbl') ? a.querySelector('.lbl').textContent : a.title;
-  const target = $('#page-' + a.dataset.page);
+  const target = $('#page-' + key);
   $('#sectionErr').style.display = 'none';
   if (!target) {                     // section missing from this build
     $('#crumb').innerHTML = 'Workspace / <b>' + label + '</b>';
     sectionError(label, 'This section is not present in the page the browser loaded.');
-    return;
+    return false;
   }
   target.classList.add('visible');
   // ...and verify it is actually on screen; a hidden/zero-height container is
@@ -2936,18 +2945,44 @@ document.querySelectorAll('nav a[data-page]').forEach(a => a.onclick = () => {
   });
   $('#crumb').innerHTML = 'Workspace / <b>' + label + '</b>';
   document.querySelector('main').classList.toggle('wide',
-    ['estate', 'validation', 'reports', 'observability', 'system'].includes(a.dataset.page));
-  if (a.dataset.page === 'dashboard') loadDashboard();
-  if (a.dataset.page === 'estate') loadEstate();
-  if (a.dataset.page === 'validation') loadValidation();
-  if (a.dataset.page === 'reports') loadReports();
-  if (a.dataset.page === 'observability') loadObservability();
-  if (a.dataset.page === 'system') loadSystem();
-  if (a.dataset.page === 'marketplace') { loadMarketplace(); loadSavedConnections(); }
-  if (a.dataset.page === 'governance') loadGovernanceExtras();
-  if (a.dataset.page === 'convert') { try { fillObjSelects(); } catch (e) {} }
-  if (a.dataset.page === 'scaffold') { try { loadMovementSettings(); } catch (e) {} }
-  if (a.dataset.page === 'settings') showSettings(curSetSec, true);
+    ['estate', 'validation', 'reports', 'observability', 'system'].includes(key));
+  if (push !== false) setHash(key === 'settings' ? 'settings/' + curSetSec : key);
+  if (key === 'dashboard') loadDashboard();
+  if (key === 'estate') loadEstate();
+  if (key === 'validation') loadValidation();
+  if (key === 'reports') loadReports();
+  if (key === 'observability') loadObservability();
+  if (key === 'system') loadSystem();
+  if (key === 'marketplace') { loadMarketplace(); loadSavedConnections(); }
+  if (key === 'governance') loadGovernanceExtras();
+  if (key === 'convert') { try { fillObjSelects(); } catch (e) {} }
+  if (key === 'scaffold') { try { loadMovementSettings(); } catch (e) {} }
+  if (key === 'settings') showSettings(curSetSec, true);
+  return true;
+}
+// Writing the hash fires hashchange, which would re-run showPage and restart
+// every loader; gHashLock makes our own writes a no-op for that listener.
+let gHashLock = false;
+function setHash(h) {
+  if (location.hash === '#' + h) return;
+  gHashLock = true;
+  history.pushState({page: h}, '', '#' + h);
+  gHashLock = false;
+}
+// Only a nav entry that exists in THIS build is a valid route, so a stale or
+// hand-typed link degrades to the default page instead of a blank console.
+function routeFromHash() {
+  const raw = decodeURIComponent((location.hash || '').replace(/^#/, ''));
+  const [page, sec] = raw.split('/');
+  if (!page || !document.querySelector('nav a[data-page="' + page + '"]')) return false;
+  if (page === 'settings' && sec && $('#sec-' + sec)) curSetSec = sec;
+  return showPage(page, false);
+}
+document.querySelectorAll('nav a[data-page]').forEach(a =>
+  a.onclick = () => showPage(a.dataset.page));
+window.addEventListener('popstate', () => routeFromHash() || showPage('dashboard', false));
+window.addEventListener('hashchange', () => {   // typed/edited hash, not ours
+  if (!gHashLock) routeFromHash();
 });
 
 /* global search: navigation + real jobs + saved connections (Cmd/Ctrl+K) */
@@ -3009,6 +3044,10 @@ function settingsDirty() {
 function showSettings(sec, force) {
   if (!force && sec !== curSetSec && settingsDirty()) { confirmDiscard(sec); return; }
   curSetSec = sec;
+  // Keep the sub-section in the URL too, so a refresh inside Settings returns
+  // to this pane and not to the Workspace default.
+  if ($('#page-settings') && $('#page-settings').classList.contains('visible'))
+    setHash('settings/' + sec);
   document.querySelectorAll('#setNav button').forEach(b => b.classList.toggle('active', b.dataset.sec === sec));
   $('#setNavSel').value = sec;
   document.querySelectorAll('.set-sec').forEach(s => s.classList.toggle('visible', s.id === 'sec-' + sec));
@@ -9546,7 +9585,12 @@ function openAiPanel(context) {
 // install/uninstall, approval queue) must run AFTER myPerms is known, or a
 // fast /api response could paint enabled controls for an unprivileged role.
 loadUser().then(() => { loadApprovalQueue(); loadMarketplace(); });
-loadDashboard(); loadSavedConnections(); fillScaffoldSelects(); fillModConnList();
+// Restore the section named in the URL (#estate, #settings/members) so a
+// refresh or a pasted link reopens where the user was. routeFromHash() runs
+// that section's own loader, so loadDashboard() is only needed when there is
+// no usable hash — otherwise it would fetch dashboard data nobody is looking at.
+if (!routeFromHash()) loadDashboard();
+loadSavedConnections(); fillScaffoldSelects(); fillModConnList();
 </script>
 </body>
 </html>
