@@ -129,6 +129,8 @@ derived at read time, not stored.
   `manual_queue.csv` (Jira/Excel import) inside the job's output, but the tile does not link to
   them — it is informational, not actionable.
 - **No server-side aggregate endpoint.** Every client recomputes the same sums from raw job files.
-- **Job history caps at 100**, so "All runs" strictly means "all of the newest 100".
+- **Job history caps at 100 per query.** With server-side filtering the cap now
+  applies to conversions alone, so "All runs" means all of them until you exceed 100
+  *conversions*; past that, real pagination would be needed.
 - **Assets analyzed is easily misread** as estate size. It counts converted objects, not objects
   discovered by Data Estate.

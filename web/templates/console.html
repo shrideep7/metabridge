@@ -273,6 +273,18 @@
            font-family:inherit; font-size:13px; background:#fff; color:var(--ink); }
   textarea { font-family:var(--mono); font-size:12px; border:1px solid var(--border); border-radius:var(--radius-sm); padding:8px 10px; color:var(--ink); }
   select:focus, input:focus, textarea:focus { outline:none; border-color:var(--accent); box-shadow:var(--ring); }
+  /* ---- password field with reveal toggle ----
+     The button sits inside the field's box; the input reserves room for it on the
+     right so a long secret never runs underneath the icon. */
+  .pw-wrap { position:relative; display:block; }
+  .pw-wrap > input { padding-right:36px; }
+  .pw-eye { position:absolute; top:0; right:0; margin:0; width:32px; height:32px; padding:0;
+            display:flex; align-items:center; justify-content:center; background:none;
+            border:1px solid transparent; border-radius:var(--radius-sm);
+            color:var(--muted); cursor:pointer; }
+  .pw-eye:hover { background:none; border-color:transparent; color:var(--ink2); }
+  .pw-eye:focus-visible { outline:none; box-shadow:var(--ring); color:var(--ink2); }
+  .pw-eye svg { width:16px; height:16px; display:block; }
   .row { display:flex; gap:16px; flex-wrap:wrap; } .row > div { flex:1; min-width:170px; }
   .drop { border:1px dashed var(--border); border-radius:var(--radius); padding:24px; text-align:center; color:var(--ink3); cursor:pointer; font-size:13px; background:var(--header-bg); }
   .drop.hover { border-color:var(--accent); background:var(--accent-soft); }
@@ -2210,13 +2222,17 @@
             <div class="fhint" id="bedIamHint">MetaBridge uses the AWS credentials configured for this deployment.</div>
           </div>
           <div class="fld" id="bedKeyFld" hidden><label for="aiToken">Bedrock API key</label>
-            <input type="password" id="aiToken" autocomplete="new-password"
-                   data-1p-ignore data-lpignore="true" data-form-type="other"></div>
+            <div class="pw-wrap"><input type="password" id="aiToken" autocomplete="new-password"
+                   data-1p-ignore data-lpignore="true" data-form-type="other">
+              <button type="button" class="pw-eye" aria-pressed="false" aria-label="Show password" title="Show password"></button>
+            </div></div>
         </div>
         <div id="aiAnthCfg">
           <div class="fld"><label for="aiKey">Anthropic API key</label>
-            <input type="password" id="aiKey" placeholder="sk-ant-…" autocomplete="new-password"
-                   data-1p-ignore data-lpignore="true" data-form-type="other"></div>
+            <div class="pw-wrap"><input type="password" id="aiKey" placeholder="sk-ant-…" autocomplete="new-password"
+                   data-1p-ignore data-lpignore="true" data-form-type="other">
+              <button type="button" class="pw-eye" aria-pressed="false" aria-label="Show password" title="Show password"></button>
+            </div></div>
         </div>
         <h3>Model</h3>
         <div class="fld"><label for="aiModelSel">Model</label>
@@ -2391,6 +2407,63 @@ function getUserInitials(displayName) {
 }
 // The one avatar renderer used everywhere (header, dropdown, profile page).
 // Priority: profile photo > chosen preset > generated initials.
+/* ---- password reveal + input hygiene ----
+   A credential typed into a masked box cannot be proof-read, and a stray leading
+   or trailing space (very easy to introduce by pasting from a console, an email,
+   or a vault) produces an auth failure with no visible cause. The reveal toggle
+   makes the value checkable; trimOnBlur removes the whitespace at the source so
+   every reader of the field (save / test / introspect / artifacts / dirty-check)
+   sees the cleaned value without each having to remember to trim. */
+const EYE_SHOW = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"'
+  + ' stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'
+  + '<path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg>';
+const EYE_HIDE = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"'
+  + ' stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'
+  + '<path d="M2 12s3.6-7 10-7c2 0 3.8.7 5.2 1.6M22 12s-3.6 7-10 7c-2 0-3.8-.7-5.2-1.6"/>'
+  + '<path d="M9.9 9.9a3 3 0 0 0 4.2 4.2"/><path d="M3 3l18 18"/></svg>';
+function revealBtnHtml() {
+  return '<button type="button" class="pw-eye" tabindex="0" aria-pressed="false"'
+    + ' aria-label="Show password" title="Show password">' + EYE_SHOW + '</button>';
+}
+// Delegated so it covers fields rendered at any time, in any drawer or panel.
+document.addEventListener('click', ev => {
+  const btn = ev.target.closest && ev.target.closest('.pw-eye');
+  if (!btn) return;
+  ev.preventDefault();
+  const wrap = btn.closest('.pw-wrap');
+  const inp = wrap && wrap.querySelector('input');
+  if (!inp) return;
+  const show = inp.type === 'password';
+  inp.type = show ? 'text' : 'password';
+  btn.innerHTML = show ? EYE_HIDE : EYE_SHOW;
+  btn.setAttribute('aria-pressed', show ? 'true' : 'false');
+  const lbl = show ? 'Hide password' : 'Show password';
+  btn.setAttribute('aria-label', lbl); btn.setAttribute('title', lbl);
+});
+// Static .pw-eye buttons in the page markup carry no icon (the SVG lives here), so
+// fill any that are still empty once the DOM is ready.
+function paintRevealIcons(root) {
+  (root || document).querySelectorAll('.pw-eye').forEach(b => {
+    if (!b.firstElementChild) {
+      const shown = (b.closest('.pw-wrap') || {}).querySelector
+        && b.closest('.pw-wrap').querySelector('input');
+      b.innerHTML = shown && shown.type === 'text' ? EYE_HIDE : EYE_SHOW;
+    }
+  });
+}
+document.addEventListener('DOMContentLoaded', () => paintRevealIcons());
+// Trim on blur rather than on input, so typing (and a deliberate interior space)
+// is never fought mid-keystroke. Fires `input` so dirty-tracking stays accurate.
+document.addEventListener('blur', ev => {
+  const el = ev.target;
+  if (!el || el.tagName !== 'INPUT') return;
+  if (!/^(text|password|email|search|url|number)$/.test(el.type)) return;
+  // Presence, not truthiness — a valueless `data-no-trim` reads as "" via dataset.
+  if (el.hasAttribute('data-no-trim')) return;
+  const t = el.value.replace(/^[\s ]+|[\s ]+$/g, '');
+  if (t !== el.value) { el.value = t; el.dispatchEvent(new Event('input', {bubbles: true})); }
+}, true);   // capture: blur does not bubble
+
 function renderAvatar(el, user) {
   if (!el) return;
   const av = (user && user.avatar) || {type: 'INITIALS'};
@@ -4582,12 +4655,22 @@ function renderModFilters(rows, rerender) {
 }
 
 async function loadDashboard() {
-  const {jobs} = await api('/api/jobs');
+  // Each set is fetched with its own server-side filter rather than sliced out
+  // of one capped list. /api/jobs caps at the newest 100 jobs of EVERY kind, so
+  // filtering in the browser let unrelated scaffold/twin/analyze runs push real
+  // conversions past the cap — the tiles then described "16 runs" when 19
+  // existed. The activity table still wants the unfiltered list.
+  const [activity, convertsRes, scaffoldsRes] = await Promise.all([
+    api('/api/jobs'),
+    api('/api/jobs?kind=convert&status=done'),
+    api('/api/jobs?kind=scaffold&status=done'),
+  ]);
+  const jobs = activity.jobs;
   gJobsCache = jobs;
   let conns = [];
   try { conns = (await api('/api/v1/connections')).connections || []; } catch (e) {}
-  const converts = jobs.filter(j => j.kind === 'convert' && j.status === 'done');
-  const scaffolds = jobs.filter(j => j.kind === 'scaffold' && j.status === 'done');
+  const converts = convertsRes.jobs;
+  const scaffolds = scaffoldsRes.jobs;
   const win = renderDashWindow(converts.length);   // 0 = all
   const windowed = win ? converts.slice(0, win) : converts;
   const reports = await mapLimit(windowed, 8, j => jobReport(j.id));
@@ -4599,7 +4682,17 @@ async function loadDashboard() {
     : '--';
   const manual = withR.reduce((n, x) => n + ((x.r.summary || {}).workload ? x.r.summary.workload.manual_queue || 0 : 0), 0);
   const pipelines = scaffolds.reduce((n, j) => n + ((j.summary || {}).objects_total || 0), 0);
-  const inFlightConverts = jobs.filter(j => j.kind === 'convert' && ['running', 'queued', 'pending', 'in_progress'].includes(j.status)).length;
+  // In-flight = every non-terminal convert. Counted from the kind-filtered set
+  // (not the capped mixed list) so a busy workspace cannot hide running work.
+  let inFlightConverts = 0;
+  try {
+    const all = await api('/api/jobs?kind=convert');
+    inFlightConverts = all.jobs.filter(j =>
+      ['running', 'queued', 'pending', 'in_progress'].includes(j.status)).length;
+  } catch (e) {
+    inFlightConverts = jobs.filter(j => j.kind === 'convert'
+      && ['running', 'queued', 'pending', 'in_progress'].includes(j.status)).length;
+  }
   $('#dashCards').innerHTML =
     mcard(conns.filter(x => x.state === 'connected').length || '--', 'Connected systems', conns.length ? conns.length + ' saved' : 'Connect under Integrations')
     + mcard(assets || '--', 'Assets analyzed', withR.length ? 'across ' + withR.length + ' of ' + converts.length + ' runs' : '')
@@ -4640,7 +4733,15 @@ async function loadDashboard() {
   // These count the UNFILTERED sets — the tab says how much exists, the pager
   // says how much the current filter shows.
   const modTab = $('#dashTabMod'), jobTab = $('#dashTabJob');
-  if (jobTab) jobTab.textContent = 'All activity (' + jobs.length + ')';
+  if (jobTab) {
+    // Say when the list is capped rather than presenting 100 as the whole
+    // history — "100" and "100 of 216" are very different facts.
+    jobTab.textContent = 'All activity (' + (activity.truncated
+      ? jobs.length + ' of ' + activity.total : jobs.length) + ')';
+    jobTab.title = activity.truncated
+      ? 'Showing the ' + jobs.length + ' most recent of ' + activity.total + ' jobs'
+      : '';
+  }
   if (modTab) modTab.textContent = 'Modernization history (' + withR.length + ')';
   const modHeader = '<tr><th>Project</th><th>Source</th><th>Target</th><th>Assets</th><th>Automation</th><th>Confidence</th><th>Status</th><th>Last activity</th></tr>';
   // "Nothing ran yet" and "the filter hides everything" need different copy —
@@ -5763,13 +5864,17 @@ async function openConnector(key, connId) {
     // LastPass opt-out keeps managers out of the drawer.
     const hint = f.hint ? '<div class="fhint">' + esc(f.hint) + '</div>'
       : (f.secret ? '<div class="fhint">Stored on this host — never shown in full.</div>' : '');
-    return '<div><label>' + esc(f.label) + req + (f.secret ? ' 🔒' : '') + '</label>'
-      + '<input type="' + (f.secret ? 'password' : 'text') + '" data-field="' + esc(f.name) + '"'
+    const input = '<input type="' + (f.secret ? 'password' : 'text') + '" data-field="' + esc(f.name) + '"'
       + ' data-required="' + (f.required ? '1' : '') + '" data-secret="' + (f.secret ? '1' : '') + '"'
       + ' autocomplete="' + (f.secret ? 'new-password' : 'off') + '"'
       + ' autocorrect="off" autocapitalize="off" spellcheck="false"'
       + ' data-1p-ignore data-lpignore="true" data-form-type="other"'
-      + ' value="' + esc(val) + '"' + ph + '>' + hint + '</div>';
+      + ' value="' + esc(val) + '"' + ph + '>';
+    return '<div><label>' + esc(f.label) + req + (f.secret ? ' 🔒' : '') + '</label>'
+      // Secrets get a reveal toggle so a mistyped credential can be checked before
+      // saving — the usual cause of an auth failure you cannot see.
+      + (f.secret ? '<div class="pw-wrap">' + input + revealBtnHtml() + '</div>' : input)
+      + hint + '</div>';
   };
   const targetFields = c.fields.filter(f => TARGET_FIELDS.test(f.name));
   const accessFields = c.fields.filter(f => !TARGET_FIELDS.test(f.name));
@@ -5850,6 +5955,21 @@ async function openConnector(key, connId) {
   });
   // client-side required-field check mirroring the server (a secret field is
   // exempt when editing a connection that already has a stored secret)
+  // Single reader for the drawer's fields. Trimming here (not only on blur) covers
+  // the case where a value is pasted and the button clicked without the field ever
+  // losing focus — a pasted credential with a trailing newline is exactly how the
+  // "wrong password" failures arise.
+  function fieldParams(skipStoredSecrets) {
+    const params = {};
+    $('#modalBody').querySelectorAll('input[data-field]').forEach(i => {
+      const v = i.value.replace(/^[\s ]+|[\s ]+$/g, '');
+      if (v !== i.value) i.value = v;
+      // don't overwrite a stored secret with an empty box on edit
+      if (skipStoredSecrets && i.dataset.secret && !v && editRow && editRow.has_secrets) return;
+      params[i.dataset.field] = v;
+    });
+    return params;
+  }
   function validateFields(requireSecrets) {
     const missing = [];
     $('#modalBody').querySelectorAll('input[data-field]').forEach(i => {
@@ -5871,8 +5991,7 @@ async function openConnector(key, connId) {
   const testBtn = $('#testConn');
   if (testBtn) testBtn.onclick = async () => {
     if (!validateFields(true)) return;   // live test needs the secret too
-    const params = {};
-    $('#modalBody').querySelectorAll('input[data-field]').forEach(i => params[i.dataset.field] = i.value);
+    const params = fieldParams(false);
     $('#artOut').innerHTML = '<div style="padding:8px 0">Connecting…</div>';
     try {
       const d = await api('/api/v1/connectors/' + key + '/test',
@@ -5894,8 +6013,7 @@ async function openConnector(key, connId) {
   const analyzeBtn = $('#analyzeDb');
   if (analyzeBtn) analyzeBtn.onclick = async () => {
     if (!validateFields(true)) return;
-    const params = {};
-    $('#modalBody').querySelectorAll('input[data-field]').forEach(i => params[i.dataset.field] = i.value);
+    const params = fieldParams(false);
     $('#artOut').innerHTML = '<div style="padding:8px 0">Analyzing database (read-only)…</div>';
     try {
       const d = await api('/api/v1/connectors/' + key + '/introspect',
@@ -5920,12 +6038,7 @@ async function openConnector(key, connId) {
   saveBtn.onclick = async () => {
     if (!validateFields(false)) return;   // secret may stay stored on edit
     if (saveBtn.dataset.saving) return;   // guard double-submit
-    const params = {};
-    $('#modalBody').querySelectorAll('input[data-field]').forEach(i => {
-      // don't overwrite a stored secret with an empty box on edit
-      if (i.dataset.secret && !i.value && editRow && editRow.has_secrets) return;
-      params[i.dataset.field] = i.value;
-    });
+    const params = fieldParams(true);
     const payload = {connector: key, params, save_secrets: $('#savePw').checked,
                      name: ($('#connName').value || '').trim()};
     if (editRow) payload.id = editRow.id;
@@ -5955,8 +6068,7 @@ async function openConnector(key, connId) {
   const genBtn = $('#genArt');
   if (genBtn) genBtn.onclick = async () => {
     if (!validateFields(false)) return;
-    const params = {};
-    $('#modalBody').querySelectorAll('input[data-field]').forEach(i => params[i.dataset.field] = i.value);
+    const params = fieldParams(false);
     const cname = ($('#connName').value || '').trim() || ('conn_' + key);
     const d = await api('/api/v1/connectors/' + key + '/artifacts',
       {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({params, name: cname})});
@@ -8538,9 +8650,13 @@ async function twinTab(tab) {
 
 /* ---------------- Validation ---------------- */
 async function loadValidation() {
-  const {jobs} = await api('/api/jobs');
+  // Filtered server-side: the 100-job cap is kind-blind, so picking converts
+  // out of the mixed list here hid real runs behind unrelated jobs.
+  const [activity, convertsRes] = await Promise.all([
+    api('/api/jobs'), api('/api/jobs?kind=convert&status=done')]);
+  const jobs = activity.jobs;
   gJobsCache = jobs;
-  const converts = jobs.filter(j => j.kind === 'convert' && j.status === 'done');
+  const converts = convertsRes.jobs;
   const reports = await Promise.all(converts.slice(0, 8).map(j => jobReport(j.id)));
   const verdicts = reports.filter(Boolean).map(r => (r.migration_validation || {}).verdict).filter(Boolean);
   $('#valCards').innerHTML =
@@ -9222,9 +9338,9 @@ function updateGovBadge(n) {
 async function loadGovernanceExtras() {
   loadApprovalQueue();
   try {
-    const {jobs} = await api('/api/jobs');
-    const converts = jobs.filter(j => j.kind === 'convert' && j.status === 'done');
-    const govRows = converts.map(j => '<tr><td><b>' + esc(j.project || j.id) + '</b></td>'
+    // Server-side filter, so the kind-blind 100-job cap cannot hide runs.
+    const converts = (await api('/api/jobs?kind=convert&status=done')).jobs;
+    const govRows = converts.map(j => '<tr><td><b>' + esc(jobLabel(j)) + '</b></td>'
       + '<td>' + esc((j.created || '').replace('T', ' ')) + '</td>'
       + '<td>' + statChip('MANUAL_REVIEW') + '</td>'
       + '<td><a class="gq" data-id="' + j.id + '" style="color:var(--accent);cursor:pointer">Review proposals</a></td></tr>');

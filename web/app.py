@@ -1430,23 +1430,47 @@ def _job_capabilities(job_dir: Path) -> dict:
 
 
 @app.get("/api/jobs")
-def list_jobs():
-    jobs = []
+def list_jobs(kind: str = "", status: str = "", limit: int = 100):
+    """Newest-first job list, optionally narrowed by kind and/or status.
+
+    Filtering happens BEFORE the cap, which is the whole point: the cap is
+    kind-blind, so asking for every job and picking out conversions in the
+    browser meant unrelated scaffold/twin/analyze runs could push real
+    conversions past the limit and out of sight. Callers that want a specific
+    slice must say so here rather than over-fetch and filter client-side.
+
+    `total` is the count BEFORE truncation, so a caller can tell it is looking
+    at a partial view instead of silently reporting a capped number as if it
+    were the whole history.
+    """
+    limit = max(1, min(int(limit or 100), 1000))
+    metas = []
     for meta_file in _jobs_dir().glob("*/meta.json"):
         try:
             meta = json.loads(meta_file.read_text(encoding="utf-8"))
         except Exception:  # noqa: BLE001
             continue
-        # Cheap enough to compute for the <=100 jobs we return, and it keeps
-        # the console from offering actions that cannot succeed.
+        if kind and meta.get("kind") != kind:
+            continue
+        # Jobs written before a status was recorded read as "unknown", matching
+        # how the console buckets them in its filter options.
+        if status and (meta.get("status") or "unknown") != status:
+            continue
+        metas.append((meta, meta_file.parent))
+    metas.sort(key=lambda p: p[0].get("created", ""), reverse=True)
+    total = len(metas)
+    jobs = []
+    # Capabilities stat the job's output dir, so only compute them for the page
+    # actually being returned rather than for every job on disk.
+    for meta, job_dir in metas[:limit]:
         try:
-            meta.update(_job_capabilities(meta_file.parent))
+            meta.update(_job_capabilities(job_dir))
         except OSError:
             meta.setdefault("has_findings", False)
             meta.setdefault("has_download", False)
         jobs.append(meta)
-    jobs.sort(key=lambda j: j.get("created", ""), reverse=True)
-    return {"jobs": jobs[:100]}
+    return {"jobs": jobs, "total": total, "returned": len(jobs),
+            "truncated": total > len(jobs)}
 
 
 @app.get("/api/jobs/{job_id}")

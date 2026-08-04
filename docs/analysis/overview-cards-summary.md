@@ -112,6 +112,9 @@ Conclusions from tracing the code, including the non-obvious parts:
 
 ### Open / deliberate gaps
 
-- No server-side aggregate endpoint — every client recomputes the same sums.
-- `/api/jobs` caps at 100 jobs, so "All runs" means "all of the newest 100".
+- No server-side aggregate endpoint — every client recomputes the same sums, though
+  each now fetches only the slice it needs.
+- `/api/jobs` caps each query at 100, but filters (`kind`, `status`) are applied
+  BEFORE the cap, so unrelated job kinds can no longer crowd conversions out. The
+  response carries `total` / `truncated` so a partial view is stated, not implied.
 - Cards refresh only on page visit and job completion; there is no polling.

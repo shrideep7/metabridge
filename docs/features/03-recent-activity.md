@@ -126,8 +126,6 @@ the action states — the console never has to guess what a job produced.
   which reads as "no data" rather than "not implemented for this type".
 - **`0 pipelines` on a failed scaffold is misleading.** Key figures are computed regardless of
   status, so a job that failed before producing anything reports a confident `0` instead of blank.
-- **The 100-job cap is invisible.** The pager says "99 jobs" as though that is your whole history.
-  Past 100 the oldest silently drop off with no indication.
 - **No date range, no search.** Finding a run from three weeks ago means paging.
 - **`failed` rows do not show why** inline — the error is one click away in job detail, but a
   failure reason column would remove the click.
@@ -150,6 +148,12 @@ This label is **display identity only**. Generated artifacts (the dbt project, t
 bundle, `wf_*.xml`) are still named from `pipeline.name`, so naming a run cannot rename its outputs.
 
 ### Resolved
+
+- ~~**The 100-job cap is invisible**~~ — the tab now reads `All activity (100 of 216)` when the
+  list is truncated, with a tooltip. More importantly the cap was *kind-blind*: it counted
+  scaffold/twin/analyze runs against conversion history, so 3 of 19 completed conversions and 19
+  of 42 scaffold runs were invisible to the Overview (Models scaffolded read 246 instead of 301).
+  `/api/jobs` now filters by `kind`/`status` **before** truncating.
 
 - ~~**`findings` was offered on every finished job**~~ — it 404'd for every kind except `convert`
   and `govern` (93 of 212 rows in a real workspace). Now driven by the server's `has_findings`.
