@@ -31,12 +31,15 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 
-# Connectors that have a REAL, live driver in this build. Snowflake and
-# Databricks each use their native driver; PostgreSQL and Amazon Redshift
-# share the psycopg2 + INFORMATION_SCHEMA path (Redshift speaks the
-# PostgreSQL wire protocol). Adding another SQL database is a one-line entry
-# here plus its driver in the `connectors` extra — the UI turns on
-# Test/Analyze automatically for any connector this reports as live.
+# Connectors that have a REAL, live driver in this build. Snowflake,
+# Databricks and Oracle each use their native driver; PostgreSQL and Amazon
+# Redshift share the psycopg2 + INFORMATION_SCHEMA path (Redshift speaks the
+# PostgreSQL wire protocol), which is what this map is for. A database that
+# speaks that wire protocol is a one-line entry here plus its driver in the
+# `connectors` extra; one that does not — Oracle reads ALL_* views, not
+# INFORMATION_SCHEMA — gets its own connect/test/introspect trio and a branch
+# in `_has_live_driver`. Either way the UI turns on Test/Analyze automatically
+# for any connector `live_support` reports as live.
 # Everything else stays declarative (artifact generation / scaffold from a
 # manifest) and a live probe returns an HONEST "unsupported" result, which
 # callers must NOT treat as a failed connection.
@@ -122,7 +125,8 @@ def _fetch_columns(run, enriched_sql: str, plain_sql: str,
 
 _TEXTUAL_BASES = frozenset({"text", "varchar", "string", "char",
                             "nvarchar", "nchar", "character varying",
-                            "character"})
+                            "character", "varchar2", "nvarchar2", "clob",
+                            "nclob"})
 
 
 def _measure_column_sizes(run, tables: dict, length_fn: str = "LENGTH",
@@ -539,11 +543,13 @@ def _parse_predecessors(v) -> List[str]:
 
 
 def _has_live_driver(key: str) -> bool:
-    return key in ("snowflake", "databricks") or key in _SQL_DIALECTS
+    return key in ("snowflake", "databricks", "oracle") \
+        or key in _SQL_DIALECTS
 
 
 # Back-compat: earlier code imported this set directly.
-LIVE_CONNECTORS = frozenset({"snowflake", "databricks"}) | frozenset(_SQL_DIALECTS)
+LIVE_CONNECTORS = frozenset({"snowflake", "databricks", "oracle"}) \
+    | frozenset(_SQL_DIALECTS)
 
 
 def live_support(key: str) -> Dict[str, bool]:
@@ -555,7 +561,8 @@ def live_support(key: str) -> Dict[str, bool]:
     (Test connection + Analyze/introspect), while live LOAD — writing data
     into the target — is certified for Snowflake and Databricks today; the
     other connectors fall back to a generated load PACKAGE, so live_load
-    stays False for them rather than overclaiming."""
+    stays False for them rather than overclaiming. Oracle is a live SOURCE
+    for exactly that reason: it is read and inventoried, never written to."""
     live = _has_live_driver(key)
     return {"live_test": live, "introspect": live,
             "live_load": key in ("snowflake", "databricks")}
@@ -1496,6 +1503,637 @@ def _sqldb_introspect(key: str, params: Dict[str, str],
     }
 
 
+# ---------------------------------------------------------------------------
+# Oracle Database
+#
+# Oracle is the one live connector whose database is NOT switchable inside a
+# session: the service name resolves the database (or PDB) at connect time.
+# There is therefore no database picker here — the Level 1 choice an Oracle
+# user actually has is the SCHEMA, and that is a filter over one inventory
+# rather than a reconnect, so a missing service name is reported as the
+# actionable form problem it is instead of a list to drill into.
+#
+# It also has no INFORMATION_SCHEMA. Every class below reads an ALL_* catalog
+# view, which shows exactly what the connected user has been granted and
+# nothing more — the same read-only, evidence-based contract as the others.
+# ---------------------------------------------------------------------------
+
+# Schemas Oracle ships and maintains itself. Inventorying them would bury the
+# estate the user asked about under thousands of internal objects. 12c+ flags
+# them with ALL_USERS.ORACLE_MAINTAINED, but that column does not exist on
+# 11g, so the list is explicit and version-independent.
+_ORACLE_SYSTEM_SCHEMAS = (
+    "SYS", "SYSTEM", "XDB", "OUTLN", "CTXSYS", "MDSYS", "ORDSYS", "ORDDATA",
+    "ORDPLUGINS", "DBSNMP", "APPQOSSYS", "GSMADMIN_INTERNAL", "WMSYS",
+    "LBACSYS", "OLAPSYS", "AUDSYS", "DVSYS", "DVF", "SI_INFORMTN_SCHEMA",
+    "ANONYMOUS", "DIP", "ORACLE_OCM", "SYSBACKUP", "SYSDG", "SYSKM", "SYSRAC",
+    "SYS$UMF", "GGSYS", "REMOTE_SCHEDULER_AGENT", "OJVMSYS", "DBSFWUSER",
+    "GSMCATUSER", "GSMUSER", "PDBADMIN", "FLOWS_FILES", "RDSADMIN",
+)
+
+# ALL_SOURCE stores one row per LINE, so this cap is a line budget rather than
+# an object budget — a single large package can run to thousands of lines.
+_MAX_SOURCE_LINES = 50_000
+
+
+def _ora_owner_pred(col: str, schema: str):
+    """Scope a catalog query to one schema, else to everything Oracle does not
+    maintain itself. Returns the SQL fragment AND its binds, because the
+    unscoped form takes none and psycopg-style positional args would not
+    survive that."""
+    if schema:
+        return "AND %s = :owner" % col, {"owner": schema}
+    return ("AND %s NOT IN (%s) AND %s NOT LIKE 'APEX%%'"
+            % (col, ", ".join("'%s'" % s for s in _ORACLE_SYSTEM_SCHEMAS),
+               col)), {}
+
+
+def _ora_top(sql: str, limit: int) -> str:
+    """Oracle's portable top-N. FETCH FIRST is 12c-only, and a bare ROWNUM
+    predicate is evaluated BEFORE the sort — which would cap an arbitrary set
+    rather than the first N — so the ranked query goes in an inline view and
+    the cap is applied outside it.
+
+    NOT usable on a query that selects a LONG column (ALL_VIEWS.TEXT,
+    ALL_MVIEWS.QUERY, ALL_TRIGGERS.TRIGGER_BODY): a LONG may not appear in an
+    inline view at all (ORA-00997). Those queries cap inline instead and sort
+    in Python.
+    """
+    return "SELECT * FROM (%s) WHERE ROWNUM <= %d" % (sql, int(limit))
+
+
+def _oracle_connect(params: Dict[str, str]):
+    """Open a READ-ONLY Oracle session via python-oracledb in THIN mode — no
+    Oracle Instant Client, so the deployment needs nothing beyond the wheel.
+
+    Inputs are validated BEFORE the driver import so a missing credential is
+    reported as the same actionable form problem whether or not the optional
+    driver happens to be installed on this host.
+    """
+    password = _secret("oracle", "password", params)
+    if not password:
+        raise ValueError(
+            "No password provided — export MB_ORACLE_PASSWORD (values are "
+            "never stored) or pass it transiently in the request.")
+    host = (params.get("host") or "").strip()
+    if not host:
+        raise ValueError("No host provided — a hostname is required to "
+                         "connect.")
+    service = (params.get("database") or "").strip()
+    if not service:
+        raise ValueError(
+            "No service name provided — Oracle fixes the database at connect "
+            "time, so the Database field must carry the service name "
+            "(Oracle 23ai Free uses FREE or FREEPDB1) or the SID.")
+    try:
+        import oracledb  # driver import deferred: optional dep
+    except ModuleNotFoundError as e:
+        raise RuntimeError(
+            "The Oracle driver is not installed in this deployment. "
+            "Rebuild the image with the connectors extra — "
+            "pip install 'metabridge[web,dtd,connectors]' "
+            "(adds oracledb) — then retry Test connection."
+        ) from e
+    conn = oracledb.connect(
+        user=params.get("user", ""), password=password,
+        dsn="%s:%d/%s" % (host, int(params.get("port") or 1521), service),
+        tcp_connect_timeout=int(params.get("login_timeout", 20)))
+    schema = (params.get("schema") or "").strip().upper()
+    if schema:
+        try:
+            # Unqualified probes resolve in the chosen schema. Quoted so a
+            # case-sensitively created schema still resolves, with any quote
+            # stripped so nothing can be smuggled into the statement. Every
+            # catalog query below is scoped explicitly anyway, so failing
+            # here (the schema does not exist) must not cost the session —
+            # _oracle_test reports that as its own diagnostic step.
+            cur = conn.cursor()
+            cur.execute('ALTER SESSION SET CURRENT_SCHEMA = "%s"'
+                        % schema.replace('"', ""))
+            cur.close()
+        except Exception:  # noqa: BLE001
+            pass
+    try:  # defense in depth — every statement we run is already a SELECT
+        cur = conn.cursor()
+        cur.execute("SET TRANSACTION READ ONLY")
+        cur.close()
+    except Exception:  # noqa: BLE001
+        pass
+    return conn
+
+
+def _oracle_context(cur) -> dict:
+    """Who this session is connected AS, and to what. Oracle has no edition
+    concept the catalog will name, so `edition` reports "n/a" rather than
+    inventing one. Never raises — an unreadable context must not cost the
+    inventory."""
+    ctx = {"user": "", "current_role": "", "database": "", "schema": "",
+           "version": "", "account": "", "warehouse": "", "edition": "n/a",
+           "available_roles": []}
+    try:
+        cur.execute("SELECT SYS_CONTEXT('USERENV', 'SESSION_USER'), "
+                    "SYS_CONTEXT('USERENV', 'CURRENT_SCHEMA'), "
+                    "SYS_CONTEXT('USERENV', 'DB_NAME'), "
+                    "SYS_CONTEXT('USERENV', 'CON_NAME') FROM DUAL")
+        r = cur.fetchone() or ()
+        ctx["user"] = _at(r, 0)
+        # Oracle authorises by USER; roles are additive grants on top of it,
+        # and the console banner reads current_role for every connector.
+        ctx["current_role"] = _at(r, 0)
+        ctx["schema"] = _at(r, 1)
+        # CON_NAME is the pluggable database and is what the user connected
+        # to; it is empty on a non-CDB, where DB_NAME is the whole story.
+        ctx["database"] = _at(r, 3) or _at(r, 2)
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        cur.execute("SELECT version FROM product_component_version "
+                    "WHERE ROWNUM = 1")
+        ctx["version"] = _at(cur.fetchone() or (), 0)[:200]
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        # the roles this user may exercise — what makes a "reconnect with more
+        # privilege" recommendation actionable rather than a guess
+        cur.execute("SELECT granted_role FROM user_role_privs "
+                    "ORDER BY granted_role")
+        ctx["available_roles"] = [_at(r, 0) for r in cur.fetchall()]
+    except Exception:  # noqa: BLE001
+        ctx["available_roles"] = []
+    return ctx
+
+
+def _oracle_hint(msg: str) -> str:
+    """Turn the ORA- code the listener returns into the fix for it. These
+    three are what a first connection actually fails on, and the raw code
+    alone tells a non-DBA nothing."""
+    low = msg.lower()
+    if "ora-12514" in low or "ora-12505" in low:
+        return (" — the listener does not know that service. The Database "
+                "field carries the SERVICE NAME (Oracle 23ai Free uses FREE "
+                "or FREEPDB1), not the host or the container name.")
+    if "ora-12541" in low or "ora-12170" in low:
+        return (" — nothing answered on that host and port. Check the "
+                "listener is running and reachable (the default port is "
+                "1521).")
+    if "ora-01017" in low:
+        return " — the username or password was rejected by the database."
+    if "ora-28000" in low:
+        return " — the account is locked; a DBA must unlock it."
+    return ""
+
+
+def _oracle_test(params: Dict[str, str]) -> dict:
+    """Oracle live probe — the SAME evidence-based report shape as the
+    Snowflake/SQL paths: authenticate first, then verify the schema as a
+    separate diagnostic step (so one wrong value never masks that
+    authentication works), then count the visible tables."""
+    params = _normalize_sql_params(params)
+    started = time.time()
+    try:
+        conn = _oracle_connect(params)
+    except Exception as e:  # noqa: BLE001 — report, never crash the app
+        msg = str(e)
+        needs_credential = "no password provided" in msg.lower()
+        return {"ok": False, "connector": "oracle", "authenticated": False,
+                "needs_credential": needs_credential,
+                "latency_ms": int((time.time() - started) * 1000),
+                "error": (msg + _oracle_hint(msg))[:400]}
+    report: dict = {"ok": True, "connector": "oracle", "authenticated": True,
+                    "probes": [], "steps": []}
+    try:
+        cur = conn.cursor()
+
+        def probe(label: str, sql: str, fallback: str = ""):
+            t0 = time.time()
+            try:
+                cur.execute(sql)
+                row = cur.fetchone()
+            except Exception:  # noqa: BLE001
+                if not fallback:
+                    raise
+                # V$VERSION needs a grant PRODUCT_COMPONENT_VERSION does not,
+                # and vice versa on some hardened builds — either one answers
+                # the question, so losing one is not a failed probe.
+                sql = fallback
+                cur.execute(sql)
+                row = cur.fetchone()
+            report["probes"].append({
+                "probe": label, "sql": sql,
+                "result": str(row[0]) if row and row[0] is not None
+                else str(row),
+                "ms": int((time.time() - t0) * 1000)})
+            return row
+
+        probe("server_version",
+              "SELECT version FROM product_component_version "
+              "WHERE ROWNUM = 1",
+              "SELECT banner FROM v$version WHERE ROWNUM = 1")
+        probe("server_time", "SELECT CURRENT_TIMESTAMP FROM DUAL")
+
+        ctx = _oracle_context(cur)
+        report["context"] = {"user": ctx["user"], "database": ctx["database"],
+                             "schema": ctx["schema"],
+                             "version": ctx["version"]}
+
+        schema = (params.get("schema") or "").strip().upper()
+        if schema:
+            cur.execute("SELECT 1 FROM all_users WHERE username = :owner",
+                        {"owner": schema})
+            if cur.fetchone():
+                report["steps"].append({"step": "schema %s" % schema,
+                                        "ok": True})
+            else:
+                report["steps"].append(
+                    {"step": "schema %s" % schema, "ok": False,
+                     "error": "schema not found or not visible to this user"})
+                report["ok"] = False
+                cur.execute("SELECT username FROM all_users "
+                            "ORDER BY username")
+                report["schemas_visible"] = [_at(r, 0)
+                                             for r in cur.fetchall()][:50]
+
+        where, binds = _ora_owner_pred("owner", schema)
+        cur.execute("SELECT COUNT(*) FROM all_tables WHERE 1 = 1 " + where,
+                    binds)
+        row = cur.fetchone()
+        report["objects"] = {"tables_visible": int(row[0]) if row else 0}
+
+        report["latency_ms"] = int((time.time() - started) * 1000)
+        if not report["ok"]:
+            bad = [s for s in report["steps"] if not s["ok"]]
+            report["error"] = ("authenticated, but context failed — %s"
+                               % "; ".join("%s: %s" % (s["step"],
+                                                       s.get("error", ""))
+                                           for s in bad))[:500]
+    except Exception as e:  # noqa: BLE001
+        report.update({"ok": False, "error": str(e)[:400],
+                       "latency_ms": int((time.time() - started) * 1000)})
+    finally:
+        try:
+            conn.close()
+        except Exception:  # noqa: BLE001
+            pass
+    return report
+
+
+def _oracle_primary_keys(cur, schema: str) -> Dict[tuple, List[str]]:
+    """{(schema, table): [pk columns in key order]} from ALL_CONSTRAINTS.
+
+    Unlike Snowflake, Oracle ENFORCES primary keys, so this is a declared key
+    that can be trusted as a MERGE key — which is what lets the generated
+    manifest emit `unique_key` instead of falling through to a full reload.
+    Degrades to {} rather than costing the inventory."""
+    where, binds = _ora_owner_pred("c.owner", schema)
+    try:
+        cur.execute(
+            "SELECT c.owner, c.table_name, cc.column_name, cc.position "
+            "FROM all_constraints c JOIN all_cons_columns cc "
+            "ON c.owner = cc.owner "
+            "AND c.constraint_name = cc.constraint_name "
+            "WHERE c.constraint_type = 'P' AND c.status = 'ENABLED' %s "
+            "ORDER BY c.owner, c.table_name, cc.position" % where, binds)
+        rows = cur.fetchall()
+    except Exception:  # noqa: BLE001 — no privilege on the constraint views
+        return {}
+    ordered: Dict[tuple, List[tuple]] = {}
+    for r in rows:
+        owner, table, col = _at(r, 0), _at(r, 1), _at(r, 2)
+        if not table or not col:
+            continue
+        try:
+            pos = int(_at(r, 3, "0") or 0)
+        except ValueError:
+            pos = 0
+        ordered.setdefault((owner, table), []).append((pos, col))
+    return {k: [c for _, c in sorted(v)] for k, v in ordered.items()}
+
+
+def _oracle_sources(cur, schema: str, types) -> Dict[tuple, str]:
+    """PL/SQL bodies keyed by (owner, name, type), assembled from
+    ALL_SOURCE's one-row-per-LINE shape. Never raises: a body this user may
+    not read leaves the object listed WITHOUT its definition, which is a
+    downgrade — losing the whole object list would be an outage."""
+    where, binds = _ora_owner_pred("owner", schema)
+    lines: Dict[tuple, List[str]] = {}
+    try:
+        cur.execute(_ora_top(
+            "SELECT owner, name, type, text FROM all_source "
+            "WHERE type IN (%s) %s ORDER BY owner, name, type, line"
+            % (", ".join("'%s'" % t for t in types), where),
+            _MAX_SOURCE_LINES), binds)
+        for r in cur.fetchall():
+            lines.setdefault((_at(r, 0), _at(r, 1), _at(r, 2)), []).append(
+                _at(r, 3))
+    except Exception:  # noqa: BLE001
+        return {}
+    return {k: "".join(v) for k, v in lines.items()}
+
+
+def _oracle_long_rows(cur, sql: str, where: str, binds: dict,
+                      limit: int = _MAX_OBJECTS) -> List[tuple]:
+    """Run a catalog query that selects a LONG column.
+
+    A LONG may not appear in an inline view (ORA-00997), so `_ora_top` cannot
+    wrap these — the cap goes in the predicate instead and the caller sorts
+    the result in Python. Deliberately does NOT swallow errors: `_guarded` is
+    what records why a class came back empty.
+    """
+    cur.execute("%s %s AND ROWNUM <= %d" % (sql, where, int(limit)), binds)
+    return cur.fetchall()
+
+
+def _oracle_objects(cur, caps: dict, schema: str) -> Dict[str, list]:
+    """Every Oracle object class beyond tables/views/columns.
+
+    Each class is fetched independently through `_guarded`, so a class this
+    user may not read comes back empty WITH the reason and never costs the
+    classes around it. Packages, triggers, synonyms, database links and
+    scheduler jobs have no Snowflake equivalent — they are simply more types
+    in the estate, the same way Databricks contributes volumes.
+    """
+    where, binds = _ora_owner_pred("owner", schema)
+    seq_where, seq_binds = _ora_owner_pred("sequence_owner", schema)
+
+    def q(head: str, tail: str = ""):
+        def go():
+            cur.execute(_ora_top("%s %s %s" % (head, where, tail),
+                                 _MAX_OBJECTS), binds)
+            return cur.fetchall()
+        return go
+
+    def g(name, fn):
+        return _guarded(caps, name, fn, cap=_MAX_OBJECTS)
+
+    out: Dict[str, list] = {}
+    bodies = _oracle_sources(cur, schema, ("FUNCTION", "PROCEDURE", "PACKAGE",
+                                           "PACKAGE BODY"))
+
+    def plsql(object_type: str, cls: str, label: str, source_types):
+        objs = []
+        for r in g(cls, q("SELECT owner, object_name FROM all_objects "
+                          "WHERE object_type = '%s'" % object_type,
+                          "ORDER BY owner, object_name")):
+            o = {"schema": _at(r, 0), "name": _at(r, 1), "language": "PL/SQL"}
+            body = "".join(bodies.get((o["schema"], o["name"], t), "")
+                           for t in source_types)
+            objs.append(_with_body(o, body, "%s %s.%s"
+                                   % (label, o["schema"], o["name"])))
+        return objs
+
+    out["functions"] = plsql("FUNCTION", "functions", "function",
+                             ("FUNCTION",))
+    out["procedures"] = plsql("PROCEDURE", "procedures", "procedure",
+                              ("PROCEDURE",))
+    # A package's logic lives in its BODY, but the spec is what declares the
+    # callable surface — a conversion needs both, so both are carried.
+    out["packages"] = plsql("PACKAGE", "packages", "package",
+                            ("PACKAGE", "PACKAGE BODY"))
+
+    # ALL_SEQUENCES is the one catalog view here that does not call its owner
+    # column `owner`, so it needs its own scoping predicate.
+    def _sequences():
+        cur.execute(_ora_top(
+            "SELECT sequence_owner, sequence_name, min_value, increment_by "
+            "FROM all_sequences WHERE 1 = 1 %s "
+            "ORDER BY sequence_owner, sequence_name" % seq_where,
+            _MAX_OBJECTS), seq_binds)
+        return cur.fetchall()
+
+    out["sequences"] = [
+        {"schema": _at(r, 0), "name": _at(r, 1), "start": _at(r, 2),
+         "increment": _at(r, 3)}
+        for r in g("sequences", _sequences)]
+
+    out["materialized_views"] = sorted(
+        (_with_body({"schema": _at(r, 0), "name": _at(r, 1)}, _at(r, 2),
+                    "materialized view %s.%s" % (_at(r, 0), _at(r, 1)))
+         for r in g("materialized_views", lambda: _oracle_long_rows(
+             cur, "SELECT owner, mview_name, query FROM all_mviews "
+                  "WHERE 1 = 1", where, binds))),
+        key=lambda o: (o["schema"], o["name"]))
+
+    # Oracle's answer to a Snowflake stream + task: row-level logic that fires
+    # on DML. It carries a body, so it carries the same credential risk.
+    out["triggers"] = sorted(
+        (_with_body({"schema": _at(r, 0), "name": _at(r, 1),
+                     "table": _at(r, 2), "type": _at(r, 3),
+                     "event": _at(r, 4)}, _at(r, 5),
+                    "trigger %s.%s" % (_at(r, 0), _at(r, 1)))
+         for r in g("triggers", lambda: _oracle_long_rows(
+             cur, "SELECT owner, trigger_name, table_name, trigger_type, "
+                  "triggering_event, trigger_body FROM all_triggers "
+                  "WHERE 1 = 1", where, binds))),
+        key=lambda o: (o["schema"], o["name"]))
+
+    # A synonym is how an Oracle estate hides its real object names; a
+    # conversion that ignores them rewrites references that do not resolve.
+    out["synonyms"] = [
+        {"schema": _at(r, 0), "name": _at(r, 1),
+         "target": "%s.%s" % (_at(r, 2), _at(r, 3)) if _at(r, 2)
+         else _at(r, 3), "db_link": _at(r, 4)}
+        for r in g("synonyms", q(
+            "SELECT owner, synonym_name, table_owner, table_name, db_link "
+            "FROM all_synonyms WHERE 1 = 1",
+            "ORDER BY owner, synonym_name"))]
+
+    # Database links are the estate's outbound edges — every one is a system
+    # this migration also has to account for. The password is not exposed by
+    # the catalog and is never sought here.
+    out["db_links"] = [
+        {"schema": _at(r, 0), "name": _at(r, 1), "host": _at(r, 2),
+         "user": _at(r, 3)}
+        for r in g("db_links", q(
+            "SELECT owner, db_link, host, username FROM all_db_links "
+            "WHERE 1 = 1", "ORDER BY owner, db_link"))]
+
+    out["scheduler_jobs"] = [
+        _with_body({"schema": _at(r, 0), "name": _at(r, 1),
+                    "schedule": _at(r, 3) or _at(r, 2), "state": _at(r, 4)},
+                   _at(r, 5), "scheduler job %s.%s" % (_at(r, 0), _at(r, 1)))
+        for r in g("scheduler_jobs", q(
+            "SELECT owner, job_name, schedule_type, repeat_interval, state, "
+            "job_action FROM all_scheduler_jobs WHERE 1 = 1",
+            "ORDER BY owner, job_name"))]
+
+    out["grants"] = [
+        {"role": _at(r, 0), "privilege": _at(r, 3), "granted_on": "TABLE",
+         "object": "%s.%s" % (_at(r, 1), _at(r, 2))}
+        for r in g("grants", q(
+            "SELECT grantee, owner, table_name, privilege FROM all_tab_privs "
+            "WHERE 1 = 1", "ORDER BY grantee, owner, table_name"))]
+    return out
+
+
+def _oracle_introspect(params: Dict[str, str],
+                       max_tables: int = 500) -> dict:
+    """Read-only inventory for Oracle, returning the SAME shape as the
+    Snowflake/SQL introspect (context + capabilities + the object classes +
+    readiness + manifest) so the console and scaffold consume it unchanged."""
+    params = _normalize_sql_params(params)
+    database = (params.get("database") or "").strip()
+    # Oracle folds unquoted identifiers to upper case and the ALL_* views
+    # store them that way, so a schema typed in any case still matches.
+    schema = (params.get("schema") or "").strip().upper()
+    started = time.time()
+    try:
+        conn = _oracle_connect(params)
+    except Exception as e:  # noqa: BLE001
+        msg = str(e)
+        return {"ok": False, "connector": "oracle",
+                "error": (msg + _oracle_hint(msg))[:400]}
+    caps: Dict[str, dict] = {}
+    measured = 0
+    try:
+        cur = conn.cursor()
+        context = _oracle_context(cur)
+        where, binds = _ora_owner_pred("owner", schema)
+
+        # NESTED/IOT-overflow tables are storage for another table, not
+        # estate objects, and BIN$ names are dropped tables still sitting in
+        # the recycle bin — counting either as a table to migrate is wrong.
+        cur.execute(_ora_top(
+            "SELECT owner, table_name, num_rows FROM all_tables "
+            "WHERE nested = 'NO' "
+            "AND (iot_type IS NULL OR iot_type <> 'IOT_OVERFLOW') "
+            "AND table_name NOT LIKE 'BIN$%%' %s "
+            "ORDER BY owner, table_name" % where, max_tables), binds)
+        tables = {(r[0], r[1]): {"schema": r[0], "name": r[1],
+                                 "type": "BASE TABLE",
+                                 "rows": max(0, int(r[2] or 0)),
+                                 "bytes": 0, "columns": []}
+                  for r in cur.fetchall()}
+
+        def _run(sql):
+            cur.execute(sql % where, binds)
+            return cur.fetchall()
+
+        for r in _fetch_columns(
+                _run,
+                "SELECT owner, table_name, column_name, data_type, "
+                "char_length, data_precision, data_scale "
+                "FROM all_tab_columns WHERE 1 = 1 %s "
+                "ORDER BY owner, table_name, column_id",
+                "SELECT owner, table_name, column_name, data_type "
+                "FROM all_tab_columns WHERE 1 = 1 %s "
+                "ORDER BY owner, table_name, column_id"):
+            key_ = (r[0], r[1])
+            if key_ in tables:
+                tables[key_]["columns"].append({"name": str(r[2]),
+                                                "type": r[3]})
+
+        # Size on disk comes from the segment, not the table — and a role that
+        # may read ALL_TABLES is often not granted ALL_SEGMENTS, so a missing
+        # size leaves bytes at 0 rather than costing the inventory.
+        try:
+            seg_where, seg_binds = _ora_owner_pred("owner", schema)
+            cur.execute("SELECT owner, segment_name, bytes FROM all_segments "
+                        "WHERE segment_type = 'TABLE' " + seg_where,
+                        seg_binds)
+            for r in cur.fetchall():
+                key_ = (r[0], r[1])
+                if key_ in tables and r[2] is not None:
+                    tables[key_]["bytes"] = max(0, int(r[2]))
+        except Exception:  # noqa: BLE001 — sizes are optional
+            pass
+
+        def _run_measure(sql):
+            cur.execute(sql)
+            return cur.fetchall()
+        try:
+            measured = _measure_column_sizes(_run_measure, tables)
+        except Exception:  # noqa: BLE001
+            measured = 0
+
+        # ALL_VIEWS.TEXT is a LONG. TEXT_VC (12.2+) is the same SQL as a
+        # VARCHAR2, which is both cheaper to fetch and legal in an inline
+        # view — so try it first and fall back on older releases.
+        views = []
+        try:
+            rows = _oracle_long_rows(
+                cur, "SELECT owner, view_name, text_vc FROM all_views "
+                     "WHERE 1 = 1", where, binds)
+        except Exception:  # noqa: BLE001 — pre-12.2 has no TEXT_VC
+            rows = _oracle_long_rows(
+                cur, "SELECT owner, view_name, text FROM all_views "
+                     "WHERE 1 = 1", where, binds)
+        for r in sorted(rows, key=lambda x: (str(x[0]), str(x[1]))):
+            views.append({"schema": r[0], "name": r[1],
+                          "definition": str(r[2] or "")[:8000]})
+
+        caps["tables"] = {"status": "available" if tables else "empty"}
+        caps["views"] = {"status": "available" if views else "empty"}
+        primary_keys = _oracle_primary_keys(cur, schema)
+        objects = _oracle_objects(cur, caps, schema)
+    except Exception as e:  # noqa: BLE001
+        try:
+            conn.close()
+        except Exception:  # noqa: BLE001
+            pass
+        return {"ok": False, "connector": "oracle", "error": str(e)[:400]}
+    finally:
+        try:
+            conn.close()
+        except Exception:  # noqa: BLE001
+            pass
+
+    # conversion readiness: every view's SQL parsed with the real dialect
+    import sqlglot
+    convertible, needs_review = [], []
+    for v in views:
+        if not v["definition"].strip():
+            needs_review.append({"view": v["name"],
+                                 "reason": "definition not visible to "
+                                           "this user"})
+            continue
+        try:
+            sqlglot.parse_one(v["definition"], read="oracle")
+            convertible.append(v["name"])
+        except Exception as e:  # noqa: BLE001
+            needs_review.append({"view": v["name"], "reason": str(e)[:150]})
+
+    base_tables = list(tables.values())
+    secret_findings = [f for cls in ("functions", "procedures", "packages",
+                                     "triggers", "materialized_views",
+                                     "scheduler_jobs")
+                       for o in objects.get(cls, [])
+                       for f in o.get("secret_findings", [])]
+    readiness = {
+        "tables": len(base_tables),
+        "views": len(views),
+        "total_rows": sum(t["rows"] for t in base_tables),
+        "tables_with_columns": sum(1 for t in base_tables if t["columns"]),
+        "column_sizes_measured": measured,
+        # Oracle enforces primary keys, so a table WITH one can be loaded by
+        # MERGE; one without still falls through to a full reload.
+        "tables_with_primary_key": sum(
+            1 for t in base_tables
+            if primary_keys.get((t["schema"], t["name"]))),
+        "views_convertible": len(convertible),
+        "views_needing_review": needs_review,
+        "verdict": "READY" if base_tables or convertible else
+                   "NOTHING_TO_CONVERT",
+    }
+    readiness.update({k: len(v) for k, v in objects.items()})
+    return {
+        "ok": True, "connector": "oracle",
+        "database": context.get("database") or database,
+        "schema": schema or "(all)",
+        "elapsed_ms": int((time.time() - started) * 1000),
+        "context": context, "capabilities": caps,
+        "recommendations": _context_recommendations(caps, context, "oracle"),
+        "tables": sorted(tables.values(),
+                         key=lambda t: (-t["rows"], t["name"])),
+        "views": [{"schema": v["schema"], "name": v["name"]}
+                  for v in views],
+        "view_definitions": {v["name"]: v["definition"] for v in views},
+        "secret_findings": secret_findings,
+        "readiness": readiness,
+        "manifest_yaml": _manifest_yaml(base_tables, database, primary_keys),
+        **objects,
+    }
+
+
 def test_connection(key: str, params: Dict[str, str]) -> dict:
     """Open a real session and probe it as a DIAGNOSTIC LADDER: the
     connection is established with credentials only, then role/warehouse/
@@ -1511,6 +2149,8 @@ def test_connection(key: str, params: Dict[str, str]) -> dict:
         return _sqldb_test(key, params)
     if key == "databricks":
         return _databricks_test(params)
+    if key == "oracle":
+        return _oracle_test(params)
     started = time.time()
     try:
         # credentials + role only: context problems must not hide auth
@@ -1708,22 +2348,35 @@ def _edition_from_caps(caps: dict) -> str:
     return "unknown"
 
 
-def _context_recommendations(caps: dict, ctx: dict) -> List[str]:
+# The role that unblocks a catalog read, per platform: the roles a session
+# may already be able to ASSUME, and the one to ask a DBA for otherwise.
+# Naming Snowflake's SECURITYADMIN to an Oracle DBA would be advice they
+# cannot act on, which is worse than saying nothing.
+_ELEVATED_ROLES = {
+    "snowflake": (("ACCOUNTADMIN", "SECURITYADMIN"), "SECURITYADMIN"),
+    "oracle": (("DBA", "SELECT_CATALOG_ROLE"), "SELECT_CATALOG_ROLE"),
+}
+
+
+def _context_recommendations(caps: dict, ctx: dict,
+                             key: str = "snowflake") -> List[str]:
     """Turn blocked classes into the action that would unblock them."""
     recs: List[str] = []
     priv = sorted(k for k, v in caps.items()
                   if v.get("status") == "blocked_privilege")
     if priv:
-        elevated = sorted({"ACCOUNTADMIN", "SECURITYADMIN"}
+        assumable, ask_for = _ELEVATED_ROLES.get(
+            key, _ELEVATED_ROLES["snowflake"])
+        elevated = sorted(set(assumable)
                           & set(ctx.get("available_roles") or []))
         if elevated:
             recs.append("Re-connect with a higher role (%s) to inventory "
                         "%s — set the role before connecting."
                         % (", ".join(elevated), ", ".join(priv)))
         else:
-            recs.append("Grant the connection role SECURITYADMIN (or the "
+            recs.append("Grant the connection role %s (or the "
                         "specific privileges) to inventory %s."
-                        % ", ".join(priv))
+                        % (ask_for, ", ".join(priv)))
     gated = sorted(k for k, v in caps.items()
                    if v.get("status") == "not_applicable"
                    and k in _EDITION_GATED)
@@ -1919,6 +2572,8 @@ def introspect(key: str, params: Dict[str, str],
         return _sqldb_introspect(key, params, max_tables=max_tables)
     if key == "databricks":
         return _databricks_introspect(params, max_tables=max_tables)
+    if key == "oracle":
+        return _oracle_introspect(params, max_tables=max_tables)
     database = params.get("database", "")
     schema = (params.get("schema") or "").upper()
     if not database:

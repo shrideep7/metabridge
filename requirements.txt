@@ -39,11 +39,12 @@ lxml>=5.0                   # PowerCenter XML validation
 # --- live connector drivers (extra: connectors) ----------------------
 # Without these the deterministic engines still work; only the live
 # actions fail ("Test connection" / "Analyze database" / "Load").
-# Snowflake, Databricks, PostgreSQL and Redshift are the certified
+# Snowflake, Databricks, PostgreSQL, Redshift and Oracle are the certified
 # live connectors today (see metabridge.livecheck.LIVE_CONNECTORS).
 snowflake-connector-python>=3.0
 psycopg2-binary>=2.9        # PostgreSQL AND Amazon Redshift share this wire path
 databricks-sql-connector>=3.0
+oracledb>=2.0               # Oracle; THIN mode, so no Instant Client needed
 
 # --- control plane (extra: commercial) -------------------------------
 sqlalchemy>=2.0,<3          # multi-tenant control plane; SQLite dev, PostgreSQL prod

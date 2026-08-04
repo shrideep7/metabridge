@@ -808,6 +808,367 @@ def test_databricks_missing_class_does_not_cost_the_inventory(dbx_driver,
 
 
 # ---------------------------------------------------------------------------
+# Oracle: ALL_* catalog views, PL/SQL bodies, enforced primary keys
+# ---------------------------------------------------------------------------
+
+ORA_PARAMS = {"host": "localhost", "port": "1521", "user": "sales",
+              "database": "FREEPDB1", "schema": "SALES"}
+
+
+class _OraCursor:
+    """python-oracledb contract: execute(sql, binds) then fetchone()/
+    fetchall(). Every statement issued is recorded so the tests can assert
+    HOW the catalog was queried, not just what came back."""
+
+    def __init__(self, fail_on=None, seen=None):
+        self.fail_on = fail_on or {}
+        self.seen = seen if seen is not None else []
+        self._rows = []
+        self._row = None
+
+    def close(self):
+        pass
+
+    def execute(self, sql, args=None):
+        u = " ".join(sql.split()).upper()
+        self.seen.append(u)
+        for tok, msg in self.fail_on.items():
+            if tok in u:
+                raise RuntimeError(msg)
+        self._rows, self._row = [], None
+        if u.startswith("SET TRANSACTION") or u.startswith("ALTER SESSION"):
+            return self
+        if "SYS_CONTEXT" in u:
+            self._row = ("SALES", "SALES", "FREE", "FREEPDB1")
+        elif "PRODUCT_COMPONENT_VERSION" in u:
+            self._row = ("23.4.0.24.05",)
+        elif "USER_ROLE_PRIVS" in u:
+            self._rows = [("CONNECT",), ("RESOURCE",)]
+        elif "CURRENT_TIMESTAMP" in u:
+            self._row = ("2026-08-04 09:00:00",)
+        elif "SELECT 1 FROM ALL_USERS" in u:
+            self._row = (1,) if "SALES" in str(args or {}).upper() else None
+        elif "ALL_USERS" in u:
+            self._rows = [("HR",), ("SALES",)]
+        elif "COUNT(*) FROM ALL_TABLES" in u:
+            self._row = (2,)
+        elif "ALL_TABLES" in u:
+            self._rows = [("SALES", "CUSTOMERS", 1200),
+                          ("SALES", "ORDERS", 5400)]
+        elif "ALL_TAB_COLUMNS" in u:
+            self._rows = [("SALES", "CUSTOMERS", "ID", "NUMBER", 0, 10, 0),
+                          ("SALES", "CUSTOMERS", "NAME", "VARCHAR2", 80,
+                           None, None),
+                          ("SALES", "ORDERS", "ID", "NUMBER", 0, None, None),
+                          ("SALES", "ORDERS", "NOTES", "CLOB", 0, None,
+                           None)]
+        elif "ALL_SEGMENTS" in u:
+            self._rows = [("SALES", "CUSTOMERS", 65536)]
+        elif "MAX(LENGTH(NOTES))" in u:
+            self._rows = [(300,)]
+        elif "ALL_VIEWS" in u:
+            self._rows = [("SALES", "V_TOP",
+                           "SELECT id, name FROM customers WHERE ROWNUM <= 10"),
+                          ("SALES", "V_BROKEN", "SELECT FROM WHERE (((")]
+        elif "ALL_CONSTRAINTS" in u:
+            self._rows = [("SALES", "CUSTOMERS", "ID", 1)]
+        elif "ALL_SOURCE" in u:
+            self._rows = [
+                ("SALES", "FN_TAX", "FUNCTION",
+                 "FUNCTION fn_tax RETURN NUMBER IS BEGIN RETURN 0.2; END;"),
+                ("SALES", "SP_LOAD", "PROCEDURE",
+                 "PROCEDURE sp_load IS BEGIN\n"),
+                ("SALES", "SP_LOAD", "PROCEDURE",
+                 "  c := 'password=hunter2secret'; END;"),
+                ("SALES", "PKG_ETL", "PACKAGE", "PACKAGE pkg_etl IS\n"),
+                ("SALES", "PKG_ETL", "PACKAGE BODY",
+                 "PACKAGE BODY pkg_etl IS END;")]
+        elif "OBJECT_TYPE = 'FUNCTION'" in u:
+            self._rows = [("SALES", "FN_TAX")]
+        elif "OBJECT_TYPE = 'PROCEDURE'" in u:
+            self._rows = [("SALES", "SP_LOAD")]
+        elif "OBJECT_TYPE = 'PACKAGE'" in u:
+            self._rows = [("SALES", "PKG_ETL")]
+        elif "ALL_SEQUENCES" in u:
+            self._rows = [("SALES", "SEQ_ORDER_ID", "1", "1")]
+        elif "ALL_MVIEWS" in u:
+            self._rows = [("SALES", "MV_SALES", "SELECT * FROM orders")]
+        elif "ALL_TRIGGERS" in u:
+            self._rows = [("SALES", "TRG_AUDIT", "ORDERS", "AFTER EACH ROW",
+                           "INSERT", "BEGIN audit_row; END;")]
+        elif "ALL_SYNONYMS" in u:
+            self._rows = [("SALES", "SYN_CUST", "LEGACY", "CUSTOMERS", "")]
+        elif "ALL_DB_LINKS" in u:
+            self._rows = [("SALES", "DBL_LEGACY", "legacy.corp", "ETL")]
+        elif "ALL_SCHEDULER_JOBS" in u:
+            self._rows = [("SALES", "JOB_NIGHTLY", "CALENDAR",
+                           "FREQ=DAILY", "SCHEDULED", "BEGIN pkg_etl.run; END;")]
+        elif "ALL_TAB_PRIVS" in u:
+            self._rows = [("ANALYST", "SALES", "ORDERS", "SELECT")]
+        return self
+
+    def fetchall(self):
+        return self._rows
+
+    def fetchone(self):
+        return self._row
+
+
+class _OraConn:
+    def __init__(self, fail_on=None):
+        self.seen = []
+        self._cur = _OraCursor(fail_on, self.seen)
+
+    def cursor(self):
+        return self._cur
+
+    def close(self):
+        pass
+
+
+@pytest.fixture()
+def ora_driver(monkeypatch):
+    mod = types.ModuleType("oracledb")
+    holder = {"kwargs": None, "fail_on": {}, "conn": None}
+
+    def connect(**kw):
+        holder["kwargs"] = kw
+        if not kw.get("password"):
+            raise RuntimeError("no password")
+        holder["conn"] = _OraConn(holder["fail_on"])
+        return holder["conn"]
+
+    mod.connect = connect
+    monkeypatch.setitem(sys.modules, "oracledb", mod)
+    return holder
+
+
+def test_oracle_test_connection_probes(ora_driver, monkeypatch):
+    monkeypatch.setenv("MB_ORACLE_PASSWORD", "s3cret")
+    r = livecheck.test_connection("oracle", dict(ORA_PARAMS))
+    assert r["ok"] is True and r["authenticated"] is True
+    assert r["context"]["database"] == "FREEPDB1"   # the PDB, not the CDB
+    assert r["context"]["version"] == "23.4.0.24.05"
+    assert r["objects"]["tables_visible"] == 2
+    assert {p["probe"] for p in r["probes"]} == {"server_version",
+                                                 "server_time"}
+    # the service name is what resolves the database, so it is the DSN
+    assert ora_driver["kwargs"]["dsn"] == "localhost:1521/FREEPDB1"
+    assert "s3cret" not in json.dumps(r)
+
+
+def test_oracle_endpoint_pasted_into_host_is_split(ora_driver, monkeypatch):
+    """The Database field is the one people miss, so an easy-connect string
+    pasted whole into Host must still resolve."""
+    monkeypatch.setenv("MB_ORACLE_PASSWORD", "x")
+    r = livecheck.test_connection(
+        "oracle", {"host": "localhost:1521/FREE", "user": "sales"})
+    assert r["ok"] is True
+    assert ora_driver["kwargs"]["dsn"] == "localhost:1521/FREE"
+
+
+def test_oracle_missing_service_name_is_actionable(ora_driver, monkeypatch):
+    """Oracle fixes the database at connect time, so there is no picker to
+    fall back to — the error has to name the field and a real value."""
+    monkeypatch.setenv("MB_ORACLE_PASSWORD", "x")
+    r = livecheck.test_connection("oracle", dict(ORA_PARAMS, database=""))
+    assert r["ok"] is False and r["needs_credential"] is False
+    assert "service name" in r["error"].lower()
+    assert "FREEPDB1" in r["error"]
+
+
+def test_oracle_missing_password_is_actionable(ora_driver, monkeypatch):
+    monkeypatch.delenv("MB_ORACLE_PASSWORD", raising=False)
+    monkeypatch.delenv("ORACLE_PASSWORD", raising=False)
+    r = livecheck.test_connection("oracle", dict(ORA_PARAMS))
+    assert r["ok"] is False and r["needs_credential"] is True
+    assert "MB_ORACLE_PASSWORD" in r["error"]
+
+
+def test_oracle_listener_error_gets_the_fix_not_just_the_code(ora_driver,
+                                                              monkeypatch):
+    """ORA-12514 tells a non-DBA nothing; the connector knows what it means."""
+    monkeypatch.setenv("MB_ORACLE_PASSWORD", "x")
+
+    def boom(**kw):
+        raise RuntimeError("ORA-12514: Cannot connect to database. Service "
+                           "orcl is not registered with the listener")
+    ora_driver_mod = sys.modules["oracledb"]
+    ora_driver_mod.connect = boom
+    r = livecheck.test_connection("oracle", dict(ORA_PARAMS, database="orcl"))
+    assert r["ok"] is False
+    assert "SERVICE NAME" in r["error"] or "service name" in r["error"].lower()
+    assert "FREEPDB1" in r["error"]
+
+
+def test_oracle_bad_schema_reports_auth_ok_and_visible_schemas(ora_driver,
+                                                               monkeypatch):
+    monkeypatch.setenv("MB_ORACLE_PASSWORD", "x")
+    r = livecheck.test_connection("oracle", dict(ORA_PARAMS, schema="NOPE"))
+    assert r["ok"] is False
+    assert r["authenticated"] is True            # auth is never masked
+    bad = next(s for s in r["steps"] if not s["ok"])
+    assert "NOPE" in bad["step"]
+    assert r["schemas_visible"] == ["HR", "SALES"]
+    assert "context failed" in r["error"]
+
+
+def test_oracle_introspect_returns_every_object_class(ora_driver,
+                                                      monkeypatch):
+    monkeypatch.setenv("MB_ORACLE_PASSWORD", "x")
+    r = livecheck.introspect("oracle", dict(ORA_PARAMS))
+    assert r["ok"] is True
+    assert {t["name"] for t in r["tables"]} == {"CUSTOMERS", "ORDERS"}
+    assert r["readiness"]["total_rows"] == 6600
+    assert [o["name"] for o in r["functions"]] == ["FN_TAX"]
+    assert [o["name"] for o in r["procedures"]] == ["SP_LOAD"]
+    # classes with no Snowflake equivalent are simply more types in the estate
+    assert [o["name"] for o in r["packages"]] == ["PKG_ETL"]
+    assert [o["name"] for o in r["triggers"]] == ["TRG_AUDIT"]
+    assert [o["name"] for o in r["synonyms"]] == ["SYN_CUST"]
+    assert [o["name"] for o in r["db_links"]] == ["DBL_LEGACY"]
+    assert [o["name"] for o in r["scheduler_jobs"]] == ["JOB_NIGHTLY"]
+    assert [o["name"] for o in r["materialized_views"]] == ["MV_SALES"]
+    assert [o["name"] for o in r["sequences"]] == ["SEQ_ORDER_ID"]
+    assert r["grants"][0] == {"role": "ANALYST", "privilege": "SELECT",
+                              "granted_on": "TABLE",
+                              "object": "SALES.ORDERS"}
+    # every schema-bearing class carries the Level 2 filter key
+    for cls in ("functions", "procedures", "packages", "triggers",
+                "synonyms", "db_links", "scheduler_jobs",
+                "materialized_views", "sequences"):
+        assert all(o["schema"] for o in r[cls]), cls
+        assert r["readiness"][cls] == 1
+    # the outbound edge is named, and its target is resolvable
+    assert r["synonyms"][0]["target"] == "LEGACY.CUSTOMERS"
+    assert r["db_links"][0]["host"] == "legacy.corp"
+    assert r["context"]["current_role"] == "SALES"
+    assert r["context"]["edition"] == "n/a"       # no edition concept here
+    assert r["readiness"]["views_convertible"] == 1     # V_TOP parses
+    (review,) = r["readiness"]["views_needing_review"]
+    assert review["view"] == "V_BROKEN"
+
+
+def test_oracle_declared_types_and_measured_widths_survive(ora_driver,
+                                                           monkeypatch):
+    """Oracle declares its lengths, so they must reach the manifest intact —
+    and a CLOB, which declares none, gets a MEASURED width instead of a
+    downstream guess."""
+    monkeypatch.setenv("MB_ORACLE_PASSWORD", "x")
+    r = livecheck.introspect("oracle", dict(ORA_PARAMS))
+    cols = {c["name"]: c["type"] for t in r["tables"]
+            if t["name"] == "CUSTOMERS" for c in t["columns"]}
+    assert cols["NAME"] == "VARCHAR2(80)"
+    assert cols["ID"] == "NUMBER(10,0)"
+    notes = {c["name"]: c["type"] for t in r["tables"]
+             if t["name"] == "ORDERS" for c in t["columns"]}["NOTES"]
+    assert notes == "CLOB(512)"                  # 300 chars + headroom
+    assert r["readiness"]["column_sizes_measured"] == 1
+    # size on disk comes from the segment, and a table without one stays 0
+    by_name = {t["name"]: t for t in r["tables"]}
+    assert by_name["CUSTOMERS"]["bytes"] == 65536
+    assert by_name["ORDERS"]["bytes"] == 0
+
+
+def test_oracle_enforced_primary_key_reaches_the_manifest(ora_driver,
+                                                          monkeypatch,
+                                                          tmp_path):
+    """Unlike Snowflake, Oracle ENFORCES primary keys — so the key can be
+    trusted as a MERGE key instead of falling through to a full reload."""
+    monkeypatch.setenv("MB_ORACLE_PASSWORD", "x")
+    r = livecheck.introspect("oracle", dict(ORA_PARAMS))
+    assert r["readiness"]["tables_with_primary_key"] == 1
+    from metabridge.scaffold import load_table_manifest
+    f = tmp_path / "m.yml"
+    f.write_text(r["manifest_yaml"])
+    tables, _ = load_table_manifest(str(f))
+    by_name = {t["name"]: t for t in tables}
+    assert by_name["CUSTOMERS"]["unique_key"] == ["ID"]
+    # and the table with no declared key says so rather than inventing one
+    assert "unique_key" not in by_name["ORDERS"]
+
+
+def test_oracle_plsql_bodies_are_assembled_and_redacted(ora_driver,
+                                                        monkeypatch):
+    """ALL_SOURCE is one row per LINE, so a body only exists once the lines
+    are joined — and a credential in it must never leave the backend."""
+    monkeypatch.setenv("MB_ORACLE_PASSWORD", "x")
+    r = livecheck.introspect("oracle", dict(ORA_PARAMS))
+    (proc,) = r["procedures"]
+    assert proc["definition"].startswith("PROCEDURE sp_load IS BEGIN")
+    assert "hunter2secret" not in json.dumps(r)
+    assert "***REDACTED***" in proc["definition"]
+    assert r["secret_findings"][0]["location"] == "procedure SALES.SP_LOAD"
+    # a package carries BOTH halves — the spec declares the callable surface,
+    # the body holds the logic a conversion has to read
+    (pkg,) = r["packages"]
+    assert "PACKAGE pkg_etl IS" in pkg["definition"]
+    assert "PACKAGE BODY pkg_etl IS" in pkg["definition"]
+
+
+def test_oracle_system_schemas_are_never_inventoried(ora_driver,
+                                                     monkeypatch):
+    """An unscoped Oracle inventory that included SYS would bury the estate
+    the user asked about under thousands of internal objects."""
+    monkeypatch.setenv("MB_ORACLE_PASSWORD", "x")
+    livecheck.introspect("oracle", dict(ORA_PARAMS, schema=""))
+    tables_sql = next(s for s in ora_driver["conn"].seen
+                      if "FROM ALL_TABLES" in s)
+    assert "'SYS'" in tables_sql and "'SYSTEM'" in tables_sql
+    assert "NOT LIKE 'APEX%'" in tables_sql
+
+
+def test_oracle_long_columns_are_never_put_in_an_inline_view(ora_driver,
+                                                            monkeypatch):
+    """ALL_VIEWS.TEXT and friends are LONG, and a LONG in an inline view is
+    ORA-00997 — so those queries must cap with ROWNUM, not a subquery."""
+    monkeypatch.setenv("MB_ORACLE_PASSWORD", "x")
+    livecheck.introspect("oracle", dict(ORA_PARAMS))
+    for view in ("ALL_VIEWS", "ALL_MVIEWS", "ALL_TRIGGERS"):
+        sql = next(s for s in ora_driver["conn"].seen if view in s)
+        assert not sql.startswith("SELECT * FROM ("), view
+        assert "ROWNUM <=" in sql, view
+
+
+def test_oracle_blocked_class_does_not_cost_the_inventory(ora_driver,
+                                                          monkeypatch):
+    """A user who may read tables but not the PL/SQL catalog still gets an
+    inventory — and the matrix says WHY the class is empty."""
+    monkeypatch.setenv("MB_ORACLE_PASSWORD", "x")
+    ora_driver["fail_on"] = {
+        "OBJECT_TYPE = 'PROCEDURE'":
+            "ORA-01031: insufficient privileges"}
+    r = livecheck.introspect("oracle", dict(ORA_PARAMS))
+    assert r["ok"] is True                       # the run survives
+    assert r["tables"] and r["functions"]        # everything else is intact
+    assert r["procedures"] == []
+    assert r["capabilities"]["procedures"]["status"] == "blocked_privilege"
+    # and the advice names an ORACLE role, not Snowflake's SECURITYADMIN
+    (rec,) = r["recommendations"]
+    assert "SELECT_CATALOG_ROLE" in rec and "SECURITYADMIN" not in rec
+
+
+def test_oracle_is_a_live_source_but_not_a_live_load_target():
+    """Oracle is read and inventoried; MetaBridge never writes to it, and
+    live_load must not claim otherwise."""
+    sup = livecheck.live_support("oracle")
+    assert sup["live_test"] is True and sup["introspect"] is True
+    assert sup["live_load"] is False
+    assert "oracle" in livecheck.LIVE_CONNECTORS
+
+
+def test_console_renders_the_oracle_object_classes():
+    """The estate asset list is an explicit allowlist, so a class the backend
+    returns but the console does not push would silently vanish."""
+    from pathlib import Path
+    html = (Path(__file__).resolve().parent.parent / "web" / "templates"
+            / "console.html").read_text(encoding="utf-8")
+    for cls in ("d.packages", "d.triggers", "d.synonyms", "d.db_links",
+                "d.scheduler_jobs"):
+        assert "push(%s," % cls in html, cls
+
+
+# ---------------------------------------------------------------------------
 # Level 1: the database picker (a connection saved without a database)
 # ---------------------------------------------------------------------------
 

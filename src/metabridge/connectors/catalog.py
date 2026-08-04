@@ -76,11 +76,18 @@ registry.register(ConnectorSpec(
 # On-premises databases
 # ---------------------------------------------------------------------------
 
+# Oracle is a LIVE source (see metabridge.livecheck): Test connection and
+# Analyze open a real read-only session. Its `database` field is spelled out
+# as the service name because Oracle resolves the database at connect time —
+# a hostname or container name typed here fails with a bare ORA-12514.
 registry.register(ConnectorSpec(
     key="oracle", name="Oracle Database", category="on_prem_db", vendor="Oracle",
     dialect="oracle", deployment="hybrid", regions=["on_prem"] + _GLOBAL,
     dbt_adapter="oracle", idmc_type="Oracle", powercenter_dbtype="Oracle",
-    fields=_std(port="1521"),
+    fields=[F("host", "Host"), F("port", "Port", required=False, default="1521"),
+            F("user", "Username"), F("password", "Password", secret=True),
+            F("database", "Service name or SID"),
+            F("schema", "Schema", required=False)],
     type_map={"varchar2": "string", "nvarchar2": "string", "clob": "string",
               "number": "decimal", "binary_double": "double", "raw": "binary"}))
 
