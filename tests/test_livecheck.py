@@ -2,6 +2,7 @@
 the real network path is exercised against the customer's account)."""
 import json
 import os
+import re
 import sys
 import tempfile
 import types
@@ -815,6 +816,48 @@ ORA_PARAMS = {"host": "localhost", "port": "1521", "user": "sales",
               "database": "FREEPDB1", "schema": "SALES"}
 
 
+def _like_to_rx(pat):
+    """Oracle LIKE -> regex: % is any run, _ is one character.
+
+    re.escape leaves % alone on modern Python but escaped it on older ones,
+    so both spellings are substituted; _ it never escapes.
+    """
+    return ("^" + re.escape(pat).replace(r"\%", ".*").replace("%", ".*")
+            .replace("_", ".") + "$")
+
+
+def _ora_excluded_by(sql_upper, name):
+    """Apply the query's own `TABLE_NAME NOT LIKE '...'` clauses, so the fake
+    filters the way Oracle would. The test then genuinely verifies the SQL
+    carries the exclusions instead of trusting a hand-curated row list."""
+    return any(re.match(_like_to_rx(p), name.upper())
+               for p in re.findall(r"TABLE_NAME NOT LIKE '([^']*)'",
+                                   sql_upper))
+
+
+def _ora_owner_ok(sql_upper, args, owner):
+    """Apply the query's own OWNER predicate the way Oracle would: a bound
+    :owner scopes to one schema, otherwise the SQL carries an explicit NOT IN
+    list. The lookbehind keeps TABLE_OWNER from matching as OWNER."""
+    bound = (args or {}).get("owner") if isinstance(args, dict) else None
+    if bound:
+        return owner == bound
+    m = re.search(r"(?<![A-Z_])OWNER NOT IN \(([^)]*)\)", sql_upper)
+    if not m:
+        return True
+    return owner not in {s.strip().strip("'") for s in m.group(1).split(",")}
+
+
+def _ora_target_ok(sql_upper, table_owner):
+    """A synonym's TARGET owner filter. NULL means the synonym resolves
+    through a database link, and Oracle keeps it (the SQL says IS NULL OR)."""
+    m = re.search(r"TABLE_OWNER NOT IN \(([^)]*)\)", sql_upper)
+    if not m or table_owner is None:
+        return True
+    return table_owner not in {s.strip().strip("'")
+                               for s in m.group(1).split(",")}
+
+
 class _OraCursor:
     """python-oracledb contract: execute(sql, binds) then fetchone()/
     fetchall(). Every statement issued is recorded so the tests can assert
@@ -853,8 +896,15 @@ class _OraCursor:
         elif "COUNT(*) FROM ALL_TABLES" in u:
             self._row = (2,)
         elif "ALL_TABLES" in u:
-            self._rows = [("SALES", "CUSTOMERS", 1200),
-                          ("SALES", "ORDERS", 5400)]
+            # AQ$/MLOG$/BIN$ rows are what a real Oracle schema returns
+            # alongside its business tables; the query must exclude them.
+            rows = [("SALES", "CUSTOMERS", 1200), ("SALES", "ORDERS", 5400),
+                    ("SALES", "AQ$_CLAIM_EVT_H", 0),
+                    ("SALES", "AQ$_POLICY_EVT_S", 0),
+                    ("SALES", "MLOG$_ORDERS", 0),
+                    ("SALES", "BIN$abc123==$0", 0)]
+            self._rows = [r for r in rows
+                          if not _ora_excluded_by(u, r[1])]
         elif "ALL_TAB_COLUMNS" in u:
             self._rows = [("SALES", "CUSTOMERS", "ID", "NUMBER", 0, 10, 0),
                           ("SALES", "CUSTOMERS", "NAME", "VARCHAR2", 80,
@@ -897,9 +947,30 @@ class _OraCursor:
             self._rows = [("SALES", "TRG_AUDIT", "ORDERS", "AFTER EACH ROW",
                            "INSERT", "BEGIN audit_row; END;")]
         elif "ALL_SYNONYMS" in u:
-            self._rows = [("SALES", "SYN_CUST", "LEGACY", "CUSTOMERS", "")]
+            # A stock 23ai database files thousands of dictionary synonyms
+            # under PUBLIC. Two of each kind here: Oracle's own, the user's
+            # own public one, a private one, and one resolved via db_link
+            # (NULL target owner).
+            rows = [("SALES", "SYN_CUST", "LEGACY", "CUSTOMERS", ""),
+                    ("PUBLIC", "APP_ORDERS", "SALES", "ORDERS", ""),
+                    ("PUBLIC", "ALL_TABLES", "SYS", "ALL_TABLES", ""),
+                    ("PUBLIC", "DBA_USERS", "SYS", "DBA_USERS", ""),
+                    ("SALES", "SYN_REMOTE", None, "REMOTE_TAB", "LEGACY_LINK")]
+            self._rows = [r for r in rows
+                          if _ora_owner_ok(u, args, r[0])
+                          and _ora_target_ok(u, r[2])]
         elif "ALL_DB_LINKS" in u:
-            self._rows = [("SALES", "DBL_LEGACY", "legacy.corp", "ETL")]
+            rows = [("SALES", "DBL_LEGACY", "legacy.corp", "ETL"),
+                    ("PUBLIC", "DBL_SHARED", "shared.corp", "RPT")]
+            self._rows = [r for r in rows if _ora_owner_ok(u, args, r[0])]
+        elif "ALL_QUEUES" in u:
+            rows = [("SALES", "CLAIM_EVT_Q", "CLAIM_EVT_QT", "OBJECT"),
+                    ("SALES", "AQ$_CLAIM_EVT_QT_E", "CLAIM_EVT_QT",
+                     "EXCEPTION")]
+            self._rows = [r for r in rows
+                          if not any(re.match(_like_to_rx(p), r[1])
+                                     for p in re.findall(
+                                         r"NAME NOT LIKE '([^']*)'", u))]
         elif "ALL_SCHEDULER_JOBS" in u:
             self._rows = [("SALES", "JOB_NIGHTLY", "CALENDAR",
                            "FREQ=DAILY", "SCHEDULED", "BEGIN pkg_etl.run; END;")]
@@ -1025,20 +1096,21 @@ def test_oracle_introspect_returns_every_object_class(ora_driver,
     # classes with no Snowflake equivalent are simply more types in the estate
     assert [o["name"] for o in r["packages"]] == ["PKG_ETL"]
     assert [o["name"] for o in r["triggers"]] == ["TRG_AUDIT"]
-    assert [o["name"] for o in r["synonyms"]] == ["SYN_CUST"]
+    assert [o["name"] for o in r["synonyms"]] == ["SYN_CUST", "SYN_REMOTE"]
     assert [o["name"] for o in r["db_links"]] == ["DBL_LEGACY"]
     assert [o["name"] for o in r["scheduler_jobs"]] == ["JOB_NIGHTLY"]
     assert [o["name"] for o in r["materialized_views"]] == ["MV_SALES"]
     assert [o["name"] for o in r["sequences"]] == ["SEQ_ORDER_ID"]
+    assert [o["name"] for o in r["queues"]] == ["CLAIM_EVT_Q"]
     assert r["grants"][0] == {"role": "ANALYST", "privilege": "SELECT",
                               "granted_on": "TABLE",
                               "object": "SALES.ORDERS"}
     # every schema-bearing class carries the Level 2 filter key
     for cls in ("functions", "procedures", "packages", "triggers",
                 "synonyms", "db_links", "scheduler_jobs",
-                "materialized_views", "sequences"):
+                "materialized_views", "sequences", "queues"):
         assert all(o["schema"] for o in r[cls]), cls
-        assert r["readiness"][cls] == 1
+        assert r["readiness"][cls] == len(r[cls]), cls
     # the outbound edge is named, and its target is resolvable
     assert r["synonyms"][0]["target"] == "LEGACY.CUSTOMERS"
     assert r["db_links"][0]["host"] == "legacy.corp"
@@ -1146,6 +1218,84 @@ def test_oracle_blocked_class_does_not_cost_the_inventory(ora_driver,
     # and the advice names an ORACLE role, not Snowflake's SECURITYADMIN
     (rec,) = r["recommendations"]
     assert "SELECT_CATALOG_ROLE" in rec and "SECURITYADMIN" not in rec
+
+
+def test_oracle_generated_tables_are_not_reported_as_estate(ora_driver,
+                                                            monkeypatch):
+    """AQ$/MLOG$/BIN$ tables are Oracle's own machinery living in the user's
+    schema. No catalog flag marks them, so only the name does — and counting
+    them inflates the table count and invents migration work that does not
+    exist."""
+    monkeypatch.setenv("MB_ORACLE_PASSWORD", "x")
+    r = livecheck.introspect("oracle", dict(ORA_PARAMS))
+    assert {t["name"] for t in r["tables"]} == {"CUSTOMERS", "ORDERS"}
+    assert r["readiness"]["tables"] == 2
+    # the columns query is filtered too, so their columns never cross the wire
+    cols_sql = next(s for s in ora_driver["conn"].seen
+                    if "ALL_TAB_COLUMNS" in s)
+    assert "NOT LIKE 'AQ$%'" in cols_sql
+
+
+def test_oracle_reports_the_queue_not_its_generated_tables(ora_driver,
+                                                           monkeypatch):
+    """A queue becomes a stream+task pair or an external broker, so it is real
+    migration work — and it would be invisible if the AQ$ tables were filtered
+    out and nothing took their place. Oracle's own exception queues stay out."""
+    monkeypatch.setenv("MB_ORACLE_PASSWORD", "x")
+    r = livecheck.introspect("oracle", dict(ORA_PARAMS))
+    assert r["queues"] == [{"schema": "SALES", "name": "CLAIM_EVT_Q",
+                            "table": "CLAIM_EVT_QT", "type": "OBJECT"}]
+
+
+def test_oracle_dictionary_synonyms_do_not_flood_the_inventory(ora_driver,
+                                                               monkeypatch):
+    """A stock 23ai database files THOUSANDS of synonyms under PUBLIC. Left
+    in, they push the class past _MAX_OBJECTS, so it comes back flagged
+    truncated and the console honestly reports a partial list — for an estate
+    with a dozen real synonyms. They are identified by their TARGET owner, so
+    the user's own public synonyms still show."""
+    monkeypatch.setenv("MB_ORACLE_PASSWORD", "x")
+    r = livecheck.introspect("oracle", dict(ORA_PARAMS, schema=""))
+    names = [o["name"] for o in r["synonyms"]]
+    assert "APP_ORDERS" in names          # PUBLIC, but points at SALES
+    assert "SYN_CUST" in names
+    assert "ALL_TABLES" not in names      # PUBLIC, points at SYS
+    assert "DBA_USERS" not in names
+    assert r["capabilities"]["synonyms"].get("truncated") is not True
+
+
+def test_oracle_remote_synonym_survives_the_target_filter(ora_driver,
+                                                          monkeypatch):
+    """A synonym resolved through a database link has no local target owner,
+    and `NULL NOT IN (...)` is NULL — which would silently drop precisely the
+    cross-system references worth knowing about."""
+    monkeypatch.setenv("MB_ORACLE_PASSWORD", "x")
+    r = livecheck.introspect("oracle", dict(ORA_PARAMS, schema=""))
+    remote = next(o for o in r["synonyms"] if o["name"] == "SYN_REMOTE")
+    assert remote["db_link"] == "LEGACY_LINK"
+    assert remote["target"] == "REMOTE_TAB"
+
+
+def test_oracle_public_db_links_are_kept(ora_driver, monkeypatch):
+    """Oracle ships no public database links, so every one is the user's own
+    outbound edge — excluding PUBLIC wholesale would hide a whole system."""
+    monkeypatch.setenv("MB_ORACLE_PASSWORD", "x")
+    r = livecheck.introspect("oracle", dict(ORA_PARAMS, schema=""))
+    assert [o["name"] for o in r["db_links"]] == ["DBL_LEGACY", "DBL_SHARED"]
+
+
+def test_oracle_public_is_excluded_from_the_ordinary_classes(ora_driver,
+                                                             monkeypatch):
+    """PUBLIC is a pseudo-owner, not a schema. Only synonyms and database
+    links re-admit it; everything else must keep it out."""
+    monkeypatch.setenv("MB_ORACLE_PASSWORD", "x")
+    livecheck.introspect("oracle", dict(ORA_PARAMS, schema=""))
+    tables_sql = next(s for s in ora_driver["conn"].seen
+                      if "FROM ALL_TABLES" in s)
+    assert "'PUBLIC'" in tables_sql
+    syn_sql = next(s for s in ora_driver["conn"].seen if "ALL_SYNONYMS" in s)
+    owners = re.search(r"(?<![A-Z_])OWNER NOT IN \(([^)]*)\)", syn_sql)
+    assert "'PUBLIC'" not in owners.group(1)
 
 
 def test_oracle_is_a_live_source_but_not_a_live_load_target():

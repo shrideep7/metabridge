@@ -1531,21 +1531,61 @@ _ORACLE_SYSTEM_SCHEMAS = (
     "GSMCATUSER", "GSMUSER", "PDBADMIN", "FLOWS_FILES", "RDSADMIN",
 )
 
+# Table NAMES Oracle generates for its own machinery. No catalog flag marks
+# these: they are ordinary heap tables owned by the APPLICATION schema, so
+# only the name gives them away. Counting them as tables to migrate both
+# inflates the estate and invents work — a schema with five Advanced Queuing
+# queues presents a dozen extra "tables" that have no business meaning and no
+# migration target. `$` is the marker Oracle uses for generated names, so the
+# patterns stop at it rather than spelling out the suffix (`_` is a LIKE
+# single-character wildcard, and `AQ$_%` would need an ESCAPE clause to mean
+# what it looks like it means).
+_ORACLE_INTERNAL_TABLES = (
+    "AQ$%",             # Advanced Queuing: subscriber, history, index tables
+    "MLOG$%",           # materialized view logs
+    "RUPD$%",           # updatable materialized view logs
+    "DR$%",             # Oracle Text index internals
+    "SYS_IOT_OVER%",    # IOT overflow (IOT_TYPE also covers it)
+    "SYS_EXPORT%",      # Data Pump master tables
+    "SYS_IMPORT%",
+    "SYSTP%",           # online-redefinition scratch tables
+    "SCHEDULER$%",      # scheduler internals
+    "LOGMNR%",          # LogMiner staging
+    "BIN$%",            # dropped, still in the recycle bin
+)
+
 # ALL_SOURCE stores one row per LINE, so this cap is a line budget rather than
 # an object budget — a single large package can run to thousands of lines.
 _MAX_SOURCE_LINES = 50_000
 
 
-def _ora_owner_pred(col: str, schema: str):
+def _ora_not_internal(col: str = "table_name") -> str:
+    """Exclude Oracle's generated tables by name. Returned ready to
+    CONCATENATE, never to %-format — the LIKE patterns contain % themselves."""
+    return " ".join("AND %s NOT LIKE '%s'" % (col, p)
+                    for p in _ORACLE_INTERNAL_TABLES)
+
+
+def _ora_owner_pred(col: str, schema: str, allow_public: bool = False):
     """Scope a catalog query to one schema, else to everything Oracle does not
     maintain itself. Returns the SQL fragment AND its binds, because the
     unscoped form takes none and psycopg-style positional args would not
-    survive that."""
+    survive that.
+
+    PUBLIC is excluded by default. It is not a schema anyone owns — it is the
+    pseudo-owner Oracle files public synonyms under, and a stock 23ai database
+    ships THOUSANDS of them. Including it does not just add noise: it floods
+    past `_MAX_OBJECTS`, so the class comes back flagged `truncated` and the
+    console correctly reports a partial list — for an estate that may have had
+    a dozen real synonyms. `allow_public` re-admits it for the two classes
+    where a PUBLIC object is genuinely the user's (see the callers).
+    """
     if schema:
         return "AND %s = :owner" % col, {"owner": schema}
+    excluded = _ORACLE_SYSTEM_SCHEMAS if allow_public \
+        else _ORACLE_SYSTEM_SCHEMAS + ("PUBLIC",)
     return ("AND %s NOT IN (%s) AND %s NOT LIKE 'APEX%%'"
-            % (col, ", ".join("'%s'" % s for s in _ORACLE_SYSTEM_SCHEMAS),
-               col)), {}
+            % (col, ", ".join("'%s'" % s for s in excluded), col)), {}
 
 
 def _ora_top(sql: str, limit: int) -> str:
@@ -1928,24 +1968,57 @@ def _oracle_objects(cur, caps: dict, schema: str) -> Dict[str, list]:
 
     # A synonym is how an Oracle estate hides its real object names; a
     # conversion that ignores them rewrites references that do not resolve.
+    #
+    # PUBLIC is re-admitted here because a public synonym is the classic way a
+    # legacy estate exposes one schema to another — dropping them all would
+    # hide real migration work. What IS dropped is the several thousand public
+    # synonyms Oracle ships pointing at its own dictionary: those are
+    # identified by their TARGET owner, not by being public.
+    syn_where, syn_binds = _ora_owner_pred("owner", schema, allow_public=True)
     out["synonyms"] = [
         {"schema": _at(r, 0), "name": _at(r, 1),
          "target": "%s.%s" % (_at(r, 2), _at(r, 3)) if _at(r, 2)
          else _at(r, 3), "db_link": _at(r, 4)}
-        for r in g("synonyms", q(
-            "SELECT owner, synonym_name, table_owner, table_name, db_link "
-            "FROM all_synonyms WHERE 1 = 1",
-            "ORDER BY owner, synonym_name"))]
+        for r in g("synonyms", lambda: (
+            cur.execute(_ora_top(
+                "SELECT owner, synonym_name, table_owner, table_name, db_link "
+                "FROM all_synonyms "
+                # a synonym resolved through a db_link has no local
+                # table_owner, and `NULL NOT IN (...)` is NULL — which would
+                # drop precisely the remote ones worth knowing about
+                "WHERE (table_owner IS NULL OR table_owner NOT IN (%s)) %s "
+                "ORDER BY owner, synonym_name"
+                % (", ".join("'%s'" % s for s in _ORACLE_SYSTEM_SCHEMAS),
+                   syn_where), _MAX_OBJECTS), syn_binds),
+            cur.fetchall())[1])]
 
     # Database links are the estate's outbound edges — every one is a system
     # this migration also has to account for. The password is not exposed by
-    # the catalog and is never sought here.
+    # the catalog and is never sought here. PUBLIC is re-admitted for the same
+    # reason as synonyms, and needs no target filter: Oracle ships no public
+    # database links, so every one of them is the user's own.
+    dbl_where, dbl_binds = _ora_owner_pred("owner", schema, allow_public=True)
     out["db_links"] = [
         {"schema": _at(r, 0), "name": _at(r, 1), "host": _at(r, 2),
          "user": _at(r, 3)}
-        for r in g("db_links", q(
-            "SELECT owner, db_link, host, username FROM all_db_links "
-            "WHERE 1 = 1", "ORDER BY owner, db_link"))]
+        for r in g("db_links", lambda: (
+            cur.execute(_ora_top(
+                "SELECT owner, db_link, host, username FROM all_db_links "
+                "WHERE 1 = 1 %s ORDER BY owner, db_link" % dbl_where,
+                _MAX_OBJECTS), dbl_binds),
+            cur.fetchall())[1])]
+
+    # Advanced Queuing, reported as the QUEUE it is rather than as the dozen
+    # AQ$ tables Oracle builds underneath it (those are filtered out of the
+    # table list). A queue is real migration work — it becomes a stream+task
+    # pair or an external broker — and it is invisible if only tables are
+    # listed. AQ$_-prefixed queues are Oracle's own exception queues.
+    out["queues"] = [
+        {"schema": _at(r, 0), "name": _at(r, 1), "table": _at(r, 2),
+         "type": _at(r, 3)}
+        for r in g("queues", q(
+            "SELECT owner, name, queue_table, queue_type FROM all_queues "
+            "WHERE name NOT LIKE 'AQ$%'", "ORDER BY owner, name"))]
 
     out["scheduler_jobs"] = [
         _with_body({"schema": _at(r, 0), "name": _at(r, 1),
@@ -1989,23 +2062,30 @@ def _oracle_introspect(params: Dict[str, str],
         context = _oracle_context(cur)
         where, binds = _ora_owner_pred("owner", schema)
 
-        # NESTED/IOT-overflow tables are storage for another table, not
-        # estate objects, and BIN$ names are dropped tables still sitting in
-        # the recycle bin — counting either as a table to migrate is wrong.
+        # NESTED and IOT-overflow tables are storage for another table rather
+        # than estate objects, and `_ora_not_internal` drops the ones only
+        # their NAME identifies (AQ plumbing, MV logs, recycle-bin entries).
+        # Both are concatenated, not %-formatted: the LIKE patterns carry %.
+        not_internal = _ora_not_internal("table_name")
         cur.execute(_ora_top(
             "SELECT owner, table_name, num_rows FROM all_tables "
             "WHERE nested = 'NO' "
             "AND (iot_type IS NULL OR iot_type <> 'IOT_OVERFLOW') "
-            "AND table_name NOT LIKE 'BIN$%%' %s "
-            "ORDER BY owner, table_name" % where, max_tables), binds)
+            + not_internal + " " + where +
+            " ORDER BY owner, table_name", max_tables), binds)
         tables = {(r[0], r[1]): {"schema": r[0], "name": r[1],
                                  "type": "BASE TABLE",
                                  "rows": max(0, int(r[2] or 0)),
                                  "bytes": 0, "columns": []}
                   for r in cur.fetchall()}
 
+        # Columns are filtered the same way. A row for a table we did not list
+        # would be dropped on lookup anyway, but AQ tables are wide and there
+        # is no reason to drag their columns across the wire to discard them.
+        col_where = where + " " + not_internal
+
         def _run(sql):
-            cur.execute(sql % where, binds)
+            cur.execute(sql % col_where, binds)
             return cur.fetchall()
 
         for r in _fetch_columns(

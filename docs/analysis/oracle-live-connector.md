@@ -77,6 +77,7 @@ may not read comes back empty **with the reason** and never costs the classes ar
 | `triggers` | `ALL_TRIGGERS` | LONG path; Oracle's row-level DML logic |
 | `synonyms` | `ALL_SYNONYMS` | an estate that hides its real object names — ignoring these rewrites references that do not resolve |
 | `db_links` | `ALL_DB_LINKS` | the estate's outbound edges; each is another system in scope |
+| `queues` | `ALL_QUEUES` | Advanced Queuing, reported as the queue rather than its generated tables |
 | `scheduler_jobs` | `ALL_SCHEDULER_JOBS` | Oracle's analogue of a Snowflake task |
 | `grants` | `ALL_TAB_PRIVS` | |
 
@@ -88,6 +89,36 @@ before it leaves the backend** and reported as a finding (location and type only
 An unscoped inventory that included `SYS` would bury the estate the user asked about under
 thousands of internal objects. `_ora_owner_pred` excludes them by an explicit list rather than
 `ALL_USERS.ORACLE_MAINTAINED`, which does not exist on 11g.
+
+### PUBLIC, and the truncated-synonyms report
+
+`PUBLIC` is not a schema anyone owns — it is the pseudo-owner Oracle files public synonyms
+under, and a stock 23ai database ships **thousands** of them. Including it did not merely add
+noise: the class ran past `_MAX_OBJECTS`, so `_guarded` flagged it `truncated` and the console
+correctly reported *"synonyms were capped, the list is partial"* — for an estate with a dozen
+real synonyms. The cap was working; its input was wrong.
+
+Two classes re-admit `PUBLIC`, because a public object there is genuinely the user's:
+
+- **synonyms** — a public synonym is the classic way a legacy estate exposes one schema to
+  another. Oracle's own are excluded by their **target owner**, not by being public, so
+  application-created public synonyms still appear. A synonym resolved through a database link
+  has a NULL target owner, and `NULL NOT IN (...)` is NULL, so the predicate spells out
+  `table_owner IS NULL OR ...` — otherwise exactly the cross-system references worth knowing
+  about would vanish.
+- **db_links** — Oracle ships none, so every public database link is the user's own.
+
+### Tables Oracle generates inside the user's schema
+
+`AQ$*`, `MLOG$*`, `RUPD$*`, `DR$*`, `BIN$*` and friends are ordinary heap tables owned by the
+**application** schema. No catalog flag marks them, so only the name does. Counting them
+inflates the table count and invents migration work: a schema with five Advanced Queuing queues
+can present a dozen extra "tables" with no business meaning and no migration target.
+
+They are filtered from both the table and the column queries. The queue itself is not lost — it
+surfaces as a `queues` asset, which is the honest unit of work (a queue becomes a stream+task
+pair or an external broker). Filtering the plumbing without surfacing the queue would have
+traded an overcount for a blind spot.
 
 ---
 
