@@ -68,7 +68,7 @@ GET /api/jobs             →  <workspace>/jobs/*/meta.json
 | **Modernizations** | `convert` jobs with `status === 'done'` | `convert` jobs not done → "in flight" | job `meta.json` | No |
 | **Models scaffolded** | Σ `job.summary.objects_total` over done scaffolds | number of scaffold runs | job `meta.json` | No |
 | **Validation pass rate** | `PASS` + `PASS_WITH_WARNINGS` ÷ verdicts | `from N of M runs` | `report.migration_validation.verdict` | **Yes** |
-| **Manual review items** | Σ `report.summary.workload.manual_queue` | — | `report.json` | **Yes** |
+| **Manual review items** | Σ `report.summary.workload.manual_queue` | `across N of M runs` (runs carrying items) | `report.json` | **No — whole-estate** |
 
 ---
 

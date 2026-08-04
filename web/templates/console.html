@@ -4690,7 +4690,18 @@ async function loadDashboard() {
   const passRate = verdicts.length
     ? Math.round(100 * verdicts.filter(v => v === 'PASS' || v === 'PASS_WITH_WARNINGS').length / verdicts.length) + '%'
     : '--';
-  const manual = withR.reduce((n, x) => n + ((x.r.summary || {}).workload ? x.r.summary.workload.manual_queue || 0 : 0), 0);
+  // Manual review items is WHOLE-ESTATE, unlike the other two report-derived
+  // tiles. Outstanding work is the one figure that must not be a sample: a
+  // windowed count read as the total and understated it (13 shown, 17 real),
+  // and it is the tile most likely to drive action. Reports are memoized in
+  // jobReportsCache and fetched 8-at-a-time, so covering every run costs the
+  // delta only — ~3ms per uncached report.
+  const allReports = win
+    ? await mapLimit(converts, 8, j => jobReport(j.id))
+    : reports;                       // window already covered everything
+  const allWithR = converts.map((j, i) => ({job: j, r: allReports[i]})).filter(x => x.r);
+  const manual = allWithR.reduce((n, x) =>
+    n + ((x.r.summary || {}).workload ? x.r.summary.workload.manual_queue || 0 : 0), 0);
   const pipelines = scaffolds.reduce((n, j) => n + ((j.summary || {}).objects_total || 0), 0);
   // In-flight = every non-terminal convert. Counted from the kind-filtered set
   // (not the capped mixed list) so a busy workspace cannot hide running work.
@@ -4709,11 +4720,17 @@ async function loadDashboard() {
     + mcard(converts.length || '--', 'Modernizations', inFlightConverts + ' in flight')
     + mcard(pipelines || '--', 'Models scaffolded', scaffolds.length ? scaffolds.length + ' scaffold runs' : '')
     + mcard(passRate, 'Validation pass rate', verdicts.length ? 'from ' + verdicts.length + ' of ' + converts.length + ' runs' : 'no validated runs yet')
-    + mcard(manual || (withR.length ? 0 : '--'), 'Manual review items',
-            manual ? 'across ' + withR.length + ' of ' + converts.length + ' runs' : '', manual ? 'manual' : '');
+    + mcard(manual || (allWithR.length ? 0 : '--'), 'Manual review items',
+            // Whole-estate, so the sub-label names runs that CARRY items rather
+            // than a window — no "N of M" here, the number is the real total.
+            manual ? 'across ' + allWithR.filter(x =>
+                ((x.r.summary || {}).workload || {}).manual_queue).length
+              + ' of ' + converts.length + ' runs' : '', manual ? 'manual' : '');
   const manualTile = $('#dashCards').querySelector('[data-drill="manual"]');
   if (manualTile) {
-    const open = () => showManualQueue(withR);
+    // Drill-down covers every run too, or it would list fewer items than the
+    // tile counts.
+    const open = () => showManualQueue(allWithR);
     manualTile.onclick = open;
     manualTile.onkeydown = ev => {
       if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); open(); }
@@ -8667,11 +8684,17 @@ async function loadValidation() {
   const jobs = activity.jobs;
   gJobsCache = jobs;
   const converts = convertsRes.jobs;
-  const reports = await Promise.all(converts.slice(0, 8).map(j => jobReport(j.id)));
+  // Every run, not a hardcoded first 8. These tiles COUNT PROBLEMS ("Failed",
+  // "Manual review"), so a sample is not a defensible answer — 8 of 19 runs
+  // could report 0 failures while a failure sat in run 12. Unrelated to the
+  // Overview's Summarize window, which never applied here. Reports are
+  // memoized and throttled, so this costs the uncached delta only.
+  const reports = await mapLimit(converts, 8, j => jobReport(j.id));
   const verdicts = reports.filter(Boolean).map(r => (r.migration_validation || {}).verdict).filter(Boolean);
+  const scope = verdicts.length + ' of ' + converts.length + ' runs';
   $('#valCards').innerHTML =
-    mcard(verdicts.length || '--', 'Validation runs', 'from modernization runs')
-    + mcard(verdicts.length ? Math.round(100 * verdicts.filter(v => v === 'PASS' || v === 'PASS_WITH_WARNINGS').length / verdicts.length) + '%' : '--', 'Pass rate', '')
+    mcard(verdicts.length || '--', 'Validation runs', converts.length ? scope : 'from modernization runs')
+    + mcard(verdicts.length ? Math.round(100 * verdicts.filter(v => v === 'PASS' || v === 'PASS_WITH_WARNINGS').length / verdicts.length) + '%' : '--', 'Pass rate', verdicts.length ? 'of validated runs' : '')
     + mcard(verdicts.filter(v => v === 'FAIL').length, 'Failed', '')
     + mcard(verdicts.filter(v => v === 'MANUAL_REVIEW').length, 'Manual review', '');
   $('#valJob').innerHTML = '<option value="">Select…</option>'

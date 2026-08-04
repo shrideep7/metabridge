@@ -83,7 +83,12 @@ Work the converter could not finish automatically. Three things are added togeth
 | Project-level `MANUAL` / `ERROR` issues | Procedures, unparseable files — blockers not attached to any single object |
 
 The third part matters: without it a run could report "100% of objects converted" while hundreds
-of files were silently unreadable. Including it keeps the headline honest. Windowed.
+of files were silently unreadable. Including it keeps the headline honest.
+
+**Whole-estate, not windowed** — unlike the other two report-derived tiles. Outstanding work is the
+one figure that must not be a sample: windowed to 8 runs it read 13 when 17 items existed, and it is
+the tile most likely to drive action. The sub-label names how many runs *carry* items
+(`across 6 of 19 runs`), so the headline is always the real total.
 
 ### The Summarize dropdown
 Chooses how many of the most recent **completed conversions** get opened and summarized.
@@ -104,9 +109,10 @@ derived at read time, not stored.
 ## 6. Behaviour and rules
 
 - **Two kinds of tile.** Connected systems, Modernizations and Models scaffolded are
-  **whole-estate** — cheap to compute from job metadata, always complete. Assets analyzed,
-  Validation pass rate and Manual review items are **windowed** — each needs a run's report file
-  opened, so they cover only the selected window. This is why *Modernizations = 34* can sit next to
+  **whole-estate** — cheap to compute from job metadata, always complete. So is **Manual review
+  items**, which opens every run's report because a partial count of outstanding work is
+  misleading. Assets analyzed and Validation pass rate remain **windowed** — each needs a run's
+  report opened, so they cover only the selected window. This is why *Modernizations = 34* can sit next to
   *Assets analyzed = 54 across 8 of 34 runs* without either being wrong.
 - **Window options adapt to your data.** Only steps that would actually narrow the list are
   offered, plus "All N runs" — no "Last 50" when you have 34. The control hides entirely below nine
