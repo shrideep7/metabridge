@@ -35,6 +35,10 @@
   label { display:block; font-size:12px; font-weight:700; letter-spacing:.6px; text-transform:uppercase; color:#9db2d4; margin:15px 0 7px; }
   input { width:100%; padding:12px 14px; border-radius:10px; border:1px solid rgba(140,170,220,.28); background:rgba(16,28,50,.7); color:#fff; font-size:15px; outline:none; transition:.15s; }
   input:focus { border-color:var(--teal); box-shadow:0 0 0 3px rgba(61,218,208,.15); }
+  .field { position:relative; }
+  .field > input { padding-right:64px; }
+  .toggle { position:absolute; right:12px; top:50%; transform:translateY(-50%); background:none; border:none; color:#7d92b5; cursor:pointer; font-size:12.5px; font-weight:700; }
+  .toggle:hover { color:#fff; }
   .row { display:flex; gap:14px; } .row > div { flex:1; }
   .meter { height:5px; border-radius:4px; background:rgba(60,80,120,.4); margin-top:8px; overflow:hidden; }
   .meter i { display:block; height:100%; width:0; border-radius:4px; background:#f87171; transition:.25s; }
@@ -78,7 +82,10 @@
     <label>Work email</label>
     <input type="email" name="email" placeholder="you@company.com" required>
     <label>Password</label>
-    <input type="password" name="password" id="pw" placeholder="8+ characters" required minlength="8">
+    <div class="field">
+      <input type="password" name="password" id="pw" placeholder="8+ characters" required minlength="8">
+      <button type="button" class="toggle" id="tg">SHOW</button>
+    </div>
     <div class="meter"><i id="meterBar"></i></div>
     <div class="hint" id="hint">Use 12+ characters with a mix of cases, numbers and symbols.</div>
     <button class="btn" type="submit">Create workspace →</button>
@@ -87,7 +94,8 @@
   <div class="alt">Already have an account? <a href="/login">Sign in</a></div>
 </div></div>
 <script>
-const pw = document.getElementById('pw'), bar = document.getElementById('meterBar');
+const tg = document.getElementById('tg'), pw = document.getElementById('pw'), bar = document.getElementById('meterBar');
+tg.onclick = () => { pw.type = pw.type === 'password' ? 'text' : 'password'; tg.textContent = pw.type === 'password' ? 'SHOW' : 'HIDE'; };
 pw.oninput = () => {
   const v = pw.value;
   let s = 0;

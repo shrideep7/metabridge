@@ -37,6 +37,7 @@
   .card .sub { color:var(--mist); font-size:14px; margin:8px 0 30px; }
   label { display:block; font-size:12px; font-weight:700; letter-spacing:.6px; text-transform:uppercase; color:#9db2d4; margin:18px 0 7px; }
   .field { position:relative; }
+  .field > input { padding-right:64px; }   /* keep the value clear of the SHOW button */
   input { width:100%; padding:13px 14px; border-radius:10px; border:1px solid rgba(140,170,220,.28); background:rgba(16,28,50,.7); color:#fff; font-size:15px; outline:none; transition:.15s; }
   input:focus { border-color:var(--blue); box-shadow:0 0 0 3px rgba(77,163,255,.18); }
   .toggle { position:absolute; right:12px; top:50%; transform:translateY(-50%); background:none; border:none; color:#7d92b5; cursor:pointer; font-size:12.5px; font-weight:700; }
@@ -83,7 +84,10 @@
     <div class="meter"><i id="meterBar"></i></div>
     <div class="hint" id="hint">Use 12+ characters with a mix of cases, numbers and symbols.</div>
     <label>Confirm new password</label>
-    <input type="password" name="confirm" id="pw2" placeholder="Repeat the password" required minlength="8">
+    <div class="field">
+      <input type="password" name="confirm" id="pw2" placeholder="Repeat the password" required minlength="8">
+      <button type="button" class="toggle" id="tg2">SHOW</button>
+    </div>
     <button class="btn" type="submit">Set new password →</button>
     <div class="err" id="err"></div>
     <div class="ok" id="ok"></div>
@@ -130,6 +134,8 @@ validate();
 
 const tg = document.getElementById('tg'), pw = document.getElementById('pw'), bar = document.getElementById('meterBar');
 tg.onclick = () => { pw.type = pw.type === 'password' ? 'text' : 'password'; tg.textContent = pw.type === 'password' ? 'SHOW' : 'HIDE'; };
+const tg2 = document.getElementById('tg2'), pw2el = document.getElementById('pw2');
+tg2.onclick = () => { pw2el.type = pw2el.type === 'password' ? 'text' : 'password'; tg2.textContent = pw2el.type === 'password' ? 'SHOW' : 'HIDE'; };
 pw.oninput = () => {
   const v = pw.value;
   let s = 0;
