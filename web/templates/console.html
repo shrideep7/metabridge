@@ -1953,6 +1953,16 @@
     <h3 style="margin-bottom:4px">Approval queue &amp; AI recommendations</h3>
     <div style="color:var(--ink3);font-size:13px;margin-bottom:8px">AI-proposed corrections are never applied automatically —
     every proposal shows its evidence and requires an explicit approval.</div>
+    <!-- Defaults to runs that actually need a person. Listing every completed
+         run made a queue of 19 where only 5 had anything to approve. -->
+    <div class="tbar" style="margin-bottom:10px">
+      <span class="fgrp"><label for="govScope">Show</label>
+        <select id="govScope" aria-label="Filter approval queue">
+          <option value="needs">Needs review</option>
+          <option value="all">All completed runs</option>
+        </select></span>
+      <span id="govScopeHint" style="font-size:12.5px;color:var(--muted)"></span>
+    </div>
     <table id="govQueue"></table>
     <div id="govQueuePager" style="display:none;align-items:center;gap:12px;margin-top:12px;flex-wrap:wrap">
       <button type="button" class="secondary" id="govQueuePrev" style="margin:0;padding:5px 12px">&larr; Previous</button>
@@ -9340,17 +9350,55 @@ async function loadGovernanceExtras() {
   try {
     // Server-side filter, so the kind-blind 100-job cap cannot hide runs.
     const converts = (await api('/api/jobs?kind=convert&status=done')).jobs;
-    const govRows = converts.map(j => '<tr><td><b>' + esc(jobLabel(j)) + '</b></td>'
-      + '<td>' + esc((j.created || '').replace('T', ' ')) + '</td>'
-      + '<td>' + statChip('MANUAL_REVIEW') + '</td>'
-      + '<td><a class="gq" data-id="' + j.id + '" style="color:var(--accent);cursor:pointer">Review proposals</a></td></tr>');
-    const govHeader = '<tr><th>Project</th><th>Generated</th><th>Status</th><th></th></tr>';
-    const govEmpty = '<tr><td colspan=4 style="color:var(--muted)">No modernization runs yet — proposals appear after a run.</td></tr>';
+    // Each row's status used to be a HARDCODED statChip('MANUAL_REVIEW'), so
+    // every completed run was labelled as needing review — 14 of 19 rows were
+    // wrong on a real workspace, including a FAIL disguised as "manual review".
+    // Read the run's own verdict instead; jobReport() memoizes and mapLimit()
+    // throttles, so this is the same machinery the Overview already uses.
+    const reports = await mapLimit(converts, 8, j => jobReport(j.id));
+    const runs = converts.map((job, i) => {
+      const r = reports[i] || {};
+      const verdict = (r.migration_validation || {}).verdict || '';
+      const manual = ((r.summary || {}).workload || {}).manual_queue || 0;
+      // "Needs review" = the engine asked for a human, or the run failed, or
+      // there are outstanding manual items. A PASS_WITH_WARNINGS run with an
+      // empty queue has nothing to approve.
+      const needs = verdict === 'MANUAL_REVIEW' || verdict === 'FAIL' || manual > 0;
+      return {job, verdict, manual, needs, known: !!reports[i]};
+    });
+    const govHeader = '<tr><th>Project</th><th>Generated</th><th>Status</th><th>Manual items</th><th></th></tr>';
+    const govRow = ({job, verdict, manual, known}) =>
+      '<tr><td><b>' + esc(jobLabel(job)) + '</b></td>'
+      + '<td>' + esc((job.finished || job.created || '').replace('T', ' ')) + '</td>'
+      + '<td>' + (known ? statChip(verdictToStatus(verdict))
+                        : '<span style="color:var(--muted)">—</span>') + '</td>'
+      + '<td>' + (manual || (known ? '0' : '--')) + '</td>'
+      + '<td><a class="gq" data-id="' + job.id + '" style="color:var(--accent);cursor:pointer">Review proposals</a></td></tr>';
     const renderGovQueue = () => {
-      renderPage('govQueue', govRows, govHeader, govEmpty, 'runs', () => {
+      const scope = ($('#govScope') || {}).value || 'needs';
+      const shown = scope === 'all' ? runs : runs.filter(x => x.needs);
+      const hint = $('#govScopeHint');
+      if (hint) hint.textContent = scope === 'needs'
+        ? shown.length + ' of ' + runs.length + ' run(s) need a person'
+        : '';
+      const empty = scope === 'needs'
+        ? '<tr><td colspan=5 style="color:var(--muted)">Nothing needs approval — every completed run '
+          + 'either passed or has an empty manual queue. '
+          + '<a id="govShowAll" style="color:var(--accent);cursor:pointer">Show all completed runs</a></td></tr>'
+        : '<tr><td colspan=5 style="color:var(--muted)">No modernization runs yet — proposals appear after a run.</td></tr>';
+      renderPage('govQueue', shown.map(govRow), govHeader, empty,
+                 scope === 'needs' ? 'runs needing review' : 'runs', () => {
         $('#govQueue').querySelectorAll('.gq').forEach(a =>
           a.onclick = () => openJobFindings(a.dataset.id).catch(e => mbAlert(e.message)));
+        const sa = $('#govShowAll');
+        if (sa) sa.onclick = () => { $('#govScope').value = 'all';
+                                     pagerState('govQueue').page = 1; renderGovQueue(); };
       });
+    };
+    const scopeSel = $('#govScope');
+    if (scopeSel) scopeSel.onchange = () => {
+      pagerState('govQueue').page = 1;   // page 2 of "needs" is not page 2 of "all"
+      renderGovQueue();
     };
     renderGovQueue();
     bindPager('govQueue', renderGovQueue);
