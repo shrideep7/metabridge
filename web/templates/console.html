@@ -2478,7 +2478,18 @@ function renderAvatar(el, user) {
   if (!el) return;
   const av = (user && user.avatar) || {type: 'INITIALS'};
   if (av.type === 'PHOTO' && av.url) {
-    el.innerHTML = '<img alt="" src="' + av.url.replace(/"/g, '&quot;') + '">';
+    // Build the node instead of parsing HTML: quote-escaping alone still lets a
+    // stored url break out via javascript:/data: in the src. Only same-origin
+    // relative paths (what the upload endpoint hands back) are accepted.
+    el.textContent = '';
+    if (/^\/(?!\/)/.test(String(av.url))) {
+      const img = document.createElement('img');
+      img.alt = '';
+      img.src = av.url;
+      el.appendChild(img);
+    } else {
+      el.textContent = getUserInitials(getUserDisplayName(user));
+    }
   } else if (av.type === 'PRESET' && /^mb-[1-6]$/.test(av.preset || '')) {
     el.innerHTML = '<img alt="" src="/static/avatars/' + av.preset + '.svg">';
   } else {
@@ -3659,7 +3670,7 @@ document.querySelectorAll('.drop').forEach(drop => {
   ['dragleave','drop'].forEach(e => drop.addEventListener(e, ev => { ev.preventDefault(); drop.classList.remove('hover'); }));
   drop.addEventListener('drop', ev => setFile(ev.dataTransfer.files[0]));
   function setFile(f) { if (!f) return; chosen[key] = f;
-    drop.querySelector('.txt').innerHTML = '<b>' + f.name + '</b> (' + Math.round(f.size/1024) + ' KB)';
+    drop.querySelector('.txt').innerHTML = '<b>' + esc(f.name) + '</b> (' + Math.round(f.size/1024) + ' KB)';
     // a dropped table manifest previews like a handed-off one
     if (key === 'scafFile') renderScaffoldManifest(f); }
 });
@@ -5457,7 +5468,7 @@ async function loadSavedConnections() {
         const f = new File([d.manifest_yaml], row.connector + '_manifest.yml', {type:'text/yaml'});
         chosen.scafFile = f;
         const dz = document.querySelector('[data-drop="scafFile"] .txt');
-        if (dz) dz.innerHTML = '<b>' + f.name + '</b> (from connection \u201C' + esc(row.name) + '\u201D — ' + d.readiness.tables + ' tables)';
+        if (dz) dz.innerHTML = '<b>' + esc(f.name) + '</b> (from connection \u201C' + esc(row.name) + '\u201D — ' + d.readiness.tables + ' tables)';
         await selectScaffoldSource(row.connector);
         await renderScaffoldManifest(f);
         document.querySelector('nav a[data-page="scaffold"]').click();
@@ -5481,11 +5492,11 @@ async function loadSavedConnections() {
               const text = '-- ' + d.note + '\n' + d.ddl + '\n\n' + d.load + '\n';
               const url = URL.createObjectURL(new Blob([text], {type:'text/plain'}));
               out.innerHTML = '<pre style="margin-top:6px">' + esc(d.notes.join('; ')) + '\n\n' + esc(text) + '</pre>'
-                + '<a href="' + url + '" download="load_' + d.table + '.sql"><button class="secondary">Download load script</button></a>';
+                + '<a href="' + url + '" download="load_' + esc(d.table) + '.sql"><button class="secondary">Download load script</button></a>';
             } else if (d.ok) {
-              out.innerHTML = '<pre style="margin-top:6px;color:var(--green)">Loaded ' + d.rows_in_file.toLocaleString() + ' rows into ' + d.table
+              out.innerHTML = '<pre style="margin-top:6px;color:var(--green)">Loaded ' + d.rows_in_file.toLocaleString() + ' rows into ' + esc(d.table)
                 + ' — table now has ' + d.rows_in_table.toLocaleString() + ' rows (' + d.elapsed_ms + 'ms)\n'
-                + d.steps.map(s => 'OK   ' + s.step + ' (' + s.ms + 'ms)').join('\n') + '</pre>';
+                + d.steps.map(s => 'OK   ' + esc(s.step) + ' (' + s.ms + 'ms)').join('\n') + '</pre>';
             } else { out.innerHTML = connErrBox(d.error || 'load failed'); }
           } catch (e) { out.innerHTML = connErrBox(e.message||e); }
           inp.value = '';
@@ -5506,7 +5517,9 @@ async function loadSavedConnections() {
         if (!d.ok) { out.innerHTML = connErrBox(d.error||'failed'); }
         else {
           const r = d.readiness;
-          out.innerHTML = '<pre style="margin-top:6px">' + d.database + '.' + d.schema + ' — ' + r.verdict + ': '
+          // database/schema/verdict are echoed back from the connection the
+          // user saved, so they are user-controlled and must be escaped.
+          out.innerHTML = '<pre style="margin-top:6px">' + esc(d.database) + '.' + esc(d.schema) + ' — ' + esc(r.verdict) + ': '
             + r.tables + ' tables (' + r.total_rows.toLocaleString() + ' rows) · ' + r.views + ' views (' + r.views_convertible + ' convertible)</pre>'
             + manifestPreviewHtml(d.manifest_yaml, 'tables_manifest.yml');
           loadSavedConnections();
