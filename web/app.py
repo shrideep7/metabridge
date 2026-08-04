@@ -25,6 +25,7 @@ from fastapi.responses import (
     StreamingResponse,
 )
 
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from metabridge import __version__
@@ -36,6 +37,14 @@ app = FastAPI(
     description="dbt ⇄ Informatica conversion, SAP-to-cloud scaffolding, "
                 "connector marketplace, and US/EU data governance.",
 )
+
+# Compress responses over 1 KB. The console shell alone is ~570 KB of inlined
+# CSS/JS and is served no-store (see console()), so EVERY page load re-sent it
+# uncompressed; text this repetitive gzips to roughly a quarter of its size.
+# Applies to /api JSON too. Starlette skips it unless the client sends
+# Accept-Encoding: gzip, and already-compressed downloads (the job .zip
+# StreamingResponse) gain nothing but lose nothing either.
+app.add_middleware(GZipMiddleware, minimum_size=1000)
 
 _STATIC = Path(__file__).parent / "static"
 app.mount("/static", StaticFiles(directory=str(_STATIC)), name="static")
