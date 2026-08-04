@@ -357,35 +357,44 @@
      stretch to a common height and pin their actions to the bottom edge, so the
      primary action lines up across the whole row however much metadata (or
      driver error text) a card carries. */
-  /* 400px floor: below that the endpoint truncates and the analysis line wraps
-     ragged, which is what made a 3-up row look cramped on a 1280px-wide work
-     area (a 1920px panel at 150% scaling). Two roomy cards beat three cramped
-     ones. min(…,100%) keeps a narrow work area at one full-width card instead
-     of pushing a horizontal scrollbar onto the page. */
-  .sc-row { display:grid; grid-template-columns:repeat(auto-fill,minmax(min(400px,100%),1fr)); gap:12px; align-items:stretch; }
+  /* 300px floor: the card no longer carries a 58px label column, so the same
+     content fits a narrower track — a 1280px work area now holds three cards
+     where it held two, without the endpoint truncating. min(…,100%) keeps a
+     narrow work area at one full-width card instead of a horizontal scrollbar. */
+  .sc-row { display:grid; grid-template-columns:repeat(auto-fill,minmax(min(300px,100%),1fr)); gap:10px; align-items:stretch; }
   .sc { background:#fff; border:1px solid var(--border); border-radius:var(--radius); box-shadow:var(--shadow);
-        padding:11px 38px 12px 13px; position:relative; min-width:0; display:flex; flex-direction:column;
+        padding:10px 32px 10px 12px; position:relative; min-width:0; display:flex; flex-direction:column;
         transition:border-color .15s ease, box-shadow .15s ease; }
   .sc:hover { border-color:#C3D2E4; box-shadow:0 2px 8px rgba(16,24,40,.07); }
-  .sc .hd { display:flex; align-items:center; gap:9px; min-width:0; }
-  .sc .hd img { width:23px; height:23px; flex:none; border-radius:3px; background:var(--header-bg); padding:2px; }
+  .sc .hd { display:flex; align-items:center; gap:8px; min-width:0; }
+  .sc .hd img { width:20px; height:20px; flex:none; border-radius:3px; background:var(--header-bg); padding:2px; }
   /* The connection's own name is the identity — two connections to the same
-     connector were indistinguishable when only the connector name showed. */
+     connector were indistinguishable when only the connector name showed.
+     The connector name moved into the meta list below, so the header is now a
+     single line and the status reads as a dot+label chip beside it. */
   .sc .hd .nm { min-width:0; flex:1; }
   .sc .hd .nm strong { display:block; font-size:13px; font-weight:600; letter-spacing:-.01em; line-height:1.35;
                        white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-  .sc .hd .nm .sub { display:block; font-size:11px; color:var(--muted); line-height:1.3;
-                     white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-  .sc .hd .badge { flex:none; height:19px; }
-  /* fixed label column so the values line up across every card in the row,
-     not just within one card */
-  .sc .kv { display:grid; grid-template-columns:58px minmax(0,1fr); row-gap:3px; column-gap:10px;
-            margin-top:9px; padding-top:9px; border-top:1px solid var(--line); font-size:11.5px; }
-  .sc .kv dt { color:var(--muted); font-weight:600; line-height:1.45; }
-  .sc .kv dd { margin:0; min-width:0; color:var(--ink2); font-family:var(--mono); font-size:11px;
-               line-height:1.45; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-  .sc .note { margin-top:9px; font-size:11.5px; line-height:1.45; color:var(--ink3); }
-  .sc .note.bad, .sc .note.warn { border-radius:var(--radius-sm); padding:6px 8px; }
+  /* connector type rides the SAME line as the name — it is context, not a
+     second heading, and a stacked sub-line cost every card a whole row */
+  .sc .hd .nm .sub { font-weight:400; font-size:11px; color:var(--muted); }
+  .sc .hd .nm .sub::before { content:'·'; margin:0 4px; color:var(--border); }
+  /* scoped to the card only — .badge is shared with tables and the manual queue */
+  .sc .hd .badge { flex:none; height:18px; padding:0 6px; font-size:10px; gap:4px; }
+  .sc .hd .badge .dot { width:6px; height:6px; }
+  /* Metadata is a compact stack of "label value" lines rather than a two-column
+     grid: the fixed 58px label gutter cost a third of the card width and forced
+     the 400px floor. Labels are uppercase micro-caps so the mono value still
+     wins the eye at a glance. */
+  .sc .kv { display:flex; flex-direction:column; gap:1px;
+            margin-top:8px; padding-top:8px; border-top:1px solid var(--line); font-size:11px; min-width:0; }
+  .sc .kv div { display:flex; align-items:baseline; gap:6px; min-width:0; }
+  .sc .kv dt { flex:none; color:var(--muted); font-weight:600; font-size:9.5px; letter-spacing:.04em;
+               text-transform:uppercase; line-height:1.5; }
+  .sc .kv dd { margin:0; min-width:0; flex:1; color:var(--ink2); font-family:var(--mono); font-size:10.5px;
+               line-height:1.5; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .sc .note { margin-top:8px; font-size:11px; line-height:1.4; color:var(--ink3); }
+  .sc .note.bad, .sc .note.warn { border-radius:var(--radius-sm); padding:5px 7px; }
   .sc .note.bad { background:var(--red-bg); border:1px solid var(--red-line); color:#8C1D14; }
   .sc .note.warn { background:var(--amber-bg); border:1px solid var(--amber-line); color:var(--amber); }
   .sc .note b { font-weight:600; }
@@ -397,11 +406,21 @@
   .sc .note-msg { display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden;
                   overflow-wrap:anywhere; }
   .sc .note.open .note-msg { display:block; }
-  .sc .note .lnk { background:none; border:none; padding:0; margin:2px 0 0; height:auto; font-size:11px;
+  .sc .note .lnk { background:none; border:none; padding:0; margin:2px 0 0; height:auto; font-size:10.5px;
                    font-weight:600; color:inherit; text-decoration:underline; cursor:pointer; }
   .sc .note .lnk:hover { background:none; opacity:.75; }
-  .sc .acts { margin-top:auto; padding-top:11px; display:flex; gap:6px; align-items:center; flex-wrap:wrap; }
-  .sc .acts button { padding:0 11px; height:30px; font-size:12.5px; margin:0; }
+  /* Actions stay on ONE line: the primary keeps its label, the secondaries
+     collapse to 28px icon buttons with tooltips + aria-labels, so a 300px card
+     never wraps its footer onto a second row. */
+  .sc .acts { margin-top:auto; padding-top:9px; display:flex; gap:5px; align-items:center; }
+  .sc .acts button { padding:0 10px; height:28px; font-size:12px; margin:0; flex:none; }
+  .sc .acts .ico { padding:0; width:28px; display:inline-flex; align-items:center; justify-content:center; }
+  .sc .acts .ico svg { width:14px; height:14px; stroke:currentColor; fill:none; stroke-width:1.9;
+                       stroke-linecap:round; stroke-linejoin:round; }
+  /* the kebab tracks the card's own padding so it stays optically level with
+     the connection name rather than floating below it */
+  .sc .kebab { top:9px; right:6px; }
+  .sc .menu { top:32px; }
   /* Status modifiers are namespaced: a bare `.err` is the app-wide form-error
      banner (display:none until shown), which used to swallow the dot and the
      status label on any failed connection card. */
@@ -5375,7 +5394,7 @@ async function loadSavedConnections() {
   // one labelled key/value row — dropped entirely when the value is empty, so a
   // connector without (say) a warehouse doesn't leave a blank line in the card.
   // `full` is the untruncated value for the tooltip when the label is abbreviated.
-  const kvRow = (k, v, full) => v ? '<dt>' + esc(k) + '</dt><dd title="' + esc(full || v) + '">' + esc(v) + '</dd>' : '';
+  const kvRow = (k, v, full) => v ? '<div><dt>' + esc(k) + '</dt><dd title="' + esc(full || v) + '">' + esc(v) + '</dd></div>' : '';
   el.innerHTML = '<div class="sc-row">' + allConnections.map(x => {
     const st = connState(x);
     const spec = allConnectors.find(k => k.key === x.connector) || {name: x.connector};
@@ -5416,8 +5435,8 @@ async function loadSavedConnections() {
     const liveActs = canLive && (st === 'CONNECTED' || st === 'UNCONNECTED') && st !== 'STOPPED';
     return '<div class="sc" role="group" aria-label="Connection ' + esc(x.name) + ', ' + esc(label) + '">'
       + '<div class="hd"><img src="/static/logos/' + esc(x.connector) + '.svg" alt="" onerror="this.style.display=\'none\'">'
-      + '<span class="nm"><strong title="' + esc(x.name) + '">' + esc(x.name) + '</strong>'
-      +   '<span class="sub">' + esc(spec.name) + '</span></span>'
+      + '<span class="nm"><strong title="' + esc(x.name) + ' · ' + esc(spec.name) + '">' + esc(x.name)
+      +   '<span class="sub">' + esc(spec.name) + '</span></strong></span>'
       + '<span class="badge ' + badgeCls + '" role="status">'
       +   '<span class="dot" aria-hidden="true"></span>' + esc(label) + '</span></div>'
       + '<button class="kebab" data-menu="' + x.id + '" aria-label="More actions for ' + esc(x.name) + '" aria-haspopup="menu">&#8942;</button>'
@@ -5428,17 +5447,19 @@ async function loadSavedConnections() {
       +   '<button class="danger" data-act="delete" data-id="' + x.id + '">Delete</button>'
       + '</div>'
       + '<dl class="kv">'
-      +   kvRow('Endpoint', x.params.account || x.params.host || x.params.project || '—')
+      +   kvRow('Host', x.params.account || x.params.host || x.params.project || '—')
       +   kvRow('Scope', [x.params.database, x.params.warehouse].filter(Boolean).join(' · '))
-      +   kvRow('Analyzed', anLine, anFull)
+      +   kvRow('Scan', anLine, anFull)
       + '</dl>'
       + '<div class="note ' + note.tone + '">'
       +   '<div class="note-msg">' + (note.title ? '<b>' + esc(note.title) + '</b> — ' : '') + esc(note.msg) + '</div>'
       +   (note.title.length + note.msg.length > 96 ? '<button type="button" class="lnk" data-more="' + x.id + '">Show full message</button>' : '')
       + '</div>'
       + '<div class="acts">' + primary
-      + (liveActs && canLive ? ' <button class="secondary" data-act="test" data-id="' + x.id + '">Test</button>'
-        + ' <button class="secondary" data-act="load" data-id="' + x.id + '" title="Upload sample data to load — accepts .xlsx, .csv, .tsv or .json">Load data</button>'
+      + (liveActs && canLive ? ' <button class="secondary ico" data-act="test" data-id="' + x.id + '" title="Test connection" aria-label="Test connection">'
+        + '<svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 2.5a7.5 7.5 0 1 1-5.3 2.2"/><path d="M4.2 2.4v2.9h2.9"/></svg></button>'
+        + ' <button class="secondary ico" data-act="load" data-id="' + x.id + '" title="Load data — accepts .xlsx, .csv, .tsv or .json" aria-label="Load data">'
+        + '<svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 13V3"/><path d="M6.5 6.5 10 3l3.5 3.5"/><path d="M3 13v2.5a1.5 1.5 0 0 0 1.5 1.5h11a1.5 1.5 0 0 0 1.5-1.5V13"/></svg></button>'
         + '<input type="file" id="loadFile_' + x.id + '" accept=".xlsx,.csv,.tsv,.json" style="display:none">' : '')
       + '</div><div id="connOut_' + x.id + '"></div></div>';
   }).join('') + '</div>';
