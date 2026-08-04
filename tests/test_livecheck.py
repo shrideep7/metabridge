@@ -140,9 +140,14 @@ class _FakeCursor:
             self._row = self._rows[0]
             return self
         if "INFORMATION_SCHEMA.COLUMNS" in u:
-            self._rows = [("PUBLIC", "CUSTOMERS", "ID", "NUMBER"),
-                          ("PUBLIC", "CUSTOMERS", "NAME", "TEXT"),
-                          ("PUBLIC", "ORDERS", "ID", "NUMBER")]
+            # enriched shape: ..., full_type, is_nullable, column_default
+            self._rows = [
+                ("PUBLIC", "CUSTOMERS", "ID", "NUMBER", None, None, None,
+                 None, "NO", None),
+                ("PUBLIC", "CUSTOMERS", "NAME", "TEXT", None, None, None,
+                 None, "YES", "'unknown'"),
+                ("PUBLIC", "ORDERS", "ID", "NUMBER", None, None, None,
+                 None, "NO", None)]
             self._row = self._rows[0]
             return self
         if "INFORMATION_SCHEMA.VIEWS" in u:
@@ -328,8 +333,9 @@ def test_introspect_inventory_and_manifest(fake_driver, monkeypatch,
     assert review["view"] == "V_BROKEN"
     by_name = {t["name"]: t for t in r["tables"]}
     assert by_name["ORDERS"]["rows"] == 5400
-    assert by_name["CUSTOMERS"]["columns"][0] == {"name": "ID",
-                                                  "type": "NUMBER"}
+    assert by_name["CUSTOMERS"]["columns"][0] == {
+        "name": "ID", "type": "NUMBER", "nullable": False,
+        "default": "", "generated": ""}
     # the manifest feeds the Pipeline scaffold directly
     from metabridge.scaffold import load_table_manifest
     f = tmp_path / "m.yml"
@@ -510,11 +516,14 @@ class _PgCursor:
                           ("public", "orders", "BASE TABLE"),
                           ("staging", "v_top", "VIEW")]
         elif "INFORMATION_SCHEMA.COLUMNS" in u:
-            self._rows = [("public", "customers", "id", "integer",
-                           None, 32, 0),
-                          ("public", "customers", "name", "character varying",
-                           80, None, None),
-                          ("public", "orders", "id", "integer", None, 32, 0)]
+            # ..., NULL AS full_type, is_nullable, column_default
+            self._rows = [
+                ("public", "customers", "id", "integer", None, 32, 0,
+                 None, "NO", "nextval('customers_id_seq')"),
+                ("public", "customers", "name", "character varying", 80,
+                 None, None, None, "YES", None),
+                ("public", "orders", "id", "integer", None, 32, 0,
+                 None, "NO", "nextval('orders_id_seq')")]
         elif "PG_CLASS" in u:
             self._rows = [("public", "customers", 1200),
                           ("public", "orders", 5400)]
@@ -905,13 +914,26 @@ class _OraCursor:
                     ("SALES", "BIN$abc123==$0", 0)]
             self._rows = [r for r in rows
                           if not _ora_excluded_by(u, r[1])]
-        elif "ALL_TAB_COLUMNS" in u:
-            self._rows = [("SALES", "CUSTOMERS", "ID", "NUMBER", 0, 10, 0),
-                          ("SALES", "CUSTOMERS", "NAME", "VARCHAR2", 80,
-                           None, None),
-                          ("SALES", "ORDERS", "ID", "NUMBER", 0, None, None),
-                          ("SALES", "ORDERS", "NOTES", "CLOB", 0, None,
-                           None)]
+        elif "ALL_TAB_COLS" in u:
+            # enriched: ..., full_type, nullable, data_default, virtual expr.
+            # TOTAL_INC_TAX is a VIRTUAL column — migrated as an ordinary one
+            # it would silently become stored data instead of a derivation.
+            self._rows = [
+                ("SALES", "CUSTOMERS", "ID", "NUMBER", 0, 10, 0, None,
+                 "N", None, None),
+                ("SALES", "CUSTOMERS", "NAME", "VARCHAR2", 80, None, None,
+                 None, "N", "'unknown'", None),
+                ("SALES", "ORDERS", "ID", "NUMBER", 0, None, None, None,
+                 "Y", None, None),
+                ("SALES", "ORDERS", "NOTES", "CLOB", 0, None, None, None,
+                 "Y", None, None),
+                ("SALES", "ORDERS", "TOTAL_INC_TAX", "NUMBER", 0, 12, 2,
+                 None, "Y", "amount*1.2", "amount*1.2")]
+        elif "ALL_TAB_COLUMNS" in u:          # the plain fallback projection
+            self._rows = [("SALES", "CUSTOMERS", "ID", "NUMBER"),
+                          ("SALES", "CUSTOMERS", "NAME", "VARCHAR2"),
+                          ("SALES", "ORDERS", "ID", "NUMBER"),
+                          ("SALES", "ORDERS", "NOTES", "CLOB")]
         elif "ALL_SEGMENTS" in u:
             self._rows = [("SALES", "CUSTOMERS", 65536)]
         elif "MAX(LENGTH(NOTES))" in u:
@@ -1232,7 +1254,7 @@ def test_oracle_generated_tables_are_not_reported_as_estate(ora_driver,
     assert r["readiness"]["tables"] == 2
     # the columns query is filtered too, so their columns never cross the wire
     cols_sql = next(s for s in ora_driver["conn"].seen
-                    if "ALL_TAB_COLUMNS" in s)
+                    if "ALL_TAB_COLS" in s)
     assert "NOT LIKE 'AQ$%'" in cols_sql
 
 
@@ -1296,6 +1318,107 @@ def test_oracle_public_is_excluded_from_the_ordinary_classes(ora_driver,
     syn_sql = next(s for s in ora_driver["conn"].seen if "ALL_SYNONYMS" in s)
     owners = re.search(r"(?<![A-Z_])OWNER NOT IN \(([^)]*)\)", syn_sql)
     assert "'PUBLIC'" not in owners.group(1)
+
+
+def test_oracle_column_detail_reaches_the_manifest(ora_driver, monkeypatch,
+                                                   tmp_path):
+    """NOT NULL, defaults and virtual columns are the schema, not decoration.
+    A virtual column loaded as ordinary data is how a migrated table ends up
+    quietly wrong."""
+    monkeypatch.setenv("MB_ORACLE_PASSWORD", "x")
+    r = livecheck.introspect("oracle", dict(ORA_PARAMS))
+    cols = {c["name"]: c for t in r["tables"]
+            if t["name"] == "CUSTOMERS" for c in t["columns"]}
+    assert cols["ID"]["nullable"] is False
+    assert cols["NAME"]["default"] == "'unknown'"
+    virt = {c["name"]: c for t in r["tables"]
+            if t["name"] == "ORDERS" for c in t["columns"]}["TOTAL_INC_TAX"]
+    assert virt["generated"] == "amount*1.2"
+
+    rd = r["readiness"]
+    assert rd["columns"] == 5
+    assert rd["columns_not_null"] == 2
+    assert rd["columns_with_default"] == 2       # 'unknown' + the virtual one
+    assert rd["generated_columns"] == 1
+
+    # and it survives the handoff to the scaffold, which is the point
+    from metabridge.scaffold import load_table_manifest
+    f = tmp_path / "m.yml"
+    f.write_text(r["manifest_yaml"])
+    tables, _ = load_table_manifest(str(f))
+    mcols = {c["name"]: c for t in tables if t["name"] == "CUSTOMERS"
+             for c in t["columns"]}
+    assert mcols["ID"]["nullable"] is False
+    assert mcols["NAME"]["default"] == "'unknown'"
+    # a plain nullable column with no default stays quiet, so the NOT NULLs
+    # that matter are not buried under a `nullable: true` on every line
+    ocols = {c["name"]: c for t in tables if t["name"] == "ORDERS"
+             for c in t["columns"]}
+    assert "nullable" not in ocols["NOTES"]
+    assert "default" not in ocols["NOTES"]
+    assert ocols["TOTAL_INC_TAX"]["generated"] == "amount*1.2"
+
+
+def test_snowflake_column_detail_is_carried_too(fake_driver, monkeypatch):
+    """The column projection is shared, so every connector gains this at
+    once — this pins that the Snowflake path really does."""
+    monkeypatch.setenv("MB_SNOWFLAKE_PASSWORD", "x")
+    r = livecheck.introspect("snowflake", dict(PARAMS,
+                                               database="SF_SAMPLES_DB"))
+    cols = {c["name"]: c for t in r["tables"]
+            if t["name"] == "CUSTOMERS" for c in t["columns"]}
+    assert cols["ID"]["nullable"] is False
+    assert cols["NAME"]["nullable"] is True
+    assert cols["NAME"]["default"] == "'unknown'"
+    assert r["readiness"]["columns_not_null"] == 2
+
+
+def test_pg_column_detail_is_carried_too(pg_driver, monkeypatch):
+    monkeypatch.setenv("MB_POSTGRES_PASSWORD", "x")
+    r = livecheck.introspect("postgres", dict(PG_PARAMS))
+    cols = {c["name"]: c for t in r["tables"]
+            if t["name"] == "customers" for c in t["columns"]}
+    assert cols["id"]["nullable"] is False
+    assert cols["name"]["nullable"] is True
+    assert cols["id"]["default"] == "nextval('customers_id_seq')"
+    assert r["readiness"]["columns_not_null"] == 2
+
+
+def test_unknown_nullability_reads_as_permissive():
+    """NOT NULL is a CONSTRAINT. Inventing one the source does not have makes
+    the target reject rows the source accepted; missing one only loses
+    enforcement. So anything unrecognised has to mean "nullable"."""
+    assert livecheck._is_nullable("N") is False
+    assert livecheck._is_nullable("NO") is False
+    assert livecheck._is_nullable(False) is False
+    assert livecheck._is_nullable("Y") is True
+    assert livecheck._is_nullable(None) is True        # unknown
+    assert livecheck._is_nullable("") is True
+    assert livecheck._is_nullable("whatever") is True
+
+
+def test_the_word_null_is_not_a_default():
+    """Catalogs write an absent default as the literal string NULL, which is
+    the ABSENCE of a default, not a default OF null."""
+    assert livecheck._clean_default("NULL") == ""
+    assert livecheck._clean_default("  null  ") == ""
+    assert livecheck._clean_default(None) == ""
+    assert livecheck._clean_default("0") == "0"
+
+
+def test_plain_column_fallback_keeps_the_tuple_shape(monkeypatch):
+    """When the enriched projection fails, callers must not have to branch —
+    the fallback returns the same 7-slot row with safe values."""
+    def run(sql):
+        if "character_maximum_length" in sql:
+            raise RuntimeError("column does not exist")
+        return [("s", "t", "c", "varchar")]
+
+    (row,) = livecheck._fetch_columns(
+        run,
+        "SELECT a, b, c, d, character_maximum_length FROM x",
+        "SELECT a, b, c, d FROM x")
+    assert row == ("s", "t", "c", "varchar", True, "", "")
 
 
 def test_oracle_is_a_live_source_but_not_a_live_load_target():

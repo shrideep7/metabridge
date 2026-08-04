@@ -184,6 +184,17 @@ def _norm_column(c) -> Optional[dict]:
                 if c.get(k):
                     out["type"] = _repair_flow_split_type(c, str(c[k]))
                     break
+            # NOT NULL is the one constraint most cloud targets actually
+            # enforce, and a default is part of the column definition — both
+            # have to survive the handoff or the generated DDL silently
+            # accepts rows the source would have rejected. Only the
+            # non-default readings are carried: nullable is true unless said
+            # otherwise, so `nullable: true` would be noise.
+            if c.get("nullable") is False:
+                out["nullable"] = False
+            for k in ("default", "generated"):
+                if c.get(k):
+                    out[k] = str(c[k])
             return out
         if len(c) == 1:                       # {KUNNR: numc}
             (k, v), = c.items()

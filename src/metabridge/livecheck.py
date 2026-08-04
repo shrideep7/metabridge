@@ -95,24 +95,76 @@ def _native_type(data_type: object, char_len: object = None,
     return base
 
 
+# A catalog's word for "this column accepts NULL". Oracle says Y/N,
+# INFORMATION_SCHEMA says YES/NO, some drivers hand back a real boolean.
+_NULLABLE_TRUE = frozenset({"y", "yes", "t", "true", "1"})
+_NULLABLE_FALSE = frozenset({"n", "no", "f", "false", "0"})
+
+
+def _is_nullable(v: object) -> bool:
+    """Whether a catalog's nullability flag means "NULL allowed".
+
+    Defaults to True on anything unrecognised. NOT NULL is a CONSTRAINT:
+    inventing one that the source does not have would make the generated
+    target reject rows the source accepts, whereas missing one only loses
+    enforcement. Guessing wrong in the permissive direction is recoverable.
+    """
+    if isinstance(v, bool):
+        return v
+    s = str(v if v is not None else "").strip().lower()
+    if s in _NULLABLE_FALSE:
+        return False
+    if s in _NULLABLE_TRUE:
+        return True
+    return True
+
+
+def _clean_default(v: object) -> str:
+    """A column DEFAULT as text, or "" when there is none.
+
+    Oracle pads DATA_DEFAULT and stores it as LONG; every catalog quotes
+    string literals in its own way, so the expression is carried VERBATIM
+    rather than parsed — the target generator is what knows how to render
+    it, and a half-parsed default is worse than the raw text.
+    """
+    s = str(v if v is not None else "").strip()
+    # "NULL" is the absence of a default, not a default OF null
+    return "" if s.upper() == "NULL" else s[:512]
+
+
 def _fetch_columns(run, enriched_sql: str, plain_sql: str,
                    on_retry=None) -> List[tuple]:
-    """Column rows as ``(schema, table, column, native_type)``.
+    """Column rows as ``(schema, table, column, native_type, nullable,
+    default, generated_expr)``.
 
-    Tries the projection that carries precision/scale/length and degrades to
-    bare ``data_type`` if the catalog or the role will not give it — losing
-    exact types is a downgrade, losing the whole inventory is an outage.
+    The enriched projection is POSITIONAL and shared by every connector::
+
+        0 schema   1 table      2 column    3 data_type
+        4 char_len 5 num_prec   6 num_scale 7 full_type
+        8 nullable 9 default   10 generated expression
+
+    A platform that has no equivalent for a slot must still select something
+    for it (``NULL AS full_type``) so the ones after it stay aligned. Short
+    rows are tolerated, so a connector may simply stop early.
+
+    Falls back to ``plain_sql`` — bare ``data_type`` — if the catalog or the
+    role will not give the enriched form: losing exact types is a downgrade,
+    losing the whole inventory is an outage. The fallback keeps the tuple
+    shape, so callers never branch on which query answered.
     """
+    def at(r, i):
+        return r[i] if len(r) > i else None
+
     rows: List[tuple] = []
     try:
         raw = run(enriched_sql)
         for r in raw:
             rows.append((r[0], r[1], str(r[2]),
-                         _native_type(r[3],
-                                      r[4] if len(r) > 4 else None,
-                                      r[5] if len(r) > 5 else None,
-                                      r[6] if len(r) > 6 else None,
-                                      r[7] if len(r) > 7 else None)))
+                         _native_type(r[3], at(r, 4), at(r, 5), at(r, 6),
+                                      at(r, 7)),
+                         _is_nullable(at(r, 8)),
+                         _clean_default(at(r, 9)),
+                         _clean_default(at(r, 10))))
         return rows
     except Exception:  # noqa: BLE001 — fall back to base types
         if on_retry is not None:
@@ -120,7 +172,54 @@ def _fetch_columns(run, enriched_sql: str, plain_sql: str,
                 on_retry()
             except Exception:  # noqa: BLE001
                 pass
-    return [(r[0], r[1], str(r[2]), str(r[3])) for r in run(plain_sql)]
+    # Nullability is unknown here, not known-permissive. True is the safe
+    # reading (see _is_nullable) and the readiness report says how many
+    # columns arrived without it.
+    return [(r[0], r[1], str(r[2]), str(r[3]), True, "", "")
+            for r in run(plain_sql)]
+
+
+def _column_row(r: tuple) -> dict:
+    """A `_fetch_columns` row as the column dict the inventory carries."""
+    return {"name": str(r[2]), "type": r[3], "nullable": r[4],
+            "default": r[5], "generated": r[6]}
+
+
+def _column_entry(c: dict) -> dict:
+    """One manifest column.
+
+    Only the NON-default readings are emitted: a column is nullable unless
+    the source says otherwise, so `nullable: true` on every line would be
+    noise that buries the handful of NOT NULLs that matter. A generated
+    column carries its expression, because loading a computed value as if it
+    were data is how a migrated table ends up quietly wrong.
+    """
+    entry: Dict[str, object] = {"name": c["name"], "type": c["type"]}
+    if c.get("nullable") is False:
+        entry["nullable"] = False
+    for k in ("default", "generated"):
+        if c.get(k):
+            entry[k] = c[k]
+    return entry
+
+
+def _column_readiness(base_tables: List[dict]) -> Dict[str, int]:
+    """What the column detail adds up to, for the readiness report.
+
+    `columns_not_null` is the headline. NOT NULL is the one constraint the
+    cloud targets actually enforce, so a source declaring thousands of them
+    against generated DDL declaring none is a silent loss of the only
+    integrity the target would have given you — and it stays silent unless
+    somebody counts it.
+    """
+    cols = [c for t in base_tables for c in t.get("columns", [])]
+    return {
+        "columns": len(cols),
+        "columns_not_null": sum(1 for c in cols
+                                if c.get("nullable") is False),
+        "columns_with_default": sum(1 for c in cols if c.get("default")),
+        "generated_columns": sum(1 for c in cols if c.get("generated")),
+    }
 
 
 _TEXTUAL_BASES = frozenset({"text", "varchar", "string", "char",
@@ -369,8 +468,7 @@ def _manifest_entry(table: dict, database: str,
     declared = list((pks or {}).get(key, []))
     if declared:
         entry["unique_key"] = declared
-    entry["columns"] = [{"name": c["name"], "type": c["type"]}
-                        for c in table["columns"]]
+    entry["columns"] = [_column_entry(c) for c in table["columns"]]
     return entry
 
 
@@ -831,7 +929,8 @@ def _databricks_introspect(params: Dict[str, str],
                 _run,
                 "SELECT table_schema, table_name, column_name, data_type, "
                 "character_maximum_length, numeric_precision, numeric_scale, "
-                "full_data_type FROM information_schema.columns "
+                "full_data_type, is_nullable, column_default, "
+                "generation_expression FROM information_schema.columns "
                 "WHERE table_schema = COALESCE(?, table_schema) "
                 "ORDER BY table_schema, table_name, ordinal_position",
                 "SELECT table_schema, table_name, column_name, data_type "
@@ -840,8 +939,7 @@ def _databricks_introspect(params: Dict[str, str],
                 "ORDER BY table_schema, table_name, ordinal_position"):
             key_ = (r[0], r[1])
             if key_ in tables:
-                tables[key_]["columns"].append(
-                    {"name": str(r[2]), "type": r[3]})
+                tables[key_]["columns"].append(_column_row(r))
         # ── Row counts: 3-tier fallback ──────────────────────────────────────
         # Tier 1: information_schema.table_statistics — populated by ANALYZE
         # TABLE or Databricks' automatic stats collection. Fast, but zero for
@@ -955,6 +1053,7 @@ def _databricks_introspect(params: Dict[str, str],
         "total_rows": sum(t["rows"] for t in base_tables),
         "tables_with_columns": sum(1 for t in base_tables if t["columns"]),
         "column_sizes_measured": measured,
+        **_column_readiness(base_tables),
         "views_convertible": len(convertible),
         "views_needing_review": needs_review,
         "verdict": "READY" if base_tables or convertible else
@@ -1314,10 +1413,18 @@ def _sqldb_introspect(key: str, params: Dict[str, str],
             cur.execute(sql % where, args)
             return cur.fetchall()
 
+        # `NULL AS full_type` holds slot 7 open: PostgreSQL has no single
+        # column carrying the whole declared type, and the slots after it
+        # are positional. is_generated is PG12+ and absent on Redshift
+        # (whose INFORMATION_SCHEMA is PostgreSQL 8.0 vintage), so it is
+        # the LAST thing selected — if it is missing the row simply comes
+        # back short and _fetch_columns tolerates that, instead of the
+        # whole enriched projection failing over to bare data_type.
         for r in _fetch_columns(
                 _run,
                 "SELECT table_schema, table_name, column_name, data_type, "
-                "character_maximum_length, numeric_precision, numeric_scale "
+                "character_maximum_length, numeric_precision, numeric_scale, "
+                "NULL AS full_type, is_nullable, column_default "
                 "FROM information_schema.columns "
                 "WHERE table_catalog = current_database() %s "
                 "ORDER BY table_schema, table_name, ordinal_position",
@@ -1328,8 +1435,7 @@ def _sqldb_introspect(key: str, params: Dict[str, str],
                 on_retry=lambda: conn.rollback()):
             key_ = (r[0], r[1])
             if key_ in tables:
-                tables[key_]["columns"].append({"name": str(r[2]),
-                                                "type": r[3]})
+                tables[key_]["columns"].append(_column_row(r))
         # row estimates are best-effort — exact COUNT(*) is too costly at
         # scale, and the catalog estimate is what warehouses expose cheaply.
         try:
@@ -1490,6 +1596,7 @@ def _sqldb_introspect(key: str, params: Dict[str, str],
             "tables_with_columns": sum(1 for t in base_tables
                                        if t["columns"]),
             "column_sizes_measured": measured,
+            **_column_readiness(base_tables),
             "materialized_views": len(materialized_views),
             "sequences": len(sequences),
             "functions": len(functions),
@@ -2088,19 +2195,30 @@ def _oracle_introspect(params: Dict[str, str],
             cur.execute(sql % col_where, binds)
             return cur.fetchall()
 
+        # ALL_TAB_COLS rather than ALL_TAB_COLUMNS: only the former carries
+        # VIRTUAL_COLUMN, and a virtual column migrated as an ordinary one
+        # loses its expression — the table looks migrated while the data is
+        # quietly wrong. HIDDEN_COLUMN = 'NO' restores what ALL_TAB_COLUMNS
+        # filtered for us (system-generated columns behind virtual columns
+        # and function-based indexes).
+        #
+        # DATA_DEFAULT is a LONG. That is safe HERE because this query is
+        # never wrapped in an inline view (see _ora_top / ORA-00997), but it
+        # is the reason this projection must stay unwrapped.
         for r in _fetch_columns(
                 _run,
                 "SELECT owner, table_name, column_name, data_type, "
-                "char_length, data_precision, data_scale "
-                "FROM all_tab_columns WHERE 1 = 1 %s "
+                "char_length, data_precision, data_scale, "
+                "NULL AS full_type, nullable, data_default, "
+                "CASE WHEN virtual_column = 'YES' THEN data_default END "
+                "FROM all_tab_cols WHERE hidden_column = 'NO' %s "
                 "ORDER BY owner, table_name, column_id",
                 "SELECT owner, table_name, column_name, data_type "
                 "FROM all_tab_columns WHERE 1 = 1 %s "
                 "ORDER BY owner, table_name, column_id"):
             key_ = (r[0], r[1])
             if key_ in tables:
-                tables[key_]["columns"].append({"name": str(r[2]),
-                                                "type": r[3]})
+                tables[key_]["columns"].append(_column_row(r))
 
         # Size on disk comes from the segment, not the table — and a role that
         # may read ALL_TABLES is often not granted ALL_SEGMENTS, so a missing
@@ -2184,6 +2302,7 @@ def _oracle_introspect(params: Dict[str, str],
         "total_rows": sum(t["rows"] for t in base_tables),
         "tables_with_columns": sum(1 for t in base_tables if t["columns"]),
         "column_sizes_measured": measured,
+        **_column_readiness(base_tables),
         # Oracle enforces primary keys, so a table WITH one can be loaded by
         # MERGE; one without still falls through to a full reload.
         "tables_with_primary_key": sum(
@@ -2685,7 +2804,8 @@ def introspect(key: str, params: Dict[str, str],
         for r in _fetch_columns(
                 lambda sql: cur.execute(sql % schema_pred, args).fetchall(),
                 "SELECT table_schema, table_name, column_name, data_type, "
-                "character_maximum_length, numeric_precision, numeric_scale "
+                "character_maximum_length, numeric_precision, numeric_scale, "
+                "NULL AS full_type, is_nullable, column_default "
                 "FROM INFORMATION_SCHEMA.COLUMNS "
                 "WHERE table_catalog = CURRENT_DATABASE() %s "
                 "ORDER BY table_schema, table_name, ordinal_position",
@@ -2695,8 +2815,7 @@ def introspect(key: str, params: Dict[str, str],
                 "ORDER BY table_schema, table_name, ordinal_position"):
             key_ = (r[0], r[1])
             if key_ in tables:
-                tables[key_]["columns"].append({"name": str(r[2]),
-                                                "type": r[3]})
+                tables[key_]["columns"].append(_column_row(r))
         try:
             measured = _measure_column_sizes(
                 lambda sql: cur.execute(sql).fetchall(), tables)
@@ -2757,6 +2876,7 @@ def introspect(key: str, params: Dict[str, str],
         "total_rows": sum(t["rows"] for t in base_tables),
         "tables_with_columns": sum(1 for t in base_tables if t["columns"]),
         "column_sizes_measured": measured,
+        **_column_readiness(base_tables),
         # load behaviour: tables with no declared PK fall back to FULL reload
         "tables_with_primary_key": sum(
             1 for t in base_tables
