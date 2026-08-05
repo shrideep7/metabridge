@@ -31,6 +31,7 @@ credential.
 from __future__ import annotations
 
 from pathlib import Path
+import re
 from typing import Dict, List, Optional, Tuple
 
 from ..connectors.base import ConnectorSpec
@@ -138,16 +139,38 @@ def _type_of(port: Port, dialect: str) -> str:
 
 
 def _quote(dialect: str, ident: str) -> str:
-    """Leave identifiers bare. Redshift/Postgres fold unquoted names to
-    lower case and dbt resolves them the same way, so quoting here (and not
-    there) is how a migration ends up with UPPER and lower twins of every
-    table."""
+    """Quote identifiers if they contain special characters (like `#` or `-`) that
+    are invalid in unquoted identifiers for the target dialect."""
+    if not ident:
+        return ident
+    if re.search(r"[^A-Za-z0-9_$]", ident):
+        if dialect in ("bigquery", "databricks"):
+            return "`%s`" % ident
+        elif dialect == "tsql":
+            return "[%s]" % ident
+        else:
+            return '"%s"' % ident
     return ident
 
 
 def _qualified(dialect: str, schema: str, name: str) -> str:
     return "%s.%s" % (_quote(dialect, schema), _quote(dialect, name)) \
         if schema else _quote(dialect, name)
+
+
+def _create_schemas(dialect: str, schemas: List[str]) -> str:
+    """``CREATE SCHEMA IF NOT EXISTS`` is not universal: T-SQL has no IF NOT
+    EXISTS on CREATE SCHEMA, and an Oracle schema IS a user."""
+    if dialect == "tsql":
+        return "".join(
+            "IF NOT EXISTS (SELECT 1 FROM sys.schemas WHERE name = '%s')\n"
+            "    EXEC('CREATE SCHEMA [%s]');\n" % (s, s) for s in schemas)
+    if dialect == "oracle":
+        return "".join(
+            "-- Oracle: a schema is a user. Run as a DBA and grant a quota.\n"
+            "-- CREATE USER %s IDENTIFIED BY \"<password>\" "
+            "QUOTA UNLIMITED ON USERS;\n" % _quote(dialect, s) for s in schemas)
+    return "".join("CREATE SCHEMA IF NOT EXISTS %s;\n" % _quote(dialect, s) for s in schemas)
 
 
 def _load_hints(pipeline: Pipeline) -> Dict[str, dict]:
@@ -198,21 +221,6 @@ def _redshift_physical(src: SourceTable, hint: dict) -> List[str]:
     return out
 
 
-def _create_schemas(dialect: str, schemas: List[str]) -> str:
-    """``CREATE SCHEMA IF NOT EXISTS`` is not universal: T-SQL has no IF NOT
-    EXISTS on CREATE SCHEMA, and an Oracle schema IS a user."""
-    if dialect == "tsql":
-        return "".join(
-            "IF NOT EXISTS (SELECT 1 FROM sys.schemas WHERE name = '%s')\n"
-            "    EXEC('CREATE SCHEMA %s');\n" % (s, s) for s in schemas)
-    if dialect == "oracle":
-        return "".join(
-            "-- Oracle: a schema is a user. Run as a DBA and grant a quota.\n"
-            "-- CREATE USER %s IDENTIFIED BY \"<password>\" "
-            "QUOTA UNLIMITED ON USERS;\n" % s for s in schemas)
-    return "".join("CREATE SCHEMA IF NOT EXISTS %s;\n" % s for s in schemas)
-
-
 def _probe_widths(spec: Optional[ConnectorSpec], dialect: str,
                   tables: List[SourceTable]) -> str:
     """Measure the real width of every text column whose length the source
@@ -221,12 +229,12 @@ def _probe_widths(spec: Optional[ConnectorSpec], dialect: str,
     parts: List[str] = []
     fn = "LEN" if dialect == "tsql" else "LENGTH"
     for t in tables:
-        measures = ["       MAX(%s(%s)) AS %s_len" % (fn, c.name, c.name[:110])
+        measures = ["       MAX(%s(%s)) AS %s_len" % (fn, _quote(dialect, c.name), re.sub(r"[^A-Za-z0-9_]", "_", c.name)[:110])
                     for c in t.columns
                     if c.datatype == "string" and not c.precision]
         # an integral column too wide to narrow: measure it so a 128-bit
         # DECIMAL(38,0) key can become a BIGINT on evidence
-        measures += ["       MAX(ABS(%s)) AS %s_max" % (c.name, c.name[:110])
+        measures += ["       MAX(ABS(%s)) AS %s_max" % (_quote(dialect, c.name), re.sub(r"[^A-Za-z0-9_]", "_", c.name)[:110])
                      for c in t.columns
                      if c.datatype == "decimal" and not (c.scale or 0)
                      and c.precision > _INT64_DIGITS]

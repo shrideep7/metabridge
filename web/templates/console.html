@@ -6217,39 +6217,26 @@ async function closeDrawer(force) {
 })();
 function esc(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;'); }
 
-/* ---------------- table manifest preview ----------------
-   The manifest is what Pipeline Studio turns into pipelines, so it has to be
-   READABLE before it is used, not only downloadable. Introspection can only
-   emit columns/types as fact; unique_key needs a declared PRIMARY KEY and
-   incremental_column can only be INFERRED, so those arrive as commented
-   suggestions. Highlighting them here is the whole point: a manifest with no
-   watermark means a FULL reload of every table on every run, and that is the
-   kind of thing you want to see BEFORE clicking Generate. */
+/* ---------------- table manifest preview ---------------- */
 function manifestStats(yml) {
   const lines = String(yml || '').split('\n');
   let tables = 0, keys = 0, suggested = 0, missingKey = 0, active = 0;
   lines.forEach(l => {
-    if (/^-\s+name:/.test(l)) tables++;
+    if (/^\s*-\s+name:/.test(l)) tables++;
     else if (/^\s*#\s*incremental_column:/.test(l)) suggested++;
     else if (/^\s*#\s*unique_key:/.test(l)) missingKey++;
-    else if (/^\s{2}unique_key:/.test(l)) keys++;
-    else if (/^\s{2}incremental_column:\s*\S/.test(l)) active++;   // uncommented
+    else if (/^\s*unique_key:/.test(l)) keys++;
+    else if (/^\s*incremental_column:\s*\S/.test(l)) active++;   // uncommented
   });
   return {tables, keys, suggested, missingKey, active};
 }
 
-function manifestPreviewHtml(yml, filename) {
-  const s = manifestStats(yml);
-  const blob = new Blob([yml], {type:'text/yaml'});
-  // colour only the suggestion comments; everything else stays plain
-  // The global `pre` rule is dark-on-navy; this block is light-on-white, so
-  // every colour here is set explicitly rather than inherited.
-  const body = String(yml || '').split('\n').map(l => {
+function renderYamlBody(yml) {
+  return String(yml || '').split('\n').map(l => {
     const e = esc(l);
     if (/^\s*#\s*(incremental_column|unique_key):/.test(l))
       return '<span style="color:#8A4B08;font-weight:600">' + e + '</span>';
     if (/^\s*#/.test(l)) return '<span style="color:#6B7A8A">' + e + '</span>';
-    // key: value — key in slate, value in ink so the structure reads at a glance
     const kv = l.match(/^(\s*-?\s*)([A-Za-z_][\w]*)(:)(.*)$/);
     if (kv) return esc(kv[1])
       + '<span style="color:#1F6FB2">' + esc(kv[2]) + '</span>'
@@ -6257,44 +6244,104 @@ function manifestPreviewHtml(yml, filename) {
       + '<span style="color:#16212E">' + esc(kv[4]) + '</span>';
     return '<span style="color:#16212E">' + e + '</span>';
   }).join('\n');
+}
+
+window._manifestRawCache = window._manifestRawCache || {};
+
+function manifestPreviewHtml(yml, filename) {
+  const containerId = 'manifestBox_' + Math.random().toString(36).substr(2, 9);
+  window._manifestRawCache[containerId] = { yml: yml, filename: filename, isEditing: false };
+  // Update chosen.scafFile with initial/current content
+  if (typeof chosen !== 'undefined') {
+    chosen.scafFile = new File([yml], filename || 'tables_manifest.yml', {type: 'text/yaml'});
+  }
+  return renderManifestContainer(containerId);
+}
+
+function renderManifestContainer(containerId) {
+  const cached = window._manifestRawCache[containerId];
+  if (!cached) return '';
+  const yml = cached.yml;
+  const filename = cached.filename;
+  const s = manifestStats(yml);
+  const blob = new Blob([yml], {type:'text/yaml'});
+  const NEUTRAL = ['#EDF0F4', '#33404E', '#D9DFE7'];
+  const GOOD    = ['#E9F6EE', '#0F6B33', '#BFE4CC'];
+  const WARN    = ['#FCF3E3', '#8A4B08', '#EFD9AC'];
   const chip = (txt, bg, fg, bd) => '<span style="display:inline-block;'
     + 'padding:3px 10px;border-radius:11px;font-size:12px;font-weight:600;'
     + 'margin:0 6px 4px 0;background:' + bg + ';color:' + fg
     + ';border:1px solid ' + bd + '">' + esc(txt) + '</span>';
-  const NEUTRAL = ['#EDF0F4', '#33404E', '#D9DFE7'];
-  const GOOD    = ['#E9F6EE', '#0F6B33', '#BFE4CC'];
-  const WARN    = ['#FCF3E3', '#8A4B08', '#EFD9AC'];
+
   let chips = chip(s.tables + ' tables', ...NEUTRAL);
   chips += s.keys
     ? chip(s.keys + ' with primary key', ...GOOD)
     : chip('no primary keys declared', ...WARN);
   if (s.suggested) chips += chip(s.suggested + ' watermark suggestion'
     + (s.suggested === 1 ? '' : 's'), ...WARN);
-  // A table full-reloads until its incremental_column is UNCOMMENTED. On a
-  // freshly introspected manifest that is all of them; an edited one that is
-  // re-previewed will show fewer, which is the signal the user is looking for.
+
   const full = s.tables - s.active;
-  const warn = full
+  const warn = (s.tables > 0 && full > 0) || (s.tables === 0)
     ? '<div style="font-size:12px;color:#8A4B08;margin-top:8px;line-height:1.5">'
-      + full + ' of ' + s.tables + ' table' + (s.tables === 1 ? '' : 's')
-      + ' ha' + (full === 1 ? 's' : 've') + ' no active '
-      + '<code>incremental_column</code> and will FULL reload on every run.'
-      + (s.missingKey ? ' ' + s.missingKey + ' also lack'
-          + (s.missingKey === 1 ? 's' : '') + ' a declared PRIMARY KEY, so a '
-          + 'merge key must be set by hand.' : '')
-      + ' Uncomment and verify the highlighted lines to get MERGE loads.</div>'
+      + (s.tables === 0
+          ? 'No tables detected in manifest.'
+          : full + ' of ' + s.tables + ' table' + (s.tables === 1 ? '' : 's')
+            + ' ha' + (full === 1 ? 's' : 've') + ' no active '
+            + '<code>incremental_column</code> and will FULL reload on every run.'
+            + (s.missingKey ? ' ' + s.missingKey + ' also lack'
+                + (s.missingKey === 1 ? 's' : '') + ' a declared PRIMARY KEY, so a '
+                + 'merge key must be set by hand.' : '')
+            + ' Uncomment and verify the highlighted lines to get MERGE loads.')
+      + '</div>'
     : '<div style="font-size:12px;color:#0F6B33;margin-top:8px;line-height:1.5">'
       + 'Every table has an active incremental_column — MERGE loads.</div>';
-  return '<div style="margin-top:10px">'
-    + '<div style="margin-bottom:6px">' + chips + '</div>'
-    + '<pre style="max-height:320px;overflow:auto;background:#FBFCFD;'
-    + 'color:#16212E;border:1px solid var(--border);border-radius:6px;'
-    + 'padding:12px;font-size:12px;line-height:1.55;margin-top:0;'
-    + 'white-space:pre-wrap;overflow-wrap:anywhere">' + body + '</pre>'
+
+  const isEditing = cached.isEditing || false;
+
+  return '<div id="' + containerId + '" style="margin-top:10px">'
+    + '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">'
+    + '<div>' + chips + '</div>'
+    + '<button type="button" class="secondary" style="font-size:12px;padding:4px 10px;cursor:pointer" onclick="toggleManifestEdit(\'' + containerId + '\')">'
+    + (isEditing ? '✔ Done Editing' : '✎ Edit Manifest in UI') + '</button>'
+    + '</div>'
+    + (isEditing
+        ? '<textarea id="txt_' + containerId + '" style="width:100%;height:320px;background:#FBFCFD;color:#16212E;border:1px solid var(--border);border-radius:6px;padding:12px;font-family:monospace;font-size:12px;line-height:1.55;box-sizing:border-box;resize:vertical;" oninput="onManifestInput(\'' + containerId + '\')">' + esc(yml) + '</textarea>'
+        : '<pre style="max-height:320px;overflow:auto;background:#FBFCFD;color:#16212E;border:1px solid var(--border);border-radius:6px;padding:12px;font-size:12px;line-height:1.55;margin-top:0;white-space:pre-wrap;overflow-wrap:anywhere">' + renderYamlBody(yml) + '</pre>'
+      )
     + warn
-    + '<a href="' + URL.createObjectURL(blob) + '" download="' + esc(filename)
-    + '"><button class="secondary">Download table manifest</button></a>'
+    + '<div style="margin-top:8px">'
+    + '<a href="' + URL.createObjectURL(blob) + '" download="' + esc(filename) + '"><button type="button" class="secondary">Download table manifest</button></a>'
+    + '</div>'
     + '</div>';
+}
+
+function toggleManifestEdit(containerId) {
+  const cached = window._manifestRawCache[containerId];
+  if (!cached) return;
+  if (cached.isEditing) {
+    const txtEl = document.getElementById('txt_' + containerId);
+    if (txtEl) {
+      cached.yml = txtEl.value;
+      if (typeof chosen !== 'undefined') {
+        chosen.scafFile = new File([cached.yml], cached.filename || 'tables_manifest.yml', {type: 'text/yaml'});
+      }
+    }
+  }
+  cached.isEditing = !cached.isEditing;
+  const el = document.getElementById(containerId);
+  if (el) el.outerHTML = renderManifestContainer(containerId);
+}
+
+function onManifestInput(containerId) {
+  const cached = window._manifestRawCache[containerId];
+  if (!cached) return;
+  const txtEl = document.getElementById('txt_' + containerId);
+  if (txtEl) {
+    cached.yml = txtEl.value;
+    if (typeof chosen !== 'undefined') {
+      chosen.scafFile = new File([cached.yml], cached.filename || 'tables_manifest.yml', {type: 'text/yaml'});
+    }
+  }
 }
 
 /* ---------------- governance ---------------- */
@@ -7635,6 +7682,17 @@ function estateAssets(d) {
   push(d.synonyms, 'Synonym');
   push(d.db_links, 'Database link');
   push(d.queues, 'Queue');
+  // a constraint's identity is the table it guards, so `table` is what the
+  // schema/name pair means here — the estate list keys off `name`
+  (d.constraints || []).forEach(o => A.push({
+    name: o.name, type: o.type === 'PRIMARY KEY' ? 'Primary key'
+      : o.type === 'FOREIGN KEY' ? 'Foreign key'
+      : o.type === 'UNIQUE' ? 'Unique constraint' : 'Check constraint',
+    schema: o.schema || '', rows: null, columns: null,
+    definition: o.expression || (o.ref_table
+      ? (o.columns || []).join(', ') + ' → ' + o.ref_table
+        + ' (' + (o.ref_columns || []).join(', ') + ')'
+      : (o.columns || []).join(', '))}));
   push(d.scheduler_jobs, 'Scheduler job');
   push(d.masking_policies, 'Masking policy');
   push(d.row_access_policies, 'Row access policy');

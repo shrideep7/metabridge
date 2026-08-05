@@ -222,6 +222,156 @@ def _column_readiness(base_tables: List[dict]) -> Dict[str, int]:
     }
 
 
+# ---------------------------------------------------------------------------
+# Constraints. A primary key decides LOAD STRATEGY (MERGE vs full reload) and
+# a foreign key decides LOAD ORDER — you cannot load a child before its
+# parent, and nothing else in the inventory records that dependency. Both are
+# migration facts even on targets that do not enforce them.
+# ---------------------------------------------------------------------------
+
+_CONSTRAINT_KINDS = {
+    "P": "PRIMARY KEY", "PRIMARY KEY": "PRIMARY KEY", "PRIMARY": "PRIMARY KEY",
+    "R": "FOREIGN KEY", "FOREIGN KEY": "FOREIGN KEY", "FOREIGN": "FOREIGN KEY",
+    "U": "UNIQUE", "UNIQUE": "UNIQUE",
+    "C": "CHECK", "CHECK": "CHECK",
+}
+
+# Oracle and PostgreSQL both record a NOT NULL column as a CHECK constraint of
+# its own. Nullability is already carried per column, so letting these through
+# would list one constraint per NOT NULL column — burying the handful of real
+# business rules under hundreds of restatements.
+_NOT_NULL_CHECK = re.compile(r'^"?[\w$#]+"?\s+IS\s+NOT\s+NULL$', re.I)
+
+
+def _constraint_kind(raw: object) -> str:
+    """A catalog's constraint type as the shared vocabulary. Oracle uses one
+    letter, INFORMATION_SCHEMA spells it out."""
+    return _CONSTRAINT_KINDS.get(str(raw or "").strip().upper(), "")
+
+
+def _group_constraints(rows) -> List[dict]:
+    """Constraint rows -> one dict per constraint, columns in key order.
+
+    Positional contract, shared by every connector — a catalog with no
+    equivalent for a slot selects NULL to hold it open::
+
+        0 schema      1 table      2 name        3 kind
+        4 column      5 position
+        6 ref_schema  7 ref_table  8 ref_column
+        9 check expression
+
+    One row per COLUMN arrives (a composite key is several rows); they are
+    folded into one constraint with its columns ordered by position.
+    """
+    grouped: Dict[tuple, dict] = {}
+    order: Dict[tuple, List[tuple]] = {}
+    ref_order: Dict[tuple, List[tuple]] = {}
+    for r in rows:
+        kind = _constraint_kind(_at(r, 3))
+        if not kind:
+            continue
+        expr = str(_at(r, 9) or "").strip()
+        if kind == "CHECK" and (not expr or _NOT_NULL_CHECK.match(expr)):
+            continue
+        key = (_at(r, 0), _at(r, 1), _at(r, 2))
+        entry = grouped.get(key)
+        if entry is None:
+            entry = {"schema": _at(r, 0), "table": _at(r, 1),
+                     "name": _at(r, 2), "type": kind, "columns": []}
+            if kind == "FOREIGN KEY":
+                ref_schema, ref_table = _at(r, 6), _at(r, 7)
+                entry["ref_table"] = ("%s.%s" % (ref_schema, ref_table)
+                                      if ref_schema else ref_table)
+                entry["ref_columns"] = []
+            if kind == "CHECK":
+                entry["expression"] = expr[:512]
+            grouped[key] = entry
+            order[key] = []
+            ref_order[key] = []
+        try:
+            pos = int(_at(r, 5, "0") or 0)
+        except ValueError:
+            pos = 0
+        col = _at(r, 4)
+        if col and col not in [c for _, c in order[key]]:
+            order[key].append((pos, col))
+        ref_col = _at(r, 8)
+        if ref_col and "ref_columns" in entry:
+            if ref_col not in [c for _, c in ref_order[key]]:
+                ref_order[key].append((pos, ref_col))
+
+    for key, entry in grouped.items():
+        entry["columns"] = [c for _, c in sorted(order[key])]
+        if "ref_columns" in entry:
+            entry["ref_columns"] = [c for _, c in sorted(ref_order[key])]
+    return sorted(grouped.values(),
+                  key=lambda c: (c["schema"], c["table"], c["name"]))
+
+
+def _ansi_constraint_sql(catalog_pred: str, scope_pred: str,
+                         with_check: bool = True) -> str:
+    """The INFORMATION_SCHEMA constraint query, in the `_group_constraints`
+    column order. PostgreSQL, Redshift, Snowflake and Databricks all expose
+    this trio, so the only per-platform parts are the catalog predicate and
+    the schema scope.
+
+    Every join is a LEFT join: a CHECK has no `key_column_usage` row and a
+    PRIMARY KEY has no referential row, and an INNER join would drop whole
+    constraint classes rather than leave their slots empty.
+
+    `with_check` is off for Snowflake, which has no CHECK constraints and
+    therefore no `check_constraints` view to join.
+    """
+    check_select = "cc.check_clause" if with_check else "NULL"
+    check_join = (
+        "LEFT JOIN information_schema.check_constraints cc "
+        "ON tc.constraint_name = cc.constraint_name "
+        "AND tc.constraint_schema = cc.constraint_schema " if with_check
+        else "")
+    return (
+        "SELECT tc.table_schema, tc.table_name, tc.constraint_name, "
+        "tc.constraint_type, kcu.column_name, kcu.ordinal_position, "
+        "ccu.table_schema, ccu.table_name, ccu.column_name, %s "
+        "FROM information_schema.table_constraints tc "
+        "LEFT JOIN information_schema.key_column_usage kcu "
+        "ON tc.constraint_name = kcu.constraint_name "
+        "AND tc.constraint_schema = kcu.constraint_schema "
+        "LEFT JOIN information_schema.referential_constraints rc "
+        "ON tc.constraint_name = rc.constraint_name "
+        "AND tc.constraint_schema = rc.constraint_schema "
+        "LEFT JOIN information_schema.constraint_column_usage ccu "
+        "ON rc.unique_constraint_name = ccu.constraint_name "
+        "AND rc.unique_constraint_schema = ccu.constraint_schema "
+        "%sWHERE %s %s "
+        "ORDER BY tc.table_schema, tc.table_name, tc.constraint_name, "
+        "kcu.ordinal_position"
+        % (check_select, check_join, catalog_pred, scope_pred))
+
+
+def _primary_keys_from(constraints: List[dict]) -> Dict[tuple, List[str]]:
+    """{(schema, table): [pk columns]} — what the manifest's `unique_key`
+    is built from, and therefore what decides MERGE vs a full reload."""
+    return {(c["schema"], c["table"]): list(c["columns"])
+            for c in constraints
+            if c["type"] == "PRIMARY KEY" and c["columns"]}
+
+
+def _constraint_readiness(constraints: List[dict]) -> Dict[str, int]:
+    """Counts per kind. `foreign_keys` is the one to watch: it is the whole
+    load-order dependency graph, and a migration that ignores it loads
+    children before parents."""
+    return {
+        "primary_keys": sum(1 for c in constraints
+                            if c["type"] == "PRIMARY KEY"),
+        "foreign_keys": sum(1 for c in constraints
+                            if c["type"] == "FOREIGN KEY"),
+        "unique_constraints": sum(1 for c in constraints
+                                  if c["type"] == "UNIQUE"),
+        "check_constraints": sum(1 for c in constraints
+                                 if c["type"] == "CHECK"),
+    }
+
+
 _TEXTUAL_BASES = frozenset({"text", "varchar", "string", "char",
                             "nvarchar", "nchar", "character varying",
                             "character", "varchar2", "nvarchar2", "clob",
@@ -454,6 +604,11 @@ def _watermark_candidates(columns: List[dict]) -> List[str]:
             name = str(c.get("name", ""))
             if hint in name.lower() and name not in ranked:
                 ranked.append(name)
+    if not ranked:
+        for c in dated:
+            name = str(c.get("name", ""))
+            if name and name not in ranked:
+                ranked.append(name)
     return ranked
 
 
@@ -504,7 +659,7 @@ def _manifest_yaml(base_tables: List[dict], database: str,
 
     for line in text.splitlines():
         mo = re.match(r"^(\s*)-\s+name:\s+(\S+)\s*$", line)
-        if mo and mo.group(1) == "":          # top-level table entry only
+        if mo and len(mo.group(1)) <= 2:       # top-level table entry under `tables:`
             out.extend(pending)
             pending = []
             pad, tname = "  ", mo.group(2)
@@ -1013,6 +1168,22 @@ def _databricks_introspect(params: Dict[str, str],
                           "definition": str(r[2] or "")[:8000]})
         caps["tables"] = {"status": "available" if tables else "empty"}
         caps["views"] = {"status": "available" if views else "empty"}
+
+        # Unity Catalog constraints are INFORMATIONAL — Databricks does not
+        # enforce them — but a declared primary key is still the difference
+        # between a MERGE and a full reload, and a declared foreign key is
+        # still the load-order graph. Guarded: a workspace on the legacy
+        # Hive metastore has no constraint views at all.
+        def _constraints():
+            cur.execute(_ansi_constraint_sql(
+                "1 = 1", "AND tc.table_schema = COALESCE(?, tc.table_schema)"),
+                [schema or None])
+            return cur.fetchall()
+
+        constraints = _group_constraints(
+            _guarded(caps, "constraints", _constraints))
+        primary_keys = _primary_keys_from(constraints)
+
         objects = _databricks_objects(cur, caps, schema)
         available_databases = _databricks_catalogs(cur)
     except Exception as e:  # noqa: BLE001
@@ -1054,6 +1225,10 @@ def _databricks_introspect(params: Dict[str, str],
         "tables_with_columns": sum(1 for t in base_tables if t["columns"]),
         "column_sizes_measured": measured,
         **_column_readiness(base_tables),
+        **_constraint_readiness(constraints),
+        "tables_with_primary_key": sum(
+            1 for t in base_tables
+            if primary_keys.get((t["schema"], t["name"]))),
         "views_convertible": len(convertible),
         "views_needing_review": needs_review,
         "verdict": "READY" if base_tables or convertible else
@@ -1071,9 +1246,10 @@ def _databricks_introspect(params: Dict[str, str],
         "views": [{"schema": v["schema"], "name": v["name"]}
                   for v in views],
         "view_definitions": {v["name"]: v["definition"] for v in views},
+        "constraints": constraints,
         "secret_findings": secret_findings,
         "readiness": readiness,
-        "manifest_yaml": _manifest_yaml(base_tables, catalog),
+        "manifest_yaml": _manifest_yaml(base_tables, catalog, primary_keys),
         **objects,
     }
 
@@ -1491,6 +1667,19 @@ def _sqldb_introspect(key: str, params: Dict[str, str],
                 return cur.fetchall()
             return go
 
+        # Constraints. PostgreSQL genuinely ENFORCES these, which makes its
+        # primary keys the most trustworthy of any connector here — and they
+        # were not read at all, so every Postgres table fell through to a
+        # FULL reload on every run. Guarded because Redshift ships a
+        # PostgreSQL-8.0-era INFORMATION_SCHEMA that lacks some of the views.
+        c_where, c_args = _scope_pred("tc.table_schema")
+        constraints = _group_constraints(_guarded(
+            caps, "constraints",
+            _q(_ansi_constraint_sql("tc.table_catalog = current_database()",
+                                    c_where), c_args),
+            on_error=_rollback))
+        primary_keys = _primary_keys_from(constraints)
+
         mv_where, mv_args = _scope_pred("schemaname")
         materialized_views = [
             {"schema": _at(r, 0), "name": _at(r, 1)}
@@ -1588,6 +1777,7 @@ def _sqldb_introspect(key: str, params: Dict[str, str],
         "sequences": sequences,
         "functions": functions,
         "procedures": procedures,
+        "constraints": constraints,
         "secret_findings": secret_findings,
         "readiness": {
             "tables": len(base_tables),
@@ -1597,6 +1787,10 @@ def _sqldb_introspect(key: str, params: Dict[str, str],
                                        if t["columns"]),
             "column_sizes_measured": measured,
             **_column_readiness(base_tables),
+            **_constraint_readiness(constraints),
+            "tables_with_primary_key": sum(
+                1 for t in base_tables
+                if primary_keys.get((t["schema"], t["name"]))),
             "materialized_views": len(materialized_views),
             "sequences": len(sequences),
             "functions": len(functions),
@@ -1606,7 +1800,7 @@ def _sqldb_introspect(key: str, params: Dict[str, str],
             "verdict": "READY" if base_tables or convertible else
                        "NOTHING_TO_CONVERT",
         },
-        "manifest_yaml": _manifest_yaml(base_tables, database),
+        "manifest_yaml": _manifest_yaml(base_tables, database, primary_keys),
     }
 
 
@@ -1924,36 +2118,52 @@ def _oracle_test(params: Dict[str, str]) -> dict:
     return report
 
 
-def _oracle_primary_keys(cur, schema: str) -> Dict[tuple, List[str]]:
-    """{(schema, table): [pk columns in key order]} from ALL_CONSTRAINTS.
+def _oracle_constraints(cur, schema: str) -> List[dict]:
+    """Primary, foreign, unique and check constraints from ALL_CONSTRAINTS.
 
-    Unlike Snowflake, Oracle ENFORCES primary keys, so this is a declared key
-    that can be trusted as a MERGE key — which is what lets the generated
-    manifest emit `unique_key` instead of falling through to a full reload.
-    Degrades to {} rather than costing the inventory."""
+    Oracle ENFORCES all of these, so unlike Snowflake's they are facts rather
+    than declarations — the primary key can be trusted as a MERGE key, and
+    the foreign keys are a real load-order graph.
+
+    A foreign key names the constraint it references, not the columns, so the
+    parent side is reached by joining ALL_CONSTRAINTS back to itself and then
+    to ALL_CONS_COLUMNS at the SAME position — which is what keeps a
+    composite key's columns paired with their counterparts.
+
+    SEARCH_CONDITION is a LONG; SEARCH_CONDITION_VC (12.2+) is the same text
+    as a VARCHAR2 and is tried first so the query stays wrappable and cheap.
+    Degrades to [] rather than costing the inventory.
+    """
     where, binds = _ora_owner_pred("c.owner", schema)
-    try:
-        cur.execute(
-            "SELECT c.owner, c.table_name, cc.column_name, cc.position "
-            "FROM all_constraints c JOIN all_cons_columns cc "
-            "ON c.owner = cc.owner "
+
+    def sql(condition_col: str) -> str:
+        return (
+            "SELECT c.owner, c.table_name, c.constraint_name, "
+            "c.constraint_type, cc.column_name, cc.position, "
+            "rc.owner, rc.table_name, rcc.column_name, %s "
+            "FROM all_constraints c "
+            "LEFT JOIN all_cons_columns cc ON c.owner = cc.owner "
             "AND c.constraint_name = cc.constraint_name "
-            "WHERE c.constraint_type = 'P' AND c.status = 'ENABLED' %s "
-            "ORDER BY c.owner, c.table_name, cc.position" % where, binds)
+            "LEFT JOIN all_constraints rc ON c.r_owner = rc.owner "
+            "AND c.r_constraint_name = rc.constraint_name "
+            "LEFT JOIN all_cons_columns rcc ON rc.owner = rcc.owner "
+            "AND rc.constraint_name = rcc.constraint_name "
+            "AND rcc.position = cc.position "
+            "WHERE c.constraint_type IN ('P', 'R', 'U', 'C') "
+            "AND c.status = 'ENABLED' %s "
+            "ORDER BY c.owner, c.table_name, c.constraint_name, cc.position"
+            % (condition_col, where))
+
+    try:
+        cur.execute(sql("c.search_condition_vc"), binds)
         rows = cur.fetchall()
-    except Exception:  # noqa: BLE001 — no privilege on the constraint views
-        return {}
-    ordered: Dict[tuple, List[tuple]] = {}
-    for r in rows:
-        owner, table, col = _at(r, 0), _at(r, 1), _at(r, 2)
-        if not table or not col:
-            continue
+    except Exception:  # noqa: BLE001 — pre-12.2 has no SEARCH_CONDITION_VC
         try:
-            pos = int(_at(r, 3, "0") or 0)
-        except ValueError:
-            pos = 0
-        ordered.setdefault((owner, table), []).append((pos, col))
-    return {k: [c for _, c in sorted(v)] for k, v in ordered.items()}
+            cur.execute(sql("NULL"), binds)
+            rows = cur.fetchall()
+        except Exception:  # noqa: BLE001 — no privilege on constraint views
+            return []
+    return _group_constraints(rows)
 
 
 def _oracle_sources(cur, schema: str, types) -> Dict[tuple, str]:
@@ -2261,7 +2471,8 @@ def _oracle_introspect(params: Dict[str, str],
 
         caps["tables"] = {"status": "available" if tables else "empty"}
         caps["views"] = {"status": "available" if views else "empty"}
-        primary_keys = _oracle_primary_keys(cur, schema)
+        constraints = _oracle_constraints(cur, schema)
+        primary_keys = _primary_keys_from(constraints)
         objects = _oracle_objects(cur, caps, schema)
     except Exception as e:  # noqa: BLE001
         try:
@@ -2303,6 +2514,7 @@ def _oracle_introspect(params: Dict[str, str],
         "tables_with_columns": sum(1 for t in base_tables if t["columns"]),
         "column_sizes_measured": measured,
         **_column_readiness(base_tables),
+        **_constraint_readiness(constraints),
         # Oracle enforces primary keys, so a table WITH one can be loaded by
         # MERGE; one without still falls through to a full reload.
         "tables_with_primary_key": sum(
@@ -2321,6 +2533,7 @@ def _oracle_introspect(params: Dict[str, str],
         "elapsed_ms": int((time.time() - started) * 1000),
         "context": context, "capabilities": caps,
         "recommendations": _context_recommendations(caps, context, "oracle"),
+        "constraints": constraints,
         "tables": sorted(tables.values(),
                          key=lambda t: (-t["rows"], t["name"])),
         "views": [{"schema": v["schema"], "name": v["name"]}
@@ -2789,6 +3002,10 @@ def introspect(key: str, params: Dict[str, str],
         context = _snowflake_context(cur)
         schema_pred = "AND table_schema = %s" if schema else \
             "AND table_schema <> 'INFORMATION_SCHEMA'"
+        # the constraint query joins four views, so its scope predicate has
+        # to name which table_schema it means
+        schema_pred_tc = "AND tc.table_schema = %s" if schema else \
+            "AND tc.table_schema <> 'INFORMATION_SCHEMA'"
         args = (schema,) if schema else ()
         rows = cur.execute(
             "SELECT table_schema, table_name, table_type, row_count, "
@@ -2831,7 +3048,27 @@ def introspect(key: str, params: Dict[str, str],
                           "definition": str(r[2] or "")[:8000]})
         caps["tables"] = {"status": "available" if tables else "empty"}
         caps["views"] = {"status": "available" if views else "empty"}
+        # SHOW PRIMARY KEYS stays the primary-key source: it is the proven
+        # path and reports keys INFORMATION_SCHEMA sometimes will not. The
+        # ANSI query adds the foreign and unique constraints beside it —
+        # with_check off, because Snowflake has no CHECK constraints and so
+        # no check_constraints view to join.
         primary_keys = _snowflake_primary_keys(cur, database, schema)
+
+        def _constraints():
+            return cur.execute(_ansi_constraint_sql(
+                "tc.table_catalog = CURRENT_DATABASE()", schema_pred_tc,
+                with_check=False), args).fetchall()
+
+        constraints = [c for c in _group_constraints(
+            _guarded(caps, "constraints", _constraints))
+            if c["type"] != "PRIMARY KEY"]
+        # re-attach the SHOW-sourced keys so the class is complete
+        constraints.extend(
+            {"schema": s, "table": t, "name": "%s_PK" % t, "type":
+             "PRIMARY KEY", "columns": cols}
+            for (s, t), cols in sorted(primary_keys.items()))
+        constraints.sort(key=lambda c: (c["schema"], c["table"], c["name"]))
         objects = _snowflake_objects(cur, caps, database, schema)
         context["edition"] = _edition_from_caps(caps)
     except Exception as e:  # noqa: BLE001
@@ -2877,6 +3114,7 @@ def introspect(key: str, params: Dict[str, str],
         "tables_with_columns": sum(1 for t in base_tables if t["columns"]),
         "column_sizes_measured": measured,
         **_column_readiness(base_tables),
+        **_constraint_readiness(constraints),
         # load behaviour: tables with no declared PK fall back to FULL reload
         "tables_with_primary_key": sum(
             1 for t in base_tables
@@ -2898,6 +3136,7 @@ def introspect(key: str, params: Dict[str, str],
         "views": [{"schema": v["schema"], "name": v["name"]}
                   for v in views],
         "view_definitions": {v["name"]: v["definition"] for v in views},
+        "constraints": constraints,
         "task_dag": _build_task_dag(objects.get("tasks", [])),
         "secret_findings": secret_findings,
         "readiness": readiness,

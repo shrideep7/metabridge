@@ -118,6 +118,12 @@ class _FakeCursor:
         if "CURRENT_AVAILABLE_ROLES" in u:
             self._row = ('["ANALYST","SECURITYADMIN","SYSADMIN"]',)
             return self
+        if "INFORMATION_SCHEMA.TABLE_CONSTRAINTS" in u:
+            # Snowflake has no CHECK constraints; PKs come from SHOW
+            self._rows = [
+                ("PUBLIC", "ORDERS", "FK_ORDERS_CUST", "FOREIGN KEY",
+                 "CUSTOMER_ID", 1, "PUBLIC", "CUSTOMERS", "ID", None)]
+            return self
         if "INFORMATION_SCHEMA.SEQUENCES" in u:
             self._rows = [("PUBLIC", "SEQ_ORDER_ID", "1", "1")]
             return self
@@ -529,6 +535,16 @@ class _PgCursor:
                           ("public", "orders", 5400)]
         elif "INFORMATION_SCHEMA.VIEWS" in u:
             self._rows = [("staging", "v_top", "SELECT id FROM customers")]
+        elif "INFORMATION_SCHEMA.TABLE_CONSTRAINTS" in u:
+            self._rows = [
+                ("public", "customers", "customers_pkey", "PRIMARY KEY",
+                 "id", 1, None, None, None, None),
+                ("public", "orders", "orders_customer_fkey", "FOREIGN KEY",
+                 "customer_id", 1, "public", "customers", "id", None),
+                ("public", "orders", "orders_amount_check", "CHECK",
+                 "amount", 1, None, None, None, "amount >= 0"),
+                ("public", "orders", "2200_16385_1_not_null", "CHECK",
+                 "id", 1, None, None, None, "id IS NOT NULL")]
         elif "PG_DATABASE" in u:
             self._rows = [("sales", "postgres"), ("warehouse", "etl_owner")]
         elif "PG_MATVIEWS" in u:
@@ -703,6 +719,10 @@ class _DbxCursor:
             self._rows = [("sales", "orders", "pii", "true")]
         elif "INFORMATION_SCHEMA.TABLE_PRIVILEGES" in u:
             self._rows = [("sales", "orders", "analysts", "SELECT")]
+        elif "INFORMATION_SCHEMA.TABLE_CONSTRAINTS" in u:
+            self._rows = [
+                ("sales", "orders", "orders_pk", "PRIMARY KEY", "id", 1,
+                 None, None, None, None)]
         elif "INFORMATION_SCHEMA.TABLE_STATISTICS" in u:
             self._rows = [("sales", "orders", 4200)]
         elif "INFORMATION_SCHEMA.TABLES" in u:
@@ -943,7 +963,20 @@ class _OraCursor:
                            "SELECT id, name FROM customers WHERE ROWNUM <= 10"),
                           ("SALES", "V_BROKEN", "SELECT FROM WHERE (((")]
         elif "ALL_CONSTRAINTS" in u:
-            self._rows = [("SALES", "CUSTOMERS", "ID", 1)]
+            # schema, table, name, kind, column, position,
+            # ref_schema, ref_table, ref_column, check condition
+            self._rows = [
+                ("SALES", "CUSTOMERS", "PK_CUSTOMERS", "P", "ID", 1,
+                 None, None, None, None),
+                ("SALES", "ORDERS", "FK_ORDERS_CUST", "R", "CUSTOMER_ID", 1,
+                 "SALES", "CUSTOMERS", "ID", None),
+                ("SALES", "ORDERS", "UQ_ORDERS_REF", "U", "ORDER_REF", 1,
+                 None, None, None, None),
+                ("SALES", "ORDERS", "CK_ORDERS_AMT", "C", "AMOUNT", 1,
+                 None, None, None, "amount >= 0"),
+                # Oracle records every NOT NULL column as a CHECK of its own
+                ("SALES", "ORDERS", "SYS_C0011", "C", "ID", 1,
+                 None, None, None, '"ID" IS NOT NULL')]
         elif "ALL_SOURCE" in u:
             self._rows = [
                 ("SALES", "FN_TAX", "FUNCTION",
@@ -1419,6 +1452,97 @@ def test_plain_column_fallback_keeps_the_tuple_shape(monkeypatch):
         "SELECT a, b, c, d, character_maximum_length FROM x",
         "SELECT a, b, c, d FROM x")
     assert row == ("s", "t", "c", "varchar", True, "", "")
+
+
+def test_oracle_constraints_carry_the_load_order_graph(ora_driver,
+                                                       monkeypatch):
+    """A foreign key is the only record of which table must load first, and
+    nothing else in the inventory carries that dependency."""
+    monkeypatch.setenv("MB_ORACLE_PASSWORD", "x")
+    r = livecheck.introspect("oracle", dict(ORA_PARAMS))
+    by_name = {c["name"]: c for c in r["constraints"]}
+    fk = by_name["FK_ORDERS_CUST"]
+    assert fk["type"] == "FOREIGN KEY"
+    assert fk["table"] == "ORDERS" and fk["columns"] == ["CUSTOMER_ID"]
+    assert fk["ref_table"] == "SALES.CUSTOMERS"
+    assert fk["ref_columns"] == ["ID"]
+    assert by_name["UQ_ORDERS_REF"]["type"] == "UNIQUE"
+    assert by_name["CK_ORDERS_AMT"]["expression"] == "amount >= 0"
+    rd = r["readiness"]
+    assert rd["primary_keys"] == 1 and rd["foreign_keys"] == 1
+    assert rd["unique_constraints"] == 1 and rd["check_constraints"] == 1
+
+
+def test_not_null_is_not_reported_as_a_check_constraint(ora_driver,
+                                                        monkeypatch):
+    """Oracle and PostgreSQL both record every NOT NULL column as a CHECK of
+    its own. Nullability is already carried per column, so letting these
+    through buries the real business rules under hundreds of restatements."""
+    monkeypatch.setenv("MB_ORACLE_PASSWORD", "x")
+    r = livecheck.introspect("oracle", dict(ORA_PARAMS))
+    assert "SYS_C0011" not in {c["name"] for c in r["constraints"]}
+    assert r["readiness"]["check_constraints"] == 1
+
+
+def test_pg_primary_keys_finally_reach_the_manifest(pg_driver, monkeypatch,
+                                                    tmp_path):
+    """PostgreSQL genuinely ENFORCES primary keys — the most trustworthy of
+    any connector here — and they were not read at all, so every table fell
+    through to a FULL reload on every run."""
+    monkeypatch.setenv("MB_POSTGRES_PASSWORD", "x")
+    r = livecheck.introspect("postgres", dict(PG_PARAMS))
+    assert r["readiness"]["tables_with_primary_key"] == 1
+    assert r["readiness"]["foreign_keys"] == 1
+    from metabridge.scaffold import load_table_manifest
+    f = tmp_path / "m.yml"
+    f.write_text(r["manifest_yaml"])
+    tables, _ = load_table_manifest(str(f))
+    by_name = {t["name"]: t for t in tables}
+    assert by_name["customers"]["unique_key"] == ["id"]
+    # the NOT NULL check PostgreSQL generates is filtered out here too
+    assert "2200_16385_1_not_null" not in {c["name"]
+                                           for c in r["constraints"]}
+
+
+def test_databricks_declared_keys_reach_the_manifest(dbx_driver, monkeypatch,
+                                                     tmp_path):
+    """Unity Catalog constraints are informational, but a declared primary
+    key is still the difference between a MERGE and a full reload."""
+    monkeypatch.setenv("MB_DATABRICKS_TOKEN", "t")
+    r = livecheck.introspect("databricks", dict(DBX_PARAMS))
+    assert r["readiness"]["tables_with_primary_key"] == 1
+    from metabridge.scaffold import load_table_manifest
+    f = tmp_path / "m.yml"
+    f.write_text(r["manifest_yaml"])
+    tables, _ = load_table_manifest(str(f))
+    assert {t["name"]: t for t in tables}["orders"]["unique_key"] == ["id"]
+
+
+def test_snowflake_keeps_show_primary_keys_and_gains_foreign_keys(
+        fake_driver, monkeypatch):
+    """SHOW PRIMARY KEYS reports keys INFORMATION_SCHEMA sometimes will not,
+    so it stays the PK source; the ANSI query adds the rest beside it."""
+    monkeypatch.setenv("MB_SNOWFLAKE_PASSWORD", "x")
+    r = livecheck.introspect("snowflake", dict(PARAMS,
+                                               database="SF_SAMPLES_DB"))
+    kinds = {c["name"]: c["type"] for c in r["constraints"]}
+    assert kinds["FK_ORDERS_CUST"] == "FOREIGN KEY"
+    assert r["readiness"]["foreign_keys"] == 1
+
+
+def test_a_composite_key_keeps_its_column_order():
+    """A composite key arrives one row per column. Reordering it would
+    produce a MERGE that matches on the wrong columns."""
+    rows = [("s", "t", "pk", "P", "B", 2, None, None, None, None),
+            ("s", "t", "pk", "P", "A", 1, None, None, None, None),
+            ("s", "t", "fk", "R", "Y", 2, "s", "p", "PY", None),
+            ("s", "t", "fk", "R", "X", 1, "s", "p", "PX", None)]
+    by_name = {c["name"]: c for c in livecheck._group_constraints(rows)}
+    assert by_name["pk"]["columns"] == ["A", "B"]
+    assert by_name["fk"]["columns"] == ["X", "Y"]
+    assert by_name["fk"]["ref_columns"] == ["PX", "PY"]
+    assert livecheck._primary_keys_from(
+        list(by_name.values()))[("s", "t")] == ["A", "B"]
 
 
 def test_oracle_is_a_live_source_but_not_a_live_load_target():

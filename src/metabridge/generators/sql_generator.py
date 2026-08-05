@@ -16,6 +16,7 @@ recreates typed source tables when the IR knows them.
 from __future__ import annotations
 
 from pathlib import Path
+import re
 from typing import List
 
 import sqlglot
@@ -488,6 +489,19 @@ def _indent(s: str, pad: str = "    ") -> str:
     return "\n".join(pad + l for l in s.split("\n"))
 
 
+def _quote_ident(ident: str, dialect: str) -> str:
+    if not ident:
+        return ident
+    if re.search(r"[^A-Za-z0-9_$]", ident):
+        if dialect in ("bigquery", "databricks"):
+            return "`%s`" % ident
+        elif dialect == "tsql":
+            return "[%s]" % ident
+        else:
+            return '"%s"' % ident
+    return ident
+
+
 def _sources_ddl(pipeline: Pipeline, dialect: str) -> str:
     parts = []
     for s in pipeline.sources:
@@ -500,9 +514,9 @@ def _sources_ddl(pipeline: Pipeline, dialect: str) -> str:
                         "precision — using documented fallback DECIMAL(%d,%d)"
                         % (s.name, *_SQL_DECIMAL_FALLBACK), obj=s.name,
                 suggestion="Declare precision/scale to preserve exact types."))
-        cols = ",\n".join("    %s %s" % (c.name, _sql_type(c))
+        cols = ",\n".join("    %s %s" % (_quote_ident(c.name, dialect), _sql_type(c))
                           for c in s.columns)
-        qualified = "%s.%s" % (s.schema, s.name) if s.schema else s.name
+        qualified = "%s.%s" % (_quote_ident(s.schema, dialect), _quote_ident(s.name, dialect)) if s.schema else _quote_ident(s.name, dialect)
         stmt = "CREATE TABLE IF NOT EXISTS %s (\n%s\n)" % (qualified, cols)
         try:
             if dialect:
