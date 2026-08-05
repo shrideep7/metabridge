@@ -109,7 +109,53 @@ _OVER_MAX_STRING = {"tsql": "NVARCHAR(MAX)", "oracle": "CLOB",
                     "teradata": "CLOB"}
 
 
-def _type_of(port: Port, dialect: str) -> str:
+# Source platforms sqlx.type_engine can parse natively. A connector key
+# outside this set still works — the engine's own cross-platform fallback
+# resolves the type — but naming the source makes the parse exact.
+_ENGINE_PLATFORMS = frozenset({
+    "oracle", "snowflake", "databricks", "bigquery", "redshift", "synapse",
+    "sqlserver", "postgres", "teradata", "informatica",
+})
+
+
+def _engine_type(port: Port, dialect: str, source_platform: str) -> str:
+    """Target type resolved from the source's DECLARED type.
+
+    Returns "" when the native type is unknown or the engine cannot place
+    it, leaving the caller on the canonical path. The engine understands 18
+    canonical types against the IR's 9, so it is the only path that can
+    tell TIME from VARCHAR or keep a time-zone offset — reading the coarse
+    canonical instead is what emitted VARCHAR(6) for TIME(6).
+    """
+    if not port.native_type or dialect not in _ENGINE_PLATFORMS:
+        return ""
+    try:
+        from ..sqlx.type_engine import get_type_engine
+        eng = get_type_engine()
+        src = source_platform if source_platform in _ENGINE_PLATFORMS else "ansi"
+        ct, parse_warn = eng.parse_type(port.native_type, src)
+        # An unparsed type lands on STRING, which is exactly the guess the
+        # canonical path already makes — defer to it rather than dressing
+        # a default up as an engine answer.
+        if any(w.code == "unknown_type" for w in parse_warn):
+            return ""
+        # A DECIMAL with no declared precision renders as NUMBER(38,0) here,
+        # and scale 0 truncates every fractional value — an FX rate of
+        # 83.4125 lands as 83, silently. The canonical path's documented
+        # (38,6) fallback keeps the fraction AND raises
+        # NUMERIC_PRECISION_FALLBACK, so it owns this case.
+        if ct.name == "DECIMAL" and ct.precision is None:
+            return ""
+        rendered, _ = eng.render_type(ct, dialect)
+        return rendered or ""
+    except (ImportError, KeyError, OSError, ValueError):
+        return ""
+
+
+def _type_of(port: Port, dialect: str, source_platform: str = "") -> str:
+    engine = _engine_type(port, dialect, source_platform)
+    if engine:
+        return engine
     base = dict(_ANSI)
     base.update(_BY_DIALECT.get(dialect, {}))
     canon = port.datatype or "string"
@@ -260,9 +306,10 @@ def _probe_widths(spec: Optional[ConnectorSpec], dialect: str,
             + "\n\n".join(parts) + "\n")
 
 
-def _create_table(src: SourceTable, dialect: str, hint: dict) -> str:
+def _create_table(src: SourceTable, dialect: str, hint: dict,
+                  source_platform: str = "") -> str:
     cols = ",\n".join("    %-32s %s" % (_quote(dialect, c.name),
-                                        _type_of(c, dialect))
+                                        _type_of(c, dialect, source_platform))
                       for c in src.columns)
     stmt = "CREATE TABLE IF NOT EXISTS %s (\n%s\n)" % (
         _qualified(dialect, src.schema, src.name), cols)
@@ -323,7 +370,29 @@ def _unload(spec: Optional[ConnectorSpec], dialect: str,
         d = db_of(t)
         return "%s.%s" % (d, q) if d else q
 
-    if dialect == "snowflake":
+    # SAP HANA dispatches on the CONNECTOR, not the dialect. It declares no
+    # sqlglot dialect because none exists, so the dialect chain below would
+    # never reach it and it would fall to the "no bulk-export form" default.
+    # Objects are addressed SCHEMA.TABLE — the tenant database is the
+    # connection, so db_of()/fq() are deliberately NOT used here: prefixing
+    # the tenant would build an invalid three-part name.
+    if spec is not None and spec.key == "sap_hana":
+        head += [
+            "-- EXPORT INTO writes CSV; SAP HANA has no Parquet export form.",
+            "-- The matching load on the target must therefore read CSV.",
+            "--",
+            "-- <credentials> is a NAMED credential, created ONCE on HANA so",
+            "-- no key material ever appears in this file:",
+            "--   CREATE CREDENTIAL FOR COMPONENT 'SAPHANAIMPORTEXPORT'",
+            "--     PURPOSE '<credentials>' TYPE 'PASSWORD'",
+            "--     USING 'user=<access-key>;password=<secret-key>';",
+            ""]
+        body = ["EXPORT INTO '%s/%s/'\n  FROM %s\n"
+                "  WITH CREDENTIAL '<credentials>'\n"
+                "       COLUMN LIST IN FIRST ROW;"
+                % (uri, t.name.lower(), _qualified(dialect, t.schema, t.name))
+                for t in tables]
+    elif dialect == "snowflake":
         db = next((db_of(t) for t in tables if db_of(t)), "")
         wh = str(sp.get("warehouse", "") or "")
         head += ["-- Context is set explicitly so this runs from any "
@@ -393,11 +462,29 @@ def _unload(spec: Optional[ConnectorSpec], dialect: str,
     return "\n".join(head) + "\n" + "\n\n".join(body) + "\n"
 
 
+def _source_writes_csv(source: Optional[ConnectorSpec]) -> bool:
+    """Whether step 2 produced CSV rather than Parquet.
+
+    Deliberately narrow: only SAP HANA is listed, because only its unload was
+    written against this helper. PostgreSQL's `\\copy` also writes CSV while
+    its load still says PARQUET — the same defect — but widening this changes
+    output for an already-shipped connector, so it stays a separate decision
+    rather than a side effect of the SAP work.
+    """
+    return source is not None and source.key == "sap_hana"
+
+
 def _load(spec: Optional[ConnectorSpec], dialect: str,
           tables: List[SourceTable],
-          movement: Optional[dict] = None) -> str:
-    """Target-side bulk import from the same object-storage layout."""
+          movement: Optional[dict] = None,
+          source: Optional[ConnectorSpec] = None) -> str:
+    """Target-side bulk import from the same object-storage layout.
+
+    ``source`` is consulted only for the FILE FORMAT: a load that reads
+    Parquet from a CSV export fails at the first row, so the two halves must
+    agree about what step 2 actually wrote."""
     mv = _mv(movement)
+    csv_src = _source_writes_csv(source)
     uri = mv["stage_uri"] or "<stage-uri>"
     role = mv["iam_role"] or "<iam-role-arn>"
     head = ["-- Step 3: load each table from object storage into the "
@@ -410,19 +497,29 @@ def _load(spec: Optional[ConnectorSpec], dialect: str,
                    t.name.lower(), role)
                 for t in tables]
     elif dialect == "snowflake":
+        if csv_src:
+            # MATCH_BY_COLUMN_NAME is a semi-structured feature; CSV loads
+            # positionally instead. 01_create_landing.sql emits columns in
+            # source order precisely so that works. SKIP_HEADER pairs with
+            # the exporter's header row.
+            fmt = ("  FILE_FORMAT = (TYPE = CSV "
+                   "FIELD_OPTIONALLY_ENCLOSED_BY = '\"' SKIP_HEADER = 1);")
+        else:
+            fmt = ("  FILE_FORMAT = (TYPE = PARQUET)\n"
+                   "  MATCH_BY_COLUMN_NAME = CASE_INSENSITIVE;")
         body = ["COPY INTO %s\n  FROM '%s/%s/'\n"
-                "  CREDENTIALS = (<credentials>)\n"
-                "  FILE_FORMAT = (TYPE = PARQUET)\n"
-                "  MATCH_BY_COLUMN_NAME = CASE_INSENSITIVE;"
+                "  CREDENTIALS = (<credentials>)\n%s"
                 % (_qualified("snowflake", t.schema, t.name), uri,
-                   t.name.lower())
+                   t.name.lower(), fmt)
                 for t in tables]
     elif dialect == "databricks":
         body = ["COPY INTO %s\n  FROM '%s/%s/'\n"
-                "  FILEFORMAT = PARQUET\n"
-                "  COPY_OPTIONS ('mergeSchema' = 'true');"
+                "  FILEFORMAT = %s\n"
+                "  %s;"
                 % (_qualified("databricks", t.schema, t.name), uri,
-                   t.name.lower())
+                   t.name.lower(), "CSV" if csv_src else "PARQUET",
+                   "FORMAT_OPTIONS ('header' = 'true')" if csv_src
+                   else "COPY_OPTIONS ('mergeSchema' = 'true')")
                 for t in tables]
     elif dialect == "bigquery":
         body = ["LOAD DATA INTO %s\n  FROM FILES(format = 'PARQUET',\n"
@@ -580,7 +677,22 @@ def generate_target_ddl(pipeline: Pipeline, out_dir: str,
     files: List[str] = []
 
     def src_of(spec: Optional[ConnectorSpec], fallback: str) -> str:
-        return (spec.dialect if spec is not None else "") or fallback
+        """The SOURCE's dialect, never the target's.
+
+        A connector that declares no dialect is not SQL-addressable (every
+        SAP connector, and anything reached by upload). Inheriting the
+        TARGET's dialect there produced an 02_unload_from_<src>.sql written
+        in Snowflake/Databricks syntax but addressed to a SAP system, which
+        cannot run it — and told the type engine the source platform was
+        Snowflake, so SAP native types were parsed against Snowflake's
+        vocabulary. Returning "" keeps both honest: the unload falls to the
+        documented "use the platform's own utility" form, and the type
+        engine parses against ANSI. The fallback still applies when NO
+        source spec was passed at all, where the caller's dialect is the
+        only thing known."""
+        if spec is not None:
+            return spec.dialect
+        return fallback
 
     src_dialect = src_of(source, dialect)
     probe = _probe_widths(source, src_dialect, tables)
@@ -604,7 +716,8 @@ def generate_target_ddl(pipeline: Pipeline, out_dir: str,
             _qualified(dialect, s_.schema, s_.name),
             hints.get(s_.name, {}).get("strategy",
                                        LoadStrategy.FULL.value)))
-        body.append(_create_table(s_, dialect, hints.get(s_.name, {})))
+        body.append(_create_table(s_, dialect, hints.get(s_.name, {}),
+                                  src_dialect))
         body.append("")
     (out / "01_create_landing.sql").write_text("\n".join(body),
                                                encoding="utf-8")
@@ -617,7 +730,7 @@ def generate_target_ddl(pipeline: Pipeline, out_dir: str,
     files.append(un)
     ld = "03_load_into_%s.sql" % (target.key if target is not None
                                   else "target")
-    ld_text = _load(target, dialect, tables, movement)
+    ld_text = _load(target, dialect, tables, movement, source=source)
     (out / ld).write_text(ld_text, encoding="utf-8")
     files.append(ld)
 

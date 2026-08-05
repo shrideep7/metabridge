@@ -836,13 +836,20 @@ def _parse_predecessors(v) -> List[str]:
 
 
 def _has_live_driver(key: str) -> bool:
-    return key in ("snowflake", "databricks", "oracle") \
-        or key in _SQL_DIALECTS
+    return key in ("snowflake", "databricks", "oracle", "teradata",
+                   "sap_hana") or key in _SQL_DIALECTS
 
 
 # Back-compat: earlier code imported this set directly.
-LIVE_CONNECTORS = frozenset({"snowflake", "databricks", "oracle"}) \
-    | frozenset(_SQL_DIALECTS)
+LIVE_CONNECTORS = frozenset({"snowflake", "databricks", "oracle", "teradata",
+                             "sap_hana"}) | frozenset(_SQL_DIALECTS)
+
+# A live driver does not imply every live action. A connector listed here can
+# open a session and be TESTED, but the catalog read behind Analyze is not
+# written yet — reported through live_support() so the UI withholds Analyze
+# instead of offering a button that fails at the point of use. Remove a key
+# the moment its introspect lands (sap_hana did, and left).
+_TEST_ONLY: frozenset = frozenset()
 
 
 def live_support(key: str) -> Dict[str, bool]:
@@ -857,7 +864,8 @@ def live_support(key: str) -> Dict[str, bool]:
     stays False for them rather than overclaiming. Oracle is a live SOURCE
     for exactly that reason: it is read and inventoried, never written to."""
     live = _has_live_driver(key)
-    return {"live_test": live, "introspect": live,
+    return {"live_test": live,
+            "introspect": live and key not in _TEST_ONLY,
             "live_load": key in ("snowflake", "databricks")}
 
 
@@ -2802,6 +2810,1018 @@ def _oracle_introspect(params: Dict[str, str],
     }
 
 
+# ---------------------------------------------------------------------------
+# Teradata
+# ---------------------------------------------------------------------------
+#
+# Teradata has no INFORMATION_SCHEMA, so nothing here can reuse the psycopg
+# path: the catalog is the DBC views, and a column's declared type has to be
+# REBUILT from them. Which DBC field carries the parameter differs per type —
+#
+#   DECIMAL(18,2)   DecimalTotalDigits=18, DecimalFractionalDigits=2
+#                   (ColumnLength is 8: storage bytes, not the precision)
+#   TIME(6)         DecimalFractionalDigits=6
+#                   (ColumnLength is 15: display width, not the precision)
+#   VARBYTE(1024)   ColumnLength=1024
+#   NUMBER          DecimalTotalDigits=-128 — the "unspecified" sentinel
+#   ST_GEOMETRY     ColumnType='UT' + ColumnUDTName
+#
+# Reading ColumnLength uniformly would yield TIME(15) and DECIMAL(8), and
+# defaulting the sentinel would yield NUMBER(-128,-128).
+
+# A Teradata DATABASE is what other platforms call a schema. These are the
+# server's own; a scan with no schema set must not inventory them.
+_TD_SYSTEM_DBS = frozenset(x.lower() for x in (
+    "DBC", "SysAdmin", "SystemFe", "SYSLIB", "SYSUDTLIB", "SYSSPATIAL",
+    "SYSBAR", "SYSJDBC", "SQLJ", "TD_SYSFNLIB", "TD_SYSXML", "TD_SERVER_DB",
+    "TDStats", "TDMaps", "TDQCD", "tapidb", "dbcmngr", "Crashdumps",
+    "LockLogShredder", "All", "Default", "PUBLIC", "EXTUSER", "External_AP",
+    "SAS_SYSFNLIB", "GLOBAL_FUNCTIONS", "system", "Sys_Calendar",
+    "DemoNow_Monitor", "gs_tables_db", "mldb", "modelops", "val", "TD_METRIC",
+    # Workload management and the cloud-service databases. Missing these cost
+    # a real scan 41 system tables against 11 real ones — every one of which
+    # became a dbt model, and all of which were counted by the conversion and
+    # governance reports.
+    "tdwm", "TDaaS_DB", "TDaaS_Maint", "TDaaS_Monitor", "TD_ANALYTICS_DB",
+    "TD_METRIC_SVC", "TDBCMgmt", "TDMLOps", "Sys_Calendar_Data",
+))
+# Databases whose CreatorName is this are the server's own. Enumerating names
+# never finishes — a Teradata release adds databases and every cloud tier adds
+# more — so the creator is the discriminator and the name list is a backstop.
+_TD_SYSTEM_CREATOR = "dbc"
+
+# ColumnType -> (template, which DBC field fills it).
+#   None    no parameter
+#   "len"   ColumnLength
+#   "dec"   DecimalTotalDigits, DecimalFractionalDigits
+#   "total" DecimalTotalDigits
+#   "frac"  DecimalFractionalDigits  (fractional seconds)
+#   "num"   NUMBER: parameters only when not the -128 sentinel
+#   "udt"   ColumnUDTName
+_TD_TYPE_CODES = {
+    "I1": ("BYTEINT", None), "I2": ("SMALLINT", None),
+    "I": ("INTEGER", None), "I8": ("BIGINT", None),
+    "F": ("FLOAT", None), "D": ("DECIMAL(%d,%d)", "dec"),
+    "N": ("NUMBER", "num"),
+    "DA": ("DATE", None),
+    "AT": ("TIME(%d)", "frac"), "TS": ("TIMESTAMP(%d)", "frac"),
+    "TZ": ("TIME(%d) WITH TIME ZONE", "frac"),
+    "SZ": ("TIMESTAMP(%d) WITH TIME ZONE", "frac"),
+    "CF": ("CHAR(%d)", "len"), "CV": ("VARCHAR(%d)", "len"),
+    "CO": ("CLOB(%d)", "len"), "JN": ("JSON(%d)", "len"),
+    "BF": ("BYTE(%d)", "len"), "BV": ("VARBYTE(%d)", "len"),
+    "BO": ("BLOB(%d)", "len"), "XM": ("XML", None),
+    "PD": ("PERIOD(DATE)", None),
+    "PT": ("PERIOD(TIME(%d))", "frac"),
+    "PZ": ("PERIOD(TIME(%d) WITH TIME ZONE)", "frac"),
+    "PS": ("PERIOD(TIMESTAMP(%d))", "frac"),
+    "PM": ("PERIOD(TIMESTAMP(%d) WITH TIME ZONE)", "frac"),
+    "YR": ("INTERVAL YEAR(%d)", "total"),
+    "YM": ("INTERVAL YEAR(%d) TO MONTH", "total"),
+    "MO": ("INTERVAL MONTH(%d)", "total"),
+    "DY": ("INTERVAL DAY(%d)", "total"),
+    "DH": ("INTERVAL DAY(%d) TO HOUR", "total"),
+    "DM": ("INTERVAL DAY(%d) TO MINUTE", "total"),
+    "DS": ("INTERVAL DAY(%d) TO SECOND(%d)", "dec"),
+    "HR": ("INTERVAL HOUR(%d)", "total"),
+    "HM": ("INTERVAL HOUR(%d) TO MINUTE", "total"),
+    "HS": ("INTERVAL HOUR(%d) TO SECOND(%d)", "dec"),
+    "MI": ("INTERVAL MINUTE(%d)", "total"),
+    "MS": ("INTERVAL MINUTE(%d) TO SECOND(%d)", "dec"),
+    "SC": ("INTERVAL SECOND(%d,%d)", "dec"),
+    "UT": ("", "udt"), "A1": ("ARRAY", None), "AN": ("ARRAY", None),
+    "DT": ("DATASET", None),
+}
+
+# DecimalTotalDigits / DecimalFractionalDigits use this for "not specified".
+_TD_UNSPEC = -128
+# Character sets that store two bytes per character, so ColumnLength (bytes)
+# is twice the DECLARED length.
+_TD_WIDE_CHARSETS = frozenset({2, 4, 5})       # UNICODE, GRAPHIC, GRAPHICSJIS
+
+
+def _td_int(v, default: int = 0) -> int:
+    """Catalog numbers as int, whatever shape the driver hands back.
+
+    DBC.StatsV.RowCount is a DECIMAL — it arrives as Decimal('2.0') over
+    teradatasql, but a string '2.0' over other clients, and int('2.0')
+    raises. Falling back to the default there would report a measured table
+    as 0 rows, which is worse than reporting it as unmeasured.
+    """
+    try:
+        return int(v)
+    except (TypeError, ValueError):
+        pass
+    try:
+        return int(float(v))
+    except (TypeError, ValueError):
+        return default
+
+
+def _td_native_type(code: str, length, total, frac, chartype, udt) -> str:
+    """Rebuild a column's DECLARED Teradata type from its DBC row.
+
+    The result is what Teradata's own TYPE() reports, and it is what flows
+    into the scaffold manifest as the column's `type` — so the DDL generator
+    resolves the target type from the real source type rather than from a
+    coarse canonical.
+    """
+    code = str(code or "").strip().upper()
+    spec = _TD_TYPE_CODES.get(code)
+    if spec is None:
+        return code or "VARCHAR"          # unknown code: report it, verbatim
+    template, arg = spec
+    if arg is None:
+        return template
+    if arg == "udt":
+        return str(udt or "").strip() or "VARCHAR"
+    if arg == "len":
+        n = _td_int(length)
+        if _td_int(chartype) in _TD_WIDE_CHARSETS and n > 1:
+            n //= 2                       # ColumnLength is bytes, not chars
+        return template % n if n > 0 else template.split("(")[0]
+    if arg == "frac":
+        f = _td_int(frac, -1)
+        # A zero fractional precision is real (TIME(0)); an absent one is not.
+        return template % f if f >= 0 and f != _TD_UNSPEC \
+            else template.replace("(%d)", "")
+    if arg == "total":
+        t = _td_int(total, -1)
+        return template % t if t > 0 and t != _TD_UNSPEC \
+            else template.replace("(%d)", "")
+    if arg == "dec":
+        t, f = _td_int(total, -1), _td_int(frac, -1)
+        if t == _TD_UNSPEC or t < 0:
+            return template.split("(")[0]
+        return template % (t, max(0, 0 if f == _TD_UNSPEC else f))
+    if arg == "num":
+        t, f = _td_int(total, _TD_UNSPEC), _td_int(frac, _TD_UNSPEC)
+        # NUMBER with no declared precision must stay bare: NUMBER(-128,-128)
+        # is not a type, and NUMBER(38,0) would silently truncate every
+        # fraction. Bare NUMBER is what the source actually says.
+        if t == _TD_UNSPEC or t <= 0:
+            return "NUMBER"
+        return "NUMBER(%d,%d)" % (t, max(0, 0 if f == _TD_UNSPEC else f))
+    return template
+
+
+def _td_user_databases(cur, login_db: str) -> Tuple[List[str], List[str]]:
+    """-> (databases holding user data, the system ones skipped).
+
+    Teradata keeps user data in DATABASEs alongside dozens of its own, and
+    the server's are created by DBC. Filtering on the creator is what
+    separates EDW_MASTER from tdwm and TDaaS_DB; the name list catches sites
+    where a DBA happened to create things while logged in as DBC.
+
+    The login database is ALWAYS kept — it is DBC-created on most systems,
+    and on plenty of installations it is exactly where the user's tables
+    live. If the filter would exclude everything, it is wrong about this
+    system and the name list alone decides.
+    """
+    cur.execute("SELECT DatabaseName, CreatorName FROM DBC.DatabasesV")
+    rows = [(str(r[0] or "").strip(), str(r[1] or "").strip())
+            for r in cur.fetchall()]
+    login = (login_db or "").strip().lower()
+
+    keep, skipped = [], []
+    for name, creator in rows:
+        low = name.lower()
+        if low and low == login:
+            keep.append(name)
+            continue
+        if low in _TD_SYSTEM_DBS or creator.lower() == _TD_SYSTEM_CREATOR:
+            skipped.append(name)
+            continue
+        keep.append(name)
+
+    if not keep:
+        # Everything looked system-owned. Rather than report an empty estate,
+        # fall back to the names alone and say so via the skipped list.
+        keep = [n for n, _ in rows if n.lower() not in _TD_SYSTEM_DBS]
+        skipped = [n for n, _ in rows if n.lower() in _TD_SYSTEM_DBS]
+    return sorted(keep), sorted(skipped)
+
+
+def _td_lit(value: str) -> str:
+    """Single-quoted SQL literal. teradatasql uses qmark paramstyle, and
+    these are catalog scans built from validated identifiers, so the quoting
+    is explicit rather than relying on a placeholder dialect."""
+    return "'%s'" % str(value or "").replace("'", "''")
+
+
+def _teradata_connect(params: Dict[str, str]):
+    try:
+        import teradatasql
+    except ImportError as e:
+        raise RuntimeError(
+            "the Teradata driver is not installed — "
+            "pip install 'metabridge[connectors]' (or teradatasql)") from e
+    host = (params.get("host") or "").strip()
+    if not host:
+        raise RuntimeError("host is required")
+    kwargs = {"host": host,
+              "user": (params.get("user") or "").strip(),
+              "password": _secret("teradata", "password", params),
+              "dbs_port": str(params.get("port") or "1025").strip()}
+    # LOGMECH matters on cloud trials; only send it when asked for, so the
+    # server's own default applies otherwise.
+    if (params.get("logmech") or "").strip():
+        kwargs["logmech"] = params["logmech"].strip()
+    return teradatasql.connect(**kwargs)
+
+
+def _teradata_test(params: Dict[str, str]) -> dict:
+    """Teradata live probe — same evidence-based shape as the other
+    connectors: authenticate first, then verify the database context as its
+    own step, then count what is visible."""
+    started = time.time()
+    try:
+        conn = _teradata_connect(params)
+    except Exception as e:  # noqa: BLE001 — report, never crash the app
+        msg = str(e)
+        low = msg.lower()
+        return {
+            "ok": False, "connector": "teradata", "authenticated": False,
+            "needs_credential": "password" in low and "invalid" not in low,
+            "latency_ms": int((time.time() - started) * 1000),
+            "error": (msg + (
+                " — this is the ENVIRONMENT/database password, not the "
+                "Teradata website login."
+                if "userid, password or account is invalid" in low else ""
+            ))[:500]}
+    report: dict = {"ok": True, "connector": "teradata",
+                    "authenticated": True, "probes": [], "steps": []}
+    try:
+        cur = conn.cursor()
+
+        def probe(label: str, sql: str):
+            t0 = time.time()
+            cur.execute(sql)
+            row = cur.fetchone()
+            report["probes"].append({
+                "probe": label, "sql": sql,
+                "result": str(row[0]).strip() if row and row[0] is not None
+                else str(row),
+                "ms": int((time.time() - t0) * 1000)})
+            return row
+
+        probe("server_version",
+              "SELECT InfoData FROM DBC.DBCInfoV WHERE InfoKey = 'VERSION'")
+        probe("server_time", "SELECT CURRENT_TIMESTAMP")
+
+        cur.execute("SELECT USER, DATABASE")
+        row = cur.fetchone()
+        report["context"] = {
+            "user": str(row[0]).strip() if row else "",
+            "database": str(row[1]).strip() if row else "",
+            "schema": str(row[1]).strip() if row else "",
+            "edition": "n/a", "account": "", "warehouse": "",
+        }
+
+        # A Teradata DATABASE is the schema, so either field may name it.
+        scope = (params.get("schema") or params.get("database") or "").strip()
+        if scope:
+            cur.execute("SELECT DatabaseName FROM DBC.DatabasesV "
+                        "WHERE UPPER(DatabaseName) = UPPER(%s)"
+                        % _td_lit(scope))
+            if cur.fetchone():
+                report["steps"].append({"step": "database %s" % scope,
+                                        "ok": True})
+            else:
+                report["steps"].append(
+                    {"step": "database %s" % scope, "ok": False,
+                     "error": "database not found or not visible to this user"})
+                report["ok"] = False
+                cur.execute("SELECT DatabaseName FROM DBC.DatabasesV "
+                            "ORDER BY DatabaseName")
+                report["schemas_visible"] = [
+                    str(r[0]).strip() for r in cur.fetchall()][:50]
+
+        pred = ("AND UPPER(DatabaseName) = UPPER(%s)" % _td_lit(scope)) \
+            if scope else ""
+        cur.execute("SELECT COUNT(*) FROM DBC.TablesV "
+                    "WHERE TableKind = 'T' %s" % pred)
+        row = cur.fetchone()
+        report["objects"] = {"tables_visible": _td_int(row[0]) if row else 0}
+
+        report["latency_ms"] = int((time.time() - started) * 1000)
+        if not report["ok"]:
+            bad = [s for s in report["steps"] if not s["ok"]]
+            report["error"] = ("authenticated, but context failed — %s"
+                               % "; ".join("%s: %s" % (s["step"],
+                                                       s.get("error", ""))
+                                           for s in bad))[:500]
+    except Exception as e:  # noqa: BLE001
+        report.update({"ok": False, "error": str(e)[:400],
+                       "latency_ms": int((time.time() - started) * 1000)})
+    finally:
+        try:
+            conn.close()
+        except Exception:  # noqa: BLE001
+            pass
+    return report
+
+
+def _teradata_introspect(params: Dict[str, str],
+                         max_tables: int = 500) -> dict:
+    """Read-only inventory over the DBC catalog, in the SAME shape as the
+    Snowflake/PostgreSQL introspects so the console and scaffold consume it
+    unchanged. Each object class is fetched independently and reports its own
+    capability status, so one denied view never costs the whole inventory."""
+    scope = (params.get("schema") or "").strip()
+    login_db = (params.get("database") or "").strip()
+    started = time.time()
+    try:
+        conn = _teradata_connect(params)
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "connector": "teradata", "error": str(e)[:400]}
+    caps: Dict[str, dict] = {}
+    try:
+        cur = conn.cursor()
+
+        def q(sql):
+            def go():
+                cur.execute(sql)
+                return cur.fetchall()
+            return go
+
+        context = {"user": "", "current_role": "", "database": "",
+                   "schema": "", "version": "", "account": "",
+                   "warehouse": "", "edition": "n/a"}
+        try:
+            cur.execute("SELECT USER, DATABASE")
+            r = cur.fetchone()
+            context["user"] = str(r[0]).strip() if r else ""
+            context["database"] = str(r[1]).strip() if r else ""
+            context["schema"] = scope or context["database"]
+            cur.execute("SELECT InfoData FROM DBC.DBCInfoV "
+                        "WHERE InfoKey = 'VERSION'")
+            r = cur.fetchone()
+            context["version"] = str(r[0]).strip() if r else ""
+        except Exception:  # noqa: BLE001 — context is never load-bearing
+            pass
+
+        # Scope: an explicit database is taken verbatim — the caller asked for
+        # it. Otherwise inventory only the databases holding user data, which
+        # is decided by creator rather than by a name list that no release
+        # keeps up with.
+        skipped_dbs: List[str] = []
+        if scope:
+            db_pred = "UPPER(DatabaseName) = UPPER(%s)" % _td_lit(scope)
+        else:
+            user_dbs, skipped_dbs = _td_user_databases(
+                cur, login_db or context.get("database", ""))
+            if not user_dbs:
+                db_pred = "1 = 0"
+            else:
+                db_pred = "UPPER(DatabaseName) IN (%s)" % ", ".join(
+                    _td_lit(d.upper()) for d in user_dbs)
+            caps["databases"] = {
+                "status": "available" if user_dbs else "empty",
+                "detail": "%d user database(s); %d system database(s) skipped"
+                          % (len(user_dbs), len(skipped_dbs))}
+
+        cur.execute(
+            "SELECT DatabaseName, TableName, TableKind FROM DBC.TablesV "
+            "WHERE %s AND TableKind IN ('T','O','Q','V') "
+            "ORDER BY DatabaseName, TableName" % db_pred)
+        tables: Dict[tuple, dict] = {}
+        for r in cur.fetchall()[:int(max_tables)]:
+            sch, name = str(r[0]).strip(), str(r[1]).strip()
+            kind = str(r[2]).strip().upper()
+            tables[(sch, name)] = {
+                "schema": sch, "name": name,
+                "type": "VIEW" if kind == "V" else "BASE TABLE",
+                # rows_known distinguishes "0 rows" from "nobody has run
+                # COLLECT STATISTICS". Teradata publishes no free row count,
+                # so reporting 0 for an unmeasured table states a fact we do
+                # not have — and a sizing decision made on it would be wrong.
+                "rows": 0, "rows_known": False,
+                "bytes": 0, "columns": []}
+
+        # Columns, with the declared type rebuilt from the DBC fields.
+        for r in _guarded(caps, "columns", q(
+                "SELECT DatabaseName, TableName, ColumnName, ColumnType, "
+                "ColumnLength, DecimalTotalDigits, DecimalFractionalDigits, "
+                "CharType, ColumnUDTName, Nullable "
+                "FROM DBC.ColumnsV WHERE %s "
+                "ORDER BY DatabaseName, TableName, ColumnId" % db_pred)) or []:
+            key_ = (str(r[0]).strip(), str(r[1]).strip())
+            if key_ not in tables:
+                continue
+            tables[key_]["columns"].append({
+                "name": str(r[2]).strip(),
+                "type": _td_native_type(r[3], r[4], r[5], r[6], r[7], r[8]),
+                "nullable": str(r[9] or "Y").strip().upper() != "N"})
+
+        # Size is cheap; an exact COUNT(*) is not. CurrentPerm is the only
+        # figure the catalog gives away for free, and collected stats supply
+        # a row estimate when someone has run COLLECT STATISTICS.
+        for r in _guarded(caps, "table_sizes", q(
+                "SELECT DatabaseName, TableName, SUM(CurrentPerm) "
+                "FROM DBC.TableSizeV WHERE %s "
+                "GROUP BY DatabaseName, TableName" % db_pred)) or []:
+            key_ = (str(r[0]).strip(), str(r[1]).strip())
+            if key_ in tables:
+                tables[key_]["bytes"] = _td_int(r[2])
+        for r in _guarded(caps, "row_estimates", q(
+                "SELECT DatabaseName, TableName, MAX(RowCount) "
+                "FROM DBC.StatsV WHERE %s AND RowCount IS NOT NULL "
+                "GROUP BY DatabaseName, TableName" % db_pred)) or []:
+            key_ = (str(r[0]).strip(), str(r[1]).strip())
+            if key_ not in tables:
+                continue
+            # A sentinel separates "the statistic says 0" from "the value
+            # would not parse". Marking an unparsed figure as known would
+            # publish 0 rows for a measured table — the exact false reading
+            # rows_known exists to prevent.
+            n = _td_int(r[2], -1)
+            if n >= 0:
+                tables[key_]["rows"] = n
+                tables[key_]["rows_known"] = True
+        # Say how far the estimates actually reach. "available" on a class
+        # that covered 2 of 52 tables reads as complete when it is not.
+        _known = sum(1 for t in tables.values() if t["rows_known"])
+        if tables:
+            caps["row_estimates"] = {
+                "status": "available" if _known == len(tables)
+                          else ("partial" if _known else "empty"),
+                "detail": "%d of %d table(s) have collected statistics; the "
+                          "rest report rows as unknown (Teradata publishes no "
+                          "free row count — run COLLECT STATISTICS)"
+                          % (_known, len(tables))}
+
+        # Unique indexes and primary keys become the manifest's unique_key,
+        # which is what decides MERGE vs full reload. A Teradata PRIMARY
+        # INDEX is NOT unique unless declared so — only UniqueFlag='Y' and
+        # real key constraints qualify.
+        pks: Dict[tuple, List[str]] = {}
+        for r in _guarded(caps, "unique_indexes", q(
+                "SELECT DatabaseName, TableName, ColumnName, IndexNumber "
+                "FROM DBC.IndicesV WHERE %s AND UniqueFlag = 'Y' "
+                "ORDER BY DatabaseName, TableName, IndexNumber, "
+                "ColumnPosition" % db_pred)) or []:
+            key_ = (str(r[0]).strip(), str(r[1]).strip())
+            if key_ in tables:
+                pks.setdefault(key_, []).append(str(r[2]).strip())
+
+        views = []
+        for r in _guarded(caps, "views", q(
+                "SELECT DatabaseName, TableName, RequestText "
+                "FROM DBC.TablesV WHERE %s AND TableKind = 'V'"
+                % db_pred)) or []:
+            views.append({"schema": str(r[0]).strip(),
+                          "name": str(r[1]).strip(),
+                          "definition": str(r[2] or "")[:8000]})
+
+        def _kind(k, label):
+            def go():
+                cur.execute(
+                    "SELECT DatabaseName, TableName, RequestText "
+                    "FROM DBC.TablesV WHERE %s AND TableKind = '%s'"
+                    % (db_pred, k))
+                out = []
+                for r in cur.fetchall()[:_MAX_OBJECTS]:
+                    o = {"schema": str(r[0]).strip(),
+                         "name": str(r[1]).strip(), "language": "SQL"}
+                    out.append(_with_body(o, str(r[2] or ""),
+                                          "%s.%s" % (o["schema"], o["name"])))
+                return out
+            return go
+
+        macros = _guarded(caps, "macros", _kind("M", "macro")) or []
+        procedures = _guarded(caps, "procedures",
+                              _kind("P", "procedure")) or []
+        functions = _guarded(caps, "functions", _kind("F", "function")) or []
+        secret_findings = [f for o in macros + procedures + functions
+                           for f in o.get("secret_findings", [])]
+        caps["tables"] = {"status": "available" if tables else "empty"}
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "connector": "teradata", "error": str(e)[:400]}
+    finally:
+        try:
+            conn.close()
+        except Exception:  # noqa: BLE001
+            pass
+
+    import sqlglot
+    convertible, needs_review = [], []
+    for v in views:
+        if not v["definition"].strip():
+            needs_review.append({"view": v["name"],
+                                 "reason": "definition not visible to "
+                                           "this user"})
+            continue
+        try:
+            sqlglot.parse_one(v["definition"], read="teradata")
+            convertible.append(v["name"])
+        except Exception as e:  # noqa: BLE001
+            needs_review.append({"view": v["name"], "reason": str(e)[:150]})
+
+    base_tables = [t for t in tables.values()
+                   if "VIEW" not in t["type"].upper()]
+    return {
+        "ok": True, "connector": "teradata",
+        # Teradata has no database-above-schema level, so the manifest must
+        # NOT carry a `database:` — the DATABASE already IS the schema, and
+        # emitting both would produce an invalid three-part name.
+        "database": login_db or context.get("database", ""),
+        "schema": scope or "(all)",
+        "elapsed_ms": int((time.time() - started) * 1000),
+        "context": context, "capabilities": caps,
+        "tables": sorted(tables.values(),
+                         key=lambda t: (-t["rows"], t["name"])),
+        "views": [{"schema": v["schema"], "name": v["name"]} for v in views],
+        "view_definitions": {v["name"]: v["definition"] for v in views},
+        "materialized_views": [], "sequences": [],
+        "macros": macros, "functions": functions, "procedures": procedures,
+        "secret_findings": secret_findings,
+        "databases_skipped": skipped_dbs,
+        "readiness": {
+            "tables": len(base_tables),
+            "views": len(views),
+            # Only measured tables contribute. Summing unmeasured ones as 0
+            # would present a partial total as the whole estate.
+            "total_rows": sum(t["rows"] for t in base_tables
+                              if t["rows_known"]),
+            "tables_with_row_stats": sum(1 for t in base_tables
+                                         if t["rows_known"]),
+            "tables_without_row_stats": sum(1 for t in base_tables
+                                            if not t["rows_known"]),
+            "tables_with_columns": sum(1 for t in base_tables
+                                       if t["columns"]),
+            "column_sizes_measured": 0,
+            "materialized_views": 0, "sequences": 0,
+            "macros": len(macros),
+            "functions": len(functions), "procedures": len(procedures),
+            "views_convertible": len(convertible),
+            "views_needing_review": needs_review,
+            "system_databases_skipped": len(skipped_dbs),
+            "verdict": "READY" if base_tables or convertible else
+                       "NOTHING_TO_CONVERT",
+        },
+        "manifest_yaml": _manifest_yaml(base_tables, "", pks),
+    }
+
+
+# ---------------------------------------------------------------------------
+# SAP HANA
+#
+# HANA has NO INFORMATION_SCHEMA — the catalog lives in SYS (SYS.SCHEMAS,
+# SYS.TABLES, SYS.TABLE_COLUMNS), so it cannot join the psycopg/_SQL_DIALECTS
+# path and gets its own, exactly as Teradata does with DBC. Two further HANA
+# facts shape everything below:
+#   * a bare SELECT needs FROM DUMMY (HANA's DUAL)
+#   * HANA Cloud is TLS-only on 443; on-prem instances are usually plain on
+#     3<instance>15, so encryption is inferred rather than hardcoded
+# ---------------------------------------------------------------------------
+
+def _hana_encrypt(host: str, port: str, params: Dict[str, str]) -> bool:
+    """Whether to negotiate TLS. Explicit `encrypt` always wins; otherwise
+    HANA Cloud (443, or a *.hanacloud.ondemand.com address) is TLS-only and
+    a plain connection there fails with a confusing protocol error rather
+    than anything that names TLS."""
+    declared = str(params.get("encrypt", "")).strip().lower()
+    if declared in ("1", "true", "yes", "on"):
+        return True
+    if declared in ("0", "false", "no", "off"):
+        return False
+    return port == "443" or "hanacloud.ondemand.com" in host.lower()
+
+
+def _hana_connect(params: Dict[str, str]):
+    try:
+        from hdbcli import dbapi
+    except ImportError as e:
+        raise RuntimeError(
+            "the SAP HANA driver is not installed — "
+            "pip install 'metabridge[connectors]' (or hdbcli)") from e
+    host = (params.get("host") or "").strip()
+    if not host:
+        raise RuntimeError("host is required")
+    # Paste-tolerance: HANA Cloud Central hands out "<guid>....com:443" as one
+    # string, and pasting it whole is the single commonest setup mistake.
+    port = str(params.get("port") or "").strip()
+    if ":" in host:
+        host, _, tail = host.partition(":")
+        port = port or tail.strip()
+    port = port or "443"
+    kwargs = {"address": host, "port": int(port),
+              "user": (params.get("user") or "").strip(),
+              "password": _secret("sap_hana", "password", params)}
+    if _hana_encrypt(host, port, params):
+        kwargs["encrypt"] = True
+        # SAP's cloud certificates are publicly valid; keep verification on so
+        # a MITM cannot silently downgrade the session.
+        kwargs["sslValidateCertificate"] = True
+    if (params.get("database") or "").strip():
+        kwargs["databaseName"] = params["database"].strip()
+    return dbapi.connect(**kwargs)
+
+
+def _hana_test(params: Dict[str, str]) -> dict:
+    """SAP HANA live probe — the same evidence-based ladder as the other
+    connectors: authenticate first, then verify the schema as its own step,
+    so a wrong schema never reads as a failed login."""
+    started = time.time()
+    try:
+        conn = _hana_connect(params)
+    except Exception as e:  # noqa: BLE001 — report, never crash the app
+        msg = str(e)
+        low = msg.lower()
+        hint = ""
+        if "authentication failed" in low or "invalid username or password" \
+                in low:
+            hint = (" — this is the DBADMIN (database) password, not your "
+                    "SAP BTP cockpit login.")
+        elif "cannot resolve host" in low or "no such host" in low:
+            hint = " — the host could not be resolved; check for a typo."
+        elif ("connection failed" in low or "cannot connect" in low
+                or "timeout" in low or "refused" in low):
+            hint = (" — check the instance is RUNNING (free-tier HANA Cloud "
+                    "instances stop every evening) and that its Allowed "
+                    "Connections permit your IP.")
+        return {
+            "ok": False, "connector": "sap_hana", "authenticated": False,
+            "needs_credential": "password" in low and "invalid" not in low,
+            "latency_ms": int((time.time() - started) * 1000),
+            "error": (msg + hint)[:500]}
+    report: dict = {"ok": True, "connector": "sap_hana",
+                    "authenticated": True, "probes": [], "steps": []}
+    try:
+        cur = conn.cursor()
+
+        def probe(label: str, sql: str):
+            t0 = time.time()
+            cur.execute(sql)
+            row = cur.fetchone()
+            report["probes"].append({
+                "probe": label, "sql": sql,
+                "result": str(row[0]).strip() if row and row[0] is not None
+                else str(row),
+                "ms": int((time.time() - t0) * 1000)})
+            return row
+
+        probe("server_version", "SELECT VERSION FROM SYS.M_DATABASE")
+        probe("server_time", "SELECT CURRENT_TIMESTAMP FROM DUMMY")
+
+        cur.execute("SELECT CURRENT_USER, CURRENT_SCHEMA FROM DUMMY")
+        row = cur.fetchone()
+        cur.execute("SELECT DATABASE_NAME FROM SYS.M_DATABASE")
+        dbrow = cur.fetchone()
+        report["context"] = {
+            "user": str(row[0]).strip() if row else "",
+            "schema": str(row[1]).strip() if row else "",
+            "database": str(dbrow[0]).strip() if dbrow else "",
+            "edition": "n/a", "account": "", "warehouse": "",
+        }
+
+        scope = (params.get("schema") or "").strip()
+        if scope:
+            cur.execute("SELECT SCHEMA_NAME FROM SYS.SCHEMAS "
+                        "WHERE UPPER(SCHEMA_NAME) = UPPER(?)", (scope,))
+            if cur.fetchone():
+                report["steps"].append({"step": "schema %s" % scope,
+                                        "ok": True})
+            else:
+                report["steps"].append(
+                    {"step": "schema %s" % scope, "ok": False,
+                     "error": "schema not found or not visible to this user"})
+                report["ok"] = False
+                # the useful half of the answer: what this user CAN see
+                cur.execute("SELECT SCHEMA_NAME FROM SYS.SCHEMAS "
+                            "ORDER BY SCHEMA_NAME")
+                report["schemas_visible"] = [
+                    str(r[0]).strip() for r in cur.fetchall()][:50]
+
+        if scope:
+            cur.execute("SELECT COUNT(*) FROM SYS.TABLES "
+                        "WHERE UPPER(SCHEMA_NAME) = UPPER(?)", (scope,))
+        else:
+            cur.execute("SELECT COUNT(*) FROM SYS.TABLES")
+        row = cur.fetchone()
+        report["objects"] = {"tables_visible": int(row[0]) if row and
+                             row[0] is not None else 0}
+
+        report["latency_ms"] = int((time.time() - started) * 1000)
+        if not report["ok"]:
+            bad = [s for s in report["steps"] if not s["ok"]]
+            report["error"] = ("authenticated, but context failed — %s"
+                               % "; ".join("%s: %s" % (s["step"],
+                                                       s.get("error", ""))
+                                           for s in bad))[:500]
+    except Exception as e:  # noqa: BLE001
+        report.update({"ok": False, "error": str(e)[:400],
+                       "latency_ms": int((time.time() - started) * 1000)})
+    finally:
+        try:
+            conn.close()
+        except Exception:  # noqa: BLE001
+            pass
+    return report
+
+
+# Which schemas hold CUSTOMER data is decided by their OWNER, not by their
+# name — the same rule Teradata uses, and for the same reason: a name list
+# goes stale every release. SAP's own content is created by technical users
+# whose names start with _SYS (_SYS_AFL owns the whole PAL_* library,
+# _SYS_REPO the repository, _SYS_BIC the generated calculation views), so
+# one owner test covers content that no name pattern would catch. Observed
+# on HANA Cloud 2026.14: PAL_CONTENT, PAL_STEM_TFIDF, PAL_ANNS_CONTENT,
+# PAL_EMBEDDING_VECTOR_PCA and PAL_SCHEDULED_EXECUTION are all owned by
+# _SYS_AFL, while a user schema (SAPABAP1) is owned by DBADMIN.
+#
+# SYSTEM is deliberately NOT treated as a system owner. It is the HANA
+# superuser, and on-prem estates do have real customer schemas created by
+# it — skipping those would silently drop the very data being migrated.
+_HANA_SYSTEM_OWNERS = frozenset({"SYS"})
+# Names still matter for the handful of system schemas that a normal user
+# owns. This is the fallback, not the primary test.
+_HANA_SYSTEM_SCHEMAS = frozenset({
+    "SYS", "SYSTEM", "SYSTEMDB", "PUBLIC", "UIS", "SAP_XS_LM",
+    "SAP_XS_LM_PE", "HANA_XS_BASE", "_SYS_TASK",
+})
+# Types whose declared form carries a single length, vs a precision/scale
+# pair. Everything else renders bare — appending (0) to an INTEGER would
+# invent a parameter HANA never declared.
+_HANA_LEN_TYPES = frozenset({
+    "VARCHAR", "NVARCHAR", "CHAR", "NCHAR", "ALPHANUM", "SHORTTEXT",
+    "VARBINARY", "BINARY",
+})
+_HANA_PRECISION_TYPES = frozenset({"DECIMAL"})
+
+
+def _hana_lit(value: str) -> str:
+    return "'%s'" % str(value).replace("'", "''")
+
+
+def _hana_native_type(data_type: object, length: object,
+                      scale: object) -> str:
+    """Rebuild a column's DECLARED type from SYS.TABLE_COLUMNS.
+
+    HANA reports LENGTH for every type, including ones that never declared
+    one, so the parameter is re-attached only where it is genuinely part of
+    the type. A bare DECIMAL (floating decimal) reports a length but a NULL
+    scale, and must stay bare — rendering DECIMAL(34,0) there would silently
+    truncate every fractional value.
+    """
+    name = str(data_type or "").strip().upper()
+    if not name:
+        return ""
+    if name in _HANA_PRECISION_TYPES:
+        if scale is None or str(scale).strip() == "":
+            return name
+        try:
+            return "%s(%d,%d)" % (name, int(length), int(scale))
+        except (TypeError, ValueError):
+            return name
+    if name in _HANA_LEN_TYPES:
+        try:
+            n = int(length)
+        except (TypeError, ValueError):
+            return name
+        return "%s(%d)" % (name, n) if n > 0 else name
+    return name
+
+
+def _hana_is_system_schema(name: str, owner: str) -> bool:
+    """SAP-managed content, by owner first and name only as a fallback."""
+    owner_u = (owner or "").strip().upper()
+    if owner_u.startswith("_SYS") or owner_u in _HANA_SYSTEM_OWNERS:
+        return True
+    name_u = (name or "").strip().upper()
+    return name_u.startswith("_SYS") or name_u in _HANA_SYSTEM_SCHEMAS
+
+
+def _hana_user_schemas(cur, scope: str) -> Tuple[List[str], List[str]]:
+    """(user schemas, skipped system schemas). An explicit scope is taken
+    verbatim — the caller asked for it, even if it looks like a system
+    schema."""
+    if scope:
+        return [scope], []
+    cur.execute("SELECT SCHEMA_NAME, SCHEMA_OWNER FROM SYS.SCHEMAS "
+                "ORDER BY SCHEMA_NAME")
+    user, skipped = [], []
+    for r in cur.fetchall():
+        name = str(r[0]).strip()
+        owner = str(_at(r, 1)).strip()
+        if _hana_is_system_schema(name, owner):
+            skipped.append(name)
+        else:
+            user.append(name)
+    return user, skipped
+
+
+def _hana_introspect(params: Dict[str, str],
+                     max_tables: int = 500) -> dict:
+    """Read-only inventory over the SYS catalog, in the SAME shape as the
+    Snowflake/PostgreSQL/Teradata introspects so the console and scaffold
+    consume it unchanged.
+
+    HANA has no INFORMATION_SCHEMA; everything comes from SYS.*. Unlike
+    Teradata it publishes a real RECORD_COUNT for free, so row counts are
+    fact here rather than a collected-statistics estimate.
+    """
+    scope = (params.get("schema") or "").strip()
+    started = time.time()
+    try:
+        conn = _hana_connect(params)
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "connector": "sap_hana", "error": str(e)[:400]}
+    caps: Dict[str, dict] = {}
+    skipped_schemas: List[str] = []
+    try:
+        cur = conn.cursor()
+
+        def q(sql):
+            def go():
+                cur.execute(sql)
+                return cur.fetchall()
+            return go
+
+        context = {"user": "", "current_role": "", "database": "",
+                   "schema": "", "version": "", "account": "",
+                   "warehouse": "", "edition": "n/a"}
+        try:
+            cur.execute("SELECT CURRENT_USER, CURRENT_SCHEMA FROM DUMMY")
+            r = cur.fetchone()
+            context["user"] = str(r[0]).strip() if r else ""
+            context["schema"] = scope or (str(r[1]).strip() if r else "")
+            cur.execute("SELECT DATABASE_NAME, VERSION FROM SYS.M_DATABASE")
+            r = cur.fetchone()
+            context["database"] = str(r[0]).strip() if r else ""
+            context["version"] = str(r[1]).strip() if r else ""
+        except Exception:  # noqa: BLE001 — context is never load-bearing
+            pass
+
+        user_schemas, skipped_schemas = _hana_user_schemas(cur, scope)
+        if not user_schemas:
+            sch_pred = "1 = 0"
+        else:
+            sch_pred = "SCHEMA_NAME IN (%s)" % ", ".join(
+                _hana_lit(s) for s in user_schemas)
+        if not scope:
+            caps["schemas"] = {
+                "status": "available" if user_schemas else "empty",
+                "detail": "%d user schema(s); %d SAP-managed schema(s) "
+                          "skipped (owned by SYS/_SYS_* — PAL, repository "
+                          "and generated content)"
+                          % (len(user_schemas), len(skipped_schemas))}
+
+        cur.execute("SELECT SCHEMA_NAME, TABLE_NAME FROM SYS.TABLES "
+                    "WHERE %s ORDER BY SCHEMA_NAME, TABLE_NAME" % sch_pred)
+        tables: Dict[tuple, dict] = {}
+        for r in cur.fetchall()[:int(max_tables)]:
+            sch, name = str(r[0]).strip(), str(r[1]).strip()
+            tables[(sch, name)] = {
+                "schema": sch, "name": name, "type": "BASE TABLE",
+                "rows": 0, "rows_known": False,
+                "bytes": 0, "columns": []}
+
+        for r in _guarded(caps, "columns", q(
+                "SELECT SCHEMA_NAME, TABLE_NAME, COLUMN_NAME, "
+                "DATA_TYPE_NAME, LENGTH, SCALE, IS_NULLABLE "
+                "FROM SYS.TABLE_COLUMNS WHERE %s "
+                "ORDER BY SCHEMA_NAME, TABLE_NAME, POSITION" % sch_pred)) or []:
+            key_ = (str(r[0]).strip(), str(r[1]).strip())
+            if key_ not in tables:
+                continue
+            tables[key_]["columns"].append({
+                "name": str(r[2]).strip(),
+                "type": _hana_native_type(r[3], r[4], r[5]),
+                "nullable": str(r[6] or "TRUE").strip().upper()
+                not in ("FALSE", "N", "NO")})
+
+        # M_TABLES carries RECORD_COUNT and TABLE_SIZE for free — no COUNT(*)
+        # and no collected statistics needed.
+        for r in _guarded(caps, "row_counts", q(
+                "SELECT SCHEMA_NAME, TABLE_NAME, RECORD_COUNT, TABLE_SIZE "
+                "FROM SYS.M_TABLES WHERE %s" % sch_pred)) or []:
+            key_ = (str(r[0]).strip(), str(r[1]).strip())
+            if key_ not in tables:
+                continue
+            try:
+                tables[key_]["rows"] = int(r[2])
+                tables[key_]["rows_known"] = True
+            except (TypeError, ValueError):
+                pass
+            try:
+                tables[key_]["bytes"] = int(r[3])
+            except (TypeError, ValueError):
+                pass
+
+        pks: Dict[tuple, List[str]] = {}
+        for r in _guarded(caps, "primary_keys", q(
+                "SELECT SCHEMA_NAME, TABLE_NAME, COLUMN_NAME "
+                "FROM SYS.CONSTRAINTS WHERE %s AND IS_PRIMARY_KEY = 'TRUE' "
+                "ORDER BY SCHEMA_NAME, TABLE_NAME, POSITION" % sch_pred)) or []:
+            key_ = (str(r[0]).strip(), str(r[1]).strip())
+            if key_ in tables:
+                pks.setdefault(key_, []).append(str(r[2]).strip())
+
+        views = []
+        for r in _guarded(caps, "views", q(
+                "SELECT SCHEMA_NAME, VIEW_NAME, DEFINITION FROM SYS.VIEWS "
+                "WHERE %s ORDER BY SCHEMA_NAME, VIEW_NAME" % sch_pred)) or []:
+            views.append({"schema": str(r[0]).strip(),
+                          "name": str(r[1]).strip(),
+                          "definition": str(r[2] or "")[:8000]})
+
+        def _routine(view_name: str, name_col: str):
+            def go():
+                cur.execute(
+                    "SELECT SCHEMA_NAME, %s, DEFINITION FROM SYS.%s "
+                    "WHERE %s ORDER BY SCHEMA_NAME, %s"
+                    % (name_col, view_name, sch_pred, name_col))
+                out = []
+                for r in cur.fetchall()[:_MAX_OBJECTS]:
+                    o = {"schema": str(r[0]).strip(),
+                         "name": str(r[1]).strip(), "language": "SQLScript"}
+                    out.append(_with_body(o, str(r[2] or ""),
+                                          "%s.%s" % (o["schema"], o["name"])))
+                return out
+            return go
+
+        procedures = _guarded(caps, "procedures",
+                              _routine("PROCEDURES", "PROCEDURE_NAME")) or []
+        functions = _guarded(caps, "functions",
+                             _routine("FUNCTIONS", "FUNCTION_NAME")) or []
+        secret_findings = [f for o in procedures + functions
+                           for f in o.get("secret_findings", [])]
+        caps["tables"] = {"status": "available" if tables else "empty"}
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "connector": "sap_hana", "error": str(e)[:400]}
+    finally:
+        try:
+            conn.close()
+        except Exception:  # noqa: BLE001
+            pass
+
+    # sqlglot has no HANA dialect, so a view is parsed as ANSI. That is a
+    # weaker check than the dialect-aware connectors get: HANA-specific
+    # syntax parses as a generic Command rather than failing, so "convertible"
+    # here means "no syntax error against ANSI", not "verified HANA SQL".
+    import sqlglot
+    convertible, needs_review = [], []
+    for v in views:
+        if not v["definition"].strip():
+            needs_review.append({"view": v["name"],
+                                 "reason": "definition not visible to "
+                                           "this user"})
+            continue
+        try:
+            sqlglot.parse_one(v["definition"])
+            convertible.append(v["name"])
+        except Exception as e:  # noqa: BLE001
+            needs_review.append({"view": v["name"], "reason": str(e)[:150]})
+    caps["view_parsing"] = {
+        "status": "partial",
+        "detail": "sqlglot has no SAP HANA dialect; view SQL is checked "
+                  "against ANSI, so HANA-specific syntax is neither "
+                  "validated nor rejected"}
+
+    base_tables = list(tables.values())
+    return {
+        "ok": True, "connector": "sap_hana",
+        # HANA addresses objects as SCHEMA.TABLE — the tenant database is the
+        # connection, not part of the name. Emitting `database:` would produce
+        # an invalid three-part name, exactly as it would for Teradata.
+        "database": context.get("database", ""),
+        "schema": scope or "(all)",
+        "elapsed_ms": int((time.time() - started) * 1000),
+        "context": context, "capabilities": caps,
+        "tables": sorted(base_tables, key=lambda t: (-t["rows"], t["name"])),
+        "views": [{"schema": v["schema"], "name": v["name"]} for v in views],
+        "view_definitions": {v["name"]: v["definition"] for v in views},
+        "materialized_views": [], "sequences": [],
+        "macros": [], "functions": functions, "procedures": procedures,
+        "secret_findings": secret_findings,
+        "databases_skipped": skipped_schemas,
+        "readiness": {
+            "tables": len(base_tables),
+            "views": len(views),
+            "total_rows": sum(t["rows"] for t in base_tables
+                              if t["rows_known"]),
+            "tables_with_row_stats": sum(1 for t in base_tables
+                                         if t["rows_known"]),
+            "tables_without_row_stats": sum(1 for t in base_tables
+                                            if not t["rows_known"]),
+            "tables_with_columns": sum(1 for t in base_tables
+                                       if t["columns"]),
+            "column_sizes_measured": 0,
+            "materialized_views": 0, "sequences": 0,
+            "macros": 0,
+            "functions": len(functions), "procedures": len(procedures),
+            "views_convertible": len(convertible),
+            "views_needing_review": needs_review,
+            "system_databases_skipped": len(skipped_schemas),
+            "verdict": "READY" if base_tables or convertible else
+                       "NOTHING_TO_CONVERT",
+        },
+        "manifest_yaml": _manifest_yaml(base_tables, "", pks),
+    }
+
+
 def test_connection(key: str, params: Dict[str, str]) -> dict:
     """Open a real session and probe it as a DIAGNOSTIC LADDER: the
     connection is established with credentials only, then role/warehouse/
@@ -2815,6 +3835,10 @@ def test_connection(key: str, params: Dict[str, str]) -> dict:
                          % key}
     if key in _SQL_DIALECTS:
         return _sqldb_test(key, params)
+    if key == "teradata":
+        return _teradata_test(params)
+    if key == "sap_hana":
+        return _hana_test(params)
     if key == "databricks":
         return _databricks_test(params)
     if key == "oracle":
@@ -3238,6 +4262,18 @@ def introspect(key: str, params: Dict[str, str],
                 "error": "introspection not implemented for '%s' yet" % key}
     if key in _SQL_DIALECTS:
         return _sqldb_introspect(key, params, max_tables=max_tables)
+    if key == "teradata":
+        return _teradata_introspect(params, max_tables=max_tables)
+    if key == "sap_hana":
+        return _hana_introspect(params, max_tables=max_tables)
+    if key in _TEST_ONLY:
+        # HAS a driver, so the guard above let it through, but no catalog
+        # read yet. Say so instead of falling into the Snowflake path below
+        # and failing with a message about warehouses.
+        return {"ok": False, "connector": key, "unsupported": True,
+                "error": "Test connection works for '%s', but the catalog "
+                         "read behind Analyze is not implemented yet — "
+                         "scaffold from a table manifest meanwhile" % key}
     if key == "databricks":
         return _databricks_introspect(params, max_tables=max_tables)
     if key == "oracle":

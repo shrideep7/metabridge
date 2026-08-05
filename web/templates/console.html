@@ -7715,7 +7715,15 @@ function estateAssets(d) {
   const A = [];
   (d.tables || []).forEach(o => A.push({
     name: o.name, type: String(o.type || '').includes('VIEW') ? 'View' : 'Table',
-    schema: o.schema || '', rows: o.rows, columns: o.columns || [],
+    schema: o.schema || '',
+    // rows_known === false means the platform publishes no free row count and
+    // nobody has collected statistics — NOT that the table is empty. Passing 0
+    // through renders "0" and reads as eleven empty tables; null renders the
+    // same em-dash the UI already uses for objects that have no row concept.
+    // Absent flag = the connector always knows (Snowflake, Postgres), so the
+    // value is trusted as-is.
+    rows: o.rows_known === false ? null : o.rows,
+    columns: o.columns || [],
     definition: (d.view_definitions && d.view_definitions[o.name]) || '', _o: o}));
   const push = (arr, type) => (arr || []).forEach(o => A.push({
     name: o.name, type: type, schema: o.schema || '', rows: null, columns: null,
@@ -8014,7 +8022,10 @@ function openObjectDrawer(a, conn) {
 function openAssetDrawer(t, conn, d) {
   $('#modalBody').innerHTML = '<h2 style="font-size:18px">' + esc(t.schema) + '.' + esc(t.name) + '</h2>'
     + '<div class="v" style="color:var(--ink3);font-size:13px;margin-bottom:10px">' + (t.type.includes('VIEW') ? 'View' : 'Table')
-    + ' · ' + esc(conn.connector) + ' · ' + t.rows.toLocaleString() + ' rows</div>'
+    + ' · ' + esc(conn.connector) + ' · '
+    + (t.rows_known === false
+       ? 'row count not collected'
+       : Number(t.rows || 0).toLocaleString() + ' rows') + '</div>'
     + '<div class="drawer-meta"><b>Columns (' + t.columns.length + ')</b></div>'
     + '<table>' + t.columns.map(cc => '<tr><td>' + esc(cc.name) + '</td><td style="color:var(--ink3)">' + esc(cc.type) + '</td></tr>').join('') + '</table>'
     + (d.view_definitions && d.view_definitions[t.name]

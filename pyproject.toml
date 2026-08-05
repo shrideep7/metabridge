@@ -28,14 +28,20 @@ llm = ["anthropic[bedrock]>=0.34"]
 dtd = ["lxml>=5.0"]
 # Live connector drivers — needed for Test connection / Analyze database /
 # Load against a live system. Snowflake, Databricks, PostgreSQL, Amazon
-# Redshift and Oracle are the certified live connectors today (see
-# metabridge.livecheck.LIVE_CONNECTORS); PostgreSQL and Redshift share the
-# psycopg2 wire path, and oracledb runs in THIN mode so no Oracle Instant
-# Client is required. Add a live connector's driver here as it is certified.
+# Redshift, Oracle, Teradata and SAP HANA are the certified live connectors
+# today (see metabridge.livecheck.LIVE_CONNECTORS); PostgreSQL and Redshift
+# share the psycopg2 wire path, and oracledb runs in THIN mode so no Oracle
+# Instant Client is required. Add a live connector's driver here as it is
+# certified.
 # Without this extra the deterministic engines still work; only the live
 # actions are unavailable and say so.
+# NOTE-HDBCLI: hdbcli is published by SAP SE under the SAP DEVELOPER LICENSE
+# AGREEMENT, NOT a permissive OSS licence. It is fine for development and
+# evaluation; redistributing it in a shipped product needs SAP's agreement.
+# It stays in this OPTIONAL extra so a default install never pulls it in.
 connectors = ["snowflake-connector-python>=3.0", "psycopg2-binary>=2.9",
-              "databricks-sql-connector>=3.0", "oracledb>=2.0"]
+              "databricks-sql-connector>=3.0", "oracledb>=2.0",
+              "teradatasql>=20.0", "hdbcli>=2.19"]
 # commercial control plane (multi-tenant; SQLite for dev/test, PostgreSQL in
 # production via CONTROLPLANE_DATABASE_URL — install psycopg2-binary for RDS)
 commercial = ["sqlalchemy>=2.0,<3"]

@@ -153,7 +153,21 @@ registry.register(ConnectorSpec(
     dialect="", deployment="hybrid", regions=["on_prem"] + _GLOBAL,
     dbt_adapter="", idmc_type="SAP HANA Database", powercenter_dbtype="ODBC",
     notes="Expressions transpile via ANSI. Calculation views surface as tables.",
-    fields=_std(port="30015"),
+    # NOT _std(): HANA's requirements genuinely differ from the standard SQL
+    # form. 443 is the HANA Cloud SQL endpoint and the case this connector is
+    # used for; on-prem instances override it with 3<instance>15 (30015 for
+    # instance 00). The port also drives the driver's TLS inference, so the
+    # default must match what livecheck._hana_connect assumes.
+    # The tenant database is OPTIONAL: a HANA Cloud endpoint already resolves
+    # to its tenant, and only a multi-tenant on-prem system reached through
+    # the system database needs it named. Marking it required made the form
+    # demand a value the driver never requires.
+    fields=[F("host", "Host"),
+            F("port", "Port", required=False, default="443"),
+            F("user", "Username"),
+            F("password", "Password", secret=True),
+            F("database", "Tenant database", required=False),
+            F("schema", "Schema", required=False)],
     type_map={"nvarchar": "string", "seconddate": "timestamp",
               "decfloat": "double", "tinyint": "integer"}))
 

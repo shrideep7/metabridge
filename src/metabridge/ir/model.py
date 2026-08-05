@@ -87,6 +87,15 @@ class Port:
     # fallback stays usable for processing, but assessment records a missing
     # type as a data-quality penalty rather than a genuine string column.
     type_declared: bool = True
+    # The source's OWN declared type, verbatim ("TIME(6)", "VARBYTE(1024)",
+    # "SYSUDTLIB.ST_GEOMETRY"). `datatype` above is deliberately coarse —
+    # 9 values, consumed by lineage, graphs and complexity scoring that do
+    # not care whether a column is TIME or VARCHAR. Physical DDL does care,
+    # and resolving a target type from the coarse value is what produced
+    # VARCHAR(6) from TIME(6). Generators that emit real types resolve this
+    # through sqlx.type_engine (18 canonical types, per-platform, with
+    # fidelity warnings) and fall back to `datatype` when it is empty.
+    native_type: str = ""
 
 
 @dataclass

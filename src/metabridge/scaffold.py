@@ -54,10 +54,18 @@ def _precision_scale(native_type: str):
 def _port(spec: ConnectorSpec, col: dict) -> Port:
     native = str(col.get("type", "string"))
     prec, scale = _precision_scale(native)
+    declared = bool(str(col.get("type", "")).strip())
     return Port(name=str(col["name"]),
                 datatype=_canonical(spec, native),
                 precision=prec, scale=scale,
-                type_declared=bool(str(col.get("type", "")).strip()))
+                type_declared=declared,
+                # Carry the source's own type through to the generators. The
+                # canonical above is 9 values wide and cannot distinguish
+                # TIME from VARCHAR or keep a time-zone offset; the DDL is
+                # resolved from this instead, via sqlx.type_engine. Only set
+                # when a type was really declared, so an undeclared column
+                # still lands on the documented fallback.
+                native_type=native if declared else "")
 
 
 def build_pipeline(project: str, source: ConnectorSpec,

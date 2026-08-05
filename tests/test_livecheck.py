@@ -280,8 +280,149 @@ def test_connection_failure_reported(fake_driver, monkeypatch):
 
 
 def test_unsupported_connector_is_honest():
-    r = livecheck.test_connection("teradata", {})
+    # The SUBJECT is derived, never hardcoded. This guard named Teradata,
+    # then Oracle, and each in turn gained a driver and broke it — the test
+    # was rewritten twice to chase a moving fact. What it actually asserts is
+    # that a connector WITHOUT a driver says so instead of failing obscurely,
+    # so ask the registry which one that currently is and the next driver to
+    # land moves the subject rather than breaking the test.
+    from metabridge.connectors.base import get_registry
+    subject = next((s.key for s in get_registry().all()
+                    if s.key not in livecheck.LIVE_CONNECTORS), "")
+    assert subject, "every connector now has a live driver — retire this test"
+    assert livecheck.live_support(subject)["live_test"] is False
+    r = livecheck.test_connection(subject, {})
     assert r["ok"] is False and "not implemented" in r["error"]
+
+
+def test_teradata_is_live_supported():
+    caps = livecheck.live_support("teradata")
+    assert caps["live_test"] is True and caps["introspect"] is True
+    # Reading the catalog is not the same as writing data: live LOAD stays
+    # certified for Snowflake/Databricks only, so this must not claim it.
+    assert caps["live_load"] is False
+
+
+@pytest.mark.parametrize("code,length,total,frac,chartype,udt,expect", [
+    # Every case is a row observed in a real DBC.ColumnsV, checked against
+    # what Teradata's own TYPE() reports for the same column. Which field
+    # carries the parameter differs per type, and reading ColumnLength
+    # uniformly is what turned TIME(6) into VARCHAR(6).
+    ("I1", 1, None, None, 0, None, "BYTEINT"),
+    ("I2", 2, None, None, 0, None, "SMALLINT"),
+    ("I", 4, None, None, 0, None, "INTEGER"),
+    ("I8", 8, None, None, 0, None, "BIGINT"),
+    ("D", 8, 18, 2, 0, None, "DECIMAL(18,2)"),
+    ("CF", 12, None, None, 1, None, "CHAR(12)"),
+    ("CV", 30, None, None, 1, None, "VARCHAR(30)"),
+    ("CO", 1048576, None, None, 1, None, "CLOB(1048576)"),
+    ("BO", 65536, None, None, 0, None, "BLOB(65536)"),
+    ("BV", 1024, None, None, 0, None, "VARBYTE(1024)"),
+    ("DA", 4, None, None, 0, None, "DATE"),
+    # ColumnLength is 15 (display width) and the precision is in
+    # DecimalFractionalDigits — the case that produced VARCHAR(6).
+    ("AT", 15, None, 6, 0, None, "TIME(6)"),
+    ("TS", 26, None, 6, 0, None, "TIMESTAMP(6)"),
+    ("SZ", 32, None, 6, 0, None, "TIMESTAMP(6) WITH TIME ZONE"),
+    ("DS", 21, 4, 6, 0, None, "INTERVAL DAY(4) TO SECOND(6)"),
+    ("HM", 6, 2, None, 0, None, "INTERVAL HOUR(2) TO MINUTE"),
+    ("PD", 8, None, None, 0, None, "PERIOD(DATE)"),
+    ("JN", 4096, None, None, 1, None, "JSON(4096)"),
+    # ST_GEOMETRY has no dedicated code; it arrives as a generic UDT.
+    ("UT", 16000, None, None, 1, "ST_GEOMETRY", "ST_GEOMETRY"),
+])
+def test_teradata_native_type_matches_catalog(code, length, total, frac,
+                                              chartype, udt, expect):
+    assert livecheck._td_native_type(code, length, total, frac,
+                                     chartype, udt) == expect
+
+
+def test_teradata_number_without_precision_stays_bare():
+    """DBC reports -128 for "unspecified". Substituting it yields
+    NUMBER(-128,-128); defaulting it to NUMBER(38,0) truncates every
+    fraction. Bare NUMBER is what the source actually declares."""
+    assert livecheck._td_native_type("N", 18, -128, -128, 0, None) == "NUMBER"
+
+
+def test_teradata_unicode_length_is_characters_not_bytes():
+    """ColumnLength is bytes, and a UNICODE column stores two per character,
+    so a VARCHAR(120) UNICODE reports 240."""
+    assert livecheck._td_native_type("CV", 240, None, None, 2,
+                                     None) == "VARCHAR(120)"
+    assert livecheck._td_native_type("CV", 30, None, None, 1,
+                                     None) == "VARCHAR(30)"
+
+
+def test_teradata_unknown_type_code_is_reported_not_guessed():
+    """An unmapped code surfaces verbatim rather than silently becoming
+    VARCHAR — the caller can then see what it was."""
+    assert livecheck._td_native_type("ZZ", 10, None, None, 0, None) == "ZZ"
+
+
+class _FakeTdCursor:
+    """Minimal cursor returning one canned result set."""
+
+    def __init__(self, rows):
+        self._rows = rows
+
+    def execute(self, sql):            # noqa: D102 — signature only
+        self._sql = sql
+
+    def fetchall(self):                # noqa: D102
+        return self._rows
+
+
+# (DatabaseName, CreatorName) exactly as DBC.DatabasesV reports on the trial
+# where the leak was found.
+_TD_DBS = [
+    ("EDW_MASTER", "demo_user"), ("EDW_FACT", "demo_user"),
+    ("EDW_REF", "demo_user"), ("EDW_STG", "demo_user"),
+    ("demo_user", "DBC"),
+    ("tdwm", "DBC"), ("TDaaS_DB", "DBC"), ("DBC", "DBC"),
+    ("SYSLIB", "DBC"), ("SysAdmin", "DBC"), ("Crashdumps", "DBC"),
+    ("TD_SERVER_DB", "DBC"), ("mldb", "DBC"),
+]
+
+
+def test_teradata_scan_excludes_system_databases():
+    """The four EDW_* databases are user data; tdwm and TDaaS_DB are the
+    server's. Missing them scanned 52 tables where 11 were real, and
+    scaffolded a dbt model for each one."""
+    keep, skipped = livecheck._td_user_databases(
+        _FakeTdCursor(_TD_DBS), "demo_user")
+    assert keep == ["EDW_FACT", "EDW_MASTER", "EDW_REF", "EDW_STG",
+                    "demo_user"]
+    for sys_db in ("tdwm", "TDaaS_DB", "DBC", "SYSLIB", "TD_SERVER_DB"):
+        assert sys_db in skipped
+
+
+def test_teradata_login_database_is_never_excluded():
+    """demo_user is DBC-created, and on many installations it is exactly
+    where the user's tables live — so the creator rule must not drop it."""
+    keep, _ = livecheck._td_user_databases(
+        _FakeTdCursor([("demo_user", "DBC"), ("tdwm", "DBC")]), "demo_user")
+    assert keep == ["demo_user"]
+
+
+def test_teradata_rowcount_accepts_the_decimal_the_catalog_returns():
+    """DBC.StatsV.RowCount is a DECIMAL. It arrives as Decimal('2.0') over
+    teradatasql and as '2.0' over other clients — and int('2.0') raises, so
+    a naive parse reported a measured table as 0 rows."""
+    from decimal import Decimal
+    for value in (2, 2.0, Decimal("2.0"), Decimal("2"), "2", "2.0"):
+        assert livecheck._td_int(value) == 2, value
+    # genuinely absent stays at the caller's sentinel, NOT 0
+    for value in (None, "", "not-a-number"):
+        assert livecheck._td_int(value, -1) == -1, value
+
+
+def test_teradata_scan_falls_back_when_everything_looks_system_owned():
+    """A site where a DBA created every database while logged in as DBC must
+    still get an inventory, not an empty estate."""
+    keep, _ = livecheck._td_user_databases(
+        _FakeTdCursor([("SALES_DW", "DBC"), ("FIN_DW", "DBC"),
+                       ("tdwm", "DBC")]), "")
+    assert keep == ["FIN_DW", "SALES_DW"]        # names alone decide
 
 
 def test_live_validation_runs_generated_tests(fake_driver, tmp_path,

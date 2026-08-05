@@ -39,6 +39,14 @@ def _dbt_type(port) -> str:
     """dbt column type from an IR Port, PRESERVING declared numeric
     precision/scale (never collapsing everything to decimal(38,6)). When a
     decimal has no declared precision, use the documented fallback."""
+    # sources.yml documents each column as the SOURCE declares it — that is
+    # the contract stated in the generated ddl/README. When the source's own
+    # type is on hand it IS the answer, and it is the only form that can
+    # describe a column the coarse canonical cannot: a TIME(6) column was
+    # documented as varchar(6), which is neither its source type nor its
+    # landed type.
+    if getattr(port, "native_type", ""):
+        return str(port.native_type).strip().lower()
     base = _CANONICAL_TO_DBT.get(port.datatype, "varchar")
     if port.datatype == "decimal":
         if port.precision:

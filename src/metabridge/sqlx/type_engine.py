@@ -36,10 +36,38 @@ TYPE_PLATFORMS = ("oracle", "snowflake", "databricks", "bigquery", "redshift",
                   "synapse", "sqlserver", "postgres", "teradata", "ansi",
                   "informatica")
 
-# preprocessing only: split "BASE ( p [, s] )" — never rewrites anything
-_TYPE_RE = re.compile(
-    r"^\s*(?P<base>[A-Za-z_][A-Za-z0-9_/ ]*?)\s*"
-    r"(?:\(\s*(?P<p1>\d+|MAX)\s*(?:,\s*(?P<p2>\d+)\s*)?\))?\s*$")
+# A type name can arrive owned by a schema — Teradata's catalog reports
+# SYSUDTLIB.ST_GEOMETRY — and the owner is not part of the type.
+_TYPE_OWNER = re.compile(r"^[A-Za-z_][A-Za-z0-9_$]*\.(?=[A-Za-z_])")
+# Arguments are not always trailing: TIMESTAMP(6) WITH TIME ZONE carries a
+# modifier after them, and INTERVAL DAY(4) TO SECOND(6) has two groups.
+_TYPE_ARGS = re.compile(r"\(([^()]*)\)")
+
+
+def _split_native(native: str) -> Tuple[str, Optional[str], Optional[str]]:
+    """Split a declared type into (base, first arg, second arg).
+
+    Every parenthesised group is removed to form the base, rather than
+    truncating at the first "(". Truncating discards trailing modifiers,
+    and that is what silently reduced TIMESTAMP(6) WITH TIME ZONE to
+    TIMESTAMP: the alias for the zoned form is declared for every platform
+    and was simply never reached, so each value lost its offset while still
+    loading cleanly.
+    """
+    s = " ".join(str(native or "").split())
+    s = _TYPE_OWNER.sub("", s)
+    p1 = p2 = None
+    for group in _TYPE_ARGS.findall(s):
+        parts = [x.strip() for x in group.split(",")]
+        head = parts[0] if parts else ""
+        if head.isdigit() or head.upper() == "MAX":
+            p1 = head
+            if len(parts) > 1 and parts[1].isdigit():
+                p2 = parts[1]
+            break        # a later group belongs to another field (INTERVAL
+                         # ... TO SECOND(6)), not to this type's scale
+    base = " ".join(_TYPE_ARGS.sub(" ", s).split()).lower()
+    return base, p1, p2
 
 
 @dataclass
@@ -93,13 +121,11 @@ class TypeMappingEngine:
     def parse_type(self, native: str, platform: str) -> Tuple[CanonicalType,
                                                               List[TypeWarning]]:
         platform = platform.lower()
-        m = _TYPE_RE.match(native or "")
-        if not m:
+        base, p1, p2 = _split_native(native)
+        if not base:
             return CanonicalType("STRING"), [TypeWarning(
                 "unknown_type", "Unrecognized type '%s' — defaulting to STRING"
                 % native, "MANUAL")]
-        base = m.group("base").lower().strip()
-        p1, p2 = m.group("p1"), m.group("p2")
 
         cname = self._reverse.get((platform, base)) or \
             self._reverse.get(("ansi", base))
