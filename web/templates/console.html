@@ -1826,24 +1826,36 @@
         <div id="evtRecs" style="background:#fff;border:1px solid var(--border);border-radius:var(--radius);padding:12px;font-size:13px;line-height:1.7"></div>
       </div>
       <div style="margin-top:14px"><label>Target platform</label>
+        <!-- Grouped by the ROLE the target plays. Flat, these 16 read as
+             interchangeable migration destinations, and a warehouse does
+             not replace a broker — it needs one to feed it. -->
         <select id="evtTarget" style="max-width:360px">
-          <option value="kafka">Apache Kafka</option>
-          <option value="confluent">Confluent (topics + ksqlDB)</option>
-          <option value="pulsar">Apache Pulsar</option>
-          <option value="rabbitmq">RabbitMQ</option>
-          <option value="eventhubs">Azure Event Hubs</option>
-          <option value="servicebus">Azure Service Bus</option>
-          <option value="kinesis">AWS Kinesis</option>
-          <option value="pubsub">Google Pub/Sub</option>
-          <option value="mqtt">MQTT</option>
-          <option value="iothub">Azure IoT Hub</option>
-          <option value="flink">Apache Flink SQL</option>
-          <option value="spark_streaming">Spark Structured Streaming</option>
-          <option value="databricks_streaming">Databricks (DLT)</option>
-          <option value="snowflake_streaming">Snowflake Streaming</option>
-          <option value="dbt_streaming">dbt streaming models</option>
-          <option value="scaffold">Pipeline scaffold YAML</option>
-        </select></div>
+          <optgroup label="Replace the broker — source can be decommissioned">
+            <option value="kafka">Apache Kafka</option>
+            <option value="confluent">Confluent (topics + ksqlDB)</option>
+            <option value="pulsar">Apache Pulsar</option>
+            <option value="rabbitmq">RabbitMQ</option>
+            <option value="eventhubs">Azure Event Hubs</option>
+            <option value="servicebus">Azure Service Bus</option>
+            <option value="kinesis">AWS Kinesis</option>
+            <option value="pubsub">Google Pub/Sub</option>
+            <option value="mqtt">MQTT</option>
+            <option value="iothub">Azure IoT Hub</option>
+          </optgroup>
+          <optgroup label="Add stream processing — broker stays in place">
+            <option value="flink">Apache Flink SQL</option>
+            <option value="spark_streaming">Spark Structured Streaming</option>
+          </optgroup>
+          <optgroup label="Land into analytics — broker stays in place">
+            <option value="databricks_streaming">Databricks (DLT)</option>
+            <option value="snowflake_streaming">Snowflake Streaming</option>
+            <option value="dbt_streaming">dbt streaming models</option>
+          </optgroup>
+          <optgroup label="Specification only">
+            <option value="scaffold">Pipeline scaffold YAML</option>
+          </optgroup>
+        </select>
+        <div id="evtTargetRole" style="font-size:12px;color:var(--muted);margin-top:6px"></div></div>
       <div style="display:flex;gap:10px;align-items:center;margin-top:6px;flex-wrap:wrap">
         <button type="button" id="evtGenerate" style="margin-top:0">Generate event pipelines</button>
         <span id="evtGenStatus" style="font-size:13px;color:var(--ink3)"></span>
@@ -7008,6 +7020,29 @@ $('#evtIntel').onclick = async () => {
   }
 };
 
+/* The chosen target's role, stated before the run rather than discovered
+   in the artifacts: a sink or processor leaves the source broker in place. */
+const EVT_TARGET_ROLE = {
+  flink: 'processor', spark_streaming: 'processor',
+  databricks_streaming: 'sink', snowflake_streaming: 'sink',
+  dbt_streaming: 'sink', scaffold: 'spec',
+};
+const EVT_ROLE_TEXT = {
+  processor: 'Stream processor — computes on top of the estate. Your source '
+    + 'broker (or a broker replacement) must keep running to feed it.',
+  sink: 'Analytics sink — lands events into tables. It has no publish/subscribe, '
+    + 'so your source broker (or a replacement) must keep running to feed it.',
+  spec: 'Specification artifact, not a running platform.',
+};
+function evtShowTargetRole() {
+  const el = $('#evtTargetRole');
+  if (!el) return;
+  const role = EVT_TARGET_ROLE[$('#evtTarget').value] || 'broker';
+  el.textContent = EVT_ROLE_TEXT[role]
+    || 'Broker replacement — the source platform can be decommissioned after cutover.';
+}
+if ($('#evtTarget')) { $('#evtTarget').onchange = evtShowTargetRole; evtShowTargetRole(); }
+
 $('#evtGenerate').onclick = async () => {
   const err = $('#evtErr'); err.style.display = 'none';
   $('#evtGenStatus').textContent = 'Generating…';
@@ -7016,9 +7051,30 @@ $('#evtGenerate').onclick = async () => {
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({event_id: evtId, target: $('#evtTarget').value})});
     $('#evtGenStatus').textContent = d.generated.length + ' file(s) · verdict '
-      + d.validation_verdict.replace(/_/g, ' ');
+      + d.validation_verdict.replace(/_/g, ' ')
+      + ' · coverage ' + (d.automation_score != null ? d.automation_score + '%' : '--');
+    // Surface what the target could NOT express. Reporting only the file
+    // count and a green verdict is how a run that dropped a whole
+    // streaming job still looked like a complete success.
+    const skipped = d.unemitted || [], adj = d.adjustments || [];
+    let warn = '';
+    if (skipped.length || adj.length) {
+      const li = (t, arr, f) => arr.length ? '<div style="margin-top:6px"><b>' + t
+        + ' (' + arr.length + ')</b><ul style="margin:4px 0 0 18px">'
+        + arr.slice(0, 8).map(f).join('')
+        + (arr.length > 8 ? '<li>… ' + (arr.length - 8) + ' more</li>' : '')
+        + '</ul></div>' : '';
+      warn = '<div style="background:var(--accent-soft);border:1px solid var(--border);'
+        + 'border-radius:8px;padding:10px 12px;margin-top:10px;font-size:12.5px">'
+        + '<b>Read before deploying</b> — see <code>_metabridge_generation_notes.md</code> in the package.'
+        + li('Not emitted', skipped,
+             s => '<li><b>' + esc(s.kind) + '</b> <code>' + esc(s.name) + '</code> — ' + esc(s.reason) + '</li>')
+        + li('Changed to fit the target', adj,
+             n => '<li><code>' + esc(n.object) + '</code> — ' + esc(n.note) + '</li>')
+        + '</div>';
+    }
     $('#evtLinks').innerHTML =
-      '<a href="' + withKey(d.download_url) + '">Download package</a>';
+      '<a href="' + withKey(d.download_url) + '">Download package</a>' + warn;
   } catch (e) {
     $('#evtGenStatus').textContent = '';
     err.textContent = e.message; err.style.display = 'block';

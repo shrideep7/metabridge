@@ -4076,7 +4076,11 @@ async def events_convert(request: Request):
     out.mkdir(parents=True, exist_ok=True)
     manifest = generate_events(cer, target, str(out / "generated"))
     validation = validate_cer(cer, target)
-    intelligence = event_intelligence(cer, validation)
+    # Scores are computed FROM the generation report, so anything a target
+    # could not express lowers them. Without this a run that dropped a
+    # whole streaming job still reported 100% automation.
+    intelligence = event_intelligence(cer, validation,
+                                     manifest.get("report"))
     (out / "cer.json").write_text(json.dumps(cer.to_dict(), indent=1), encoding="utf-8")
     (out / "event_lineage.json").write_text(
         json.dumps(event_lineage(cer), indent=1), encoding="utf-8")
@@ -4085,14 +4089,39 @@ async def events_convert(request: Request):
         json.dumps(validation, indent=1), encoding="utf-8")
     (out / "event_intelligence.json").write_text(
         json.dumps(intelligence, indent=1), encoding="utf-8")
+    (out / "generation_report.json").write_text(
+        json.dumps(manifest.get("report") or {}, indent=1), encoding="utf-8")
     meta = _finish_job(job_dir, source_format=cer.source_platform,
-                       target_format=target,
-                       project=_events_label(body, cer))
+                       target_format=target)
+    report = manifest.get("report") or {}
+    # validate_cer() judges the CER against the target BEFORE anything is
+    # written, so on its own it can return PASS for a run whose artifacts
+    # are missing content. A clean verdict has to answer for the generation
+    # too, or "PASS" means only "the import looked fine".
+    verdict = validation["verdict"]
+    if report.get("unemitted") and verdict == "PASS":
+        verdict = "PASS_WITH_WARNINGS"
+        validation["findings"].append({
+            "severity": "WARNING", "code": "GENERATION_INCOMPLETE",
+            "message": "%d object(s) could not be written for target %s — "
+                       "see generation_report.json"
+                       % (len(report["unemitted"]), target),
+            "object": target,
+            "suggestion": "Implement the listed objects by hand, or pick a "
+                          "target that can express them."})
+    (out / "event_validation.json").write_text(
+        json.dumps(validation, indent=1), encoding="utf-8")
     return {"event_id": meta["id"],
             "source_platform": cer.source_platform, "target": target,
+            "target_role": report.get("target_role", ""),
             "generated": manifest["files"],
-            "validation_verdict": validation["verdict"],
+            "validation_verdict": verdict,
             "automation_score": intelligence["automation_score"],
+            "import_understanding_score":
+                intelligence.get("import_understanding_score"),
+            "generation": intelligence.get("generation"),
+            "unemitted": report.get("unemitted") or [],
+            "adjustments": report.get("notes") or [],
             "download_url": "/api/jobs/%s/download" % meta["id"]}
 
 

@@ -7,7 +7,8 @@ from typing import Dict, List
 from .cer import CER
 
 _SHAPE = {"producer": ("([", "])"), "consumer": ("([", "])"),
-          "transform": ("{{", "}}"), "channel": ("[", "]")}
+          "transform": ("{{", "}}"), "channel": ("[", "]"),
+          "external": ("[/", "/]")}
 
 
 def event_lineage(cer: CER) -> dict:
@@ -64,9 +65,23 @@ def execution_graph(cer: CER) -> dict:
     for c in cer.consumers:
         node("consumer:" + c.name, c.name, "consumer", group=c.group)
     edges = cer.flow_edges()
-    # only keep edges whose endpoints exist as nodes
+    # An edge may point at something the import never declared as an
+    # object — an IoT rule action, a sink outside the estate, a DLQ that
+    # was never defined. Dropping those edges made the graph look tidier
+    # than the estate actually is: the lineage JSON showed the hop and the
+    # diagram silently did not. Declare the endpoint as external instead,
+    # so the gap is visible rather than absent.
     ids = {n["id"] for n in nodes}
-    edges = [e for e in edges if e["from"] in ids and e["to"] in ids]
+    for e in edges:
+        for endpoint in (e["from"], e["to"]):
+            if endpoint in ids:
+                continue
+            kind, _, label = endpoint.partition(":")
+            node(endpoint, label or endpoint, "external",
+                 declared_as=kind, resolved=False,
+                 note="referenced by the estate but not present in the "
+                      "import — verify it exists on the target")
+            ids.add(endpoint)
     return {"platform": cer.source_platform, "nodes": nodes,
             "edges": edges}
 

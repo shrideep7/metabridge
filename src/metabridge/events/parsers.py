@@ -625,21 +625,57 @@ def parse_aws_iot_rules(doc: dict, cer: CER) -> bool:
         m = re.search(r"FROM\s+'([^']+)'", sql, re.I)
         topic = m.group(1) if m else ""
         name = _clean(r.get("ruleName", r.get("name", "iot_rule")))
-        actions = [list(a.keys())[0] for a in r.get("actions", [])
-                   if isinstance(a, dict) and a]
-        cer.routing.append(RoutingRule(
-            name=name, source=topic,
-            target=",".join(actions), condition=sql, kind="iot_rule"))
+        # One rule can fan out to several destinations. Joining them into a
+        # single "kinesis,sns" string made two destinations look like one
+        # channel with a comma in its name — the lineage then carried a
+        # target that could never resolve. Each action is its own edge.
+        actions = []
+        for a in r.get("actions", []):
+            if not isinstance(a, dict) or not a:
+                continue
+            kind = list(a.keys())[0]
+            cfg = a[kind] if isinstance(a[kind], dict) else {}
+            ident = (cfg.get("streamName") or cfg.get("topic")
+                     or cfg.get("queueUrl") or cfg.get("targetArn")
+                     or cfg.get("functionArn") or cfg.get("tableName") or "")
+            actions.append({"kind": kind,
+                            "name": "%s:%s" % (kind, ident) if ident
+                                    else kind})
+        for a in actions:
+            cer.routing.append(RoutingRule(
+                name="%s->%s" % (name, a["kind"]), source=topic,
+                target=a["name"], condition=sql, kind="iot_rule"))
+        if not actions:
+            cer.routing.append(RoutingRule(
+                name=name, source=topic, target="", condition=sql,
+                kind="iot_rule"))
         cer.transformations.append(StreamTransformation(
             name=name, kind="rule", inputs=[topic],
-            output=",".join(actions), sql=sql, raw=json.dumps(r)[:1500],
-            engine="aws_iot"))
+            output=actions[0]["name"] if actions else "",
+            sql=sql, raw=json.dumps(r)[:1500], engine="aws_iot"))
+        if len(actions) > 1:
+            cer.add_issue(
+                "WARNING", "IOT_RULE_FANOUT",
+                "Rule '%s' delivers to %d destinations (%s) — a target "
+                "with a single output cannot reproduce the fan-out"
+                % (name, len(actions),
+                   ", ".join(a["name"] for a in actions)), name)
         if topic and cer.channel(topic) is None:
             cer.channels.append(Channel(
                 name=topic, kind="mqtt_topic", is_iot=True,
                 delivery=("at_least_once"
                           if int(r.get("qos", 1) or 1) >= 1
                           else "at_most_once")))
+            if re.search(r"[+#]", topic):
+                # sensors/+/temperature matches many real topics; anything
+                # keyed on a flattened identifier will collide.
+                cer.add_issue(
+                    "WARNING", "MQTT_WILDCARD_TOPIC",
+                    "Topic '%s' is an MQTT wildcard, not a concrete topic "
+                    "— targets that flatten it to an identifier will merge "
+                    "every matching topic into one object" % topic, topic,
+                    suggestion="Enumerate the concrete topics if they need "
+                               "to stay separate on the target.")
         cer.iot_sources.append(IoTSource(
             name=name, protocol="mqtt", topics=[topic],
             qos=int(r.get("qos", 1) or 1)))
