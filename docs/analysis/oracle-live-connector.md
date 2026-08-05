@@ -122,6 +122,22 @@ traded an overcount for a blind spot.
 
 ---
 
+## 3a. What is shared with every other connector
+
+Three things that look Oracle-specific are not — they live in the shared layer
+and apply to Snowflake, Databricks, PostgreSQL and Redshift equally. See
+[schema-migration-coverage.md](schema-migration-coverage.md) for the full
+cross-connector picture.
+
+- **Column detail** — `_fetch_columns` carries nullability, defaults and
+  generated expressions on a positional contract. Oracle reads them from
+  `ALL_TAB_COLS` (the only view with `VIRTUAL_COLUMN`).
+- **Constraints** — `_group_constraints` folds one-row-per-column into one
+  dict per constraint. Oracle joins `ALL_CONSTRAINTS` back to itself for the
+  parent side of a foreign key.
+- **Partitioning** — `_apply_partitioning` attaches strategy and key to the
+  table. Oracle reads `ALL_PART_TABLES` + `ALL_PART_KEY_COLUMNS`.
+
 ## 4. What this buys the conversion
 
 - **Enforced primary keys reach the manifest as `unique_key`.** Oracle actually enforces them, so

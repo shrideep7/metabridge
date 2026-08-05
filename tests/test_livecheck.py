@@ -140,9 +140,11 @@ class _FakeCursor:
                            "var c = 'password=hunter2secret'; return c;")]
             return self
         if "INFORMATION_SCHEMA.TABLES" in u and "TABLE_TYPE" in u.upper():
-            self._rows = [("PUBLIC", "CUSTOMERS", "BASE TABLE", 1200, 9000),
-                          ("PUBLIC", "ORDERS", "BASE TABLE", 5400, 20000),
-                          ("PUBLIC", "V_TOP", "VIEW", 0, 0)]
+            self._rows = [("PUBLIC", "CUSTOMERS", "BASE TABLE", 1200, 9000,
+                           None),
+                          ("PUBLIC", "ORDERS", "BASE TABLE", 5400, 20000,
+                           "LINEAR(O_ORDERDATE)"),
+                          ("PUBLIC", "V_TOP", "VIEW", 0, 0, None)]
             self._row = self._rows[0]
             return self
         if "INFORMATION_SCHEMA.COLUMNS" in u:
@@ -530,11 +532,21 @@ class _PgCursor:
                  None, None, None, "YES", None),
                 ("public", "orders", "id", "integer", None, 32, 0,
                  None, "NO", "nextval('orders_id_seq')")]
-        elif "PG_CLASS" in u:
-            self._rows = [("public", "customers", 1200),
+        elif "RELTUPLES" in u:          # the row-estimate query, not just
+            self._rows = [("public", "customers", 1200),   # any pg_class use
                           ("public", "orders", 5400)]
         elif "INFORMATION_SCHEMA.VIEWS" in u:
             self._rows = [("staging", "v_top", "SELECT id FROM customers")]
+        elif "INFORMATION_SCHEMA.TRIGGERS" in u:
+            self._rows = [("public", "trg_audit", "orders", "INSERT",
+                           "AFTER")]
+        elif "PG_INDEXES" in u:
+            self._rows = [("public", "orders", "orders_dt_idx",
+                           "CREATE INDEX orders_dt_idx ON orders (dt)")]
+        elif "TABLE_PRIVILEGES" in u:
+            self._rows = [("public", "orders", "analyst", "SELECT")]
+        elif "PG_PARTITIONED_TABLE" in u:
+            self._rows = [("public", "orders", "RANGE", "dt", 1)]
         elif "INFORMATION_SCHEMA.TABLE_CONSTRAINTS" in u:
             self._rows = [
                 ("public", "customers", "customers_pkey", "PRIMARY KEY",
@@ -728,9 +740,11 @@ class _DbxCursor:
         elif "INFORMATION_SCHEMA.TABLES" in u:
             self._rows = [("sales", "orders", "MANAGED"),
                           ("sales", "v_top", "VIEW")]
+        elif "PARTITION_INDEX IS NOT NULL" in u:
+            self._rows = [("sales", "orders", "PARTITION BY", "dt", 1)]
         elif "INFORMATION_SCHEMA.COLUMNS" in u:
             self._rows = [("sales", "orders", "id", "bigint", None, None,
-                           None, "bigint")]
+                           None, "bigint", "NO", None, None)]
         elif "INFORMATION_SCHEMA.VIEWS" in u:
             self._rows = [("sales", "v_top", "SELECT * FROM orders")]
         return self
@@ -1031,6 +1045,22 @@ class _OraCursor:
                            "FREQ=DAILY", "SCHEDULED", "BEGIN pkg_etl.run; END;")]
         elif "ALL_TAB_PRIVS" in u:
             self._rows = [("ANALYST", "SALES", "ORDERS", "SELECT")]
+        elif "ALL_TYPES" in u:
+            self._rows = [("SALES", "ADDRESS_T"), ("SALES", "PHONE_LIST_T")]
+        elif "ALL_SCHEDULER_PROGRAMS" in u:
+            self._rows = [("SALES", "PRG_NIGHTLY", "STORED_PROCEDURE",
+                           "pkg_etl.run")]
+        elif "ALL_SCHEDULER_SCHEDULES" in u:
+            self._rows = [("SALES", "SCH_DAILY", "CALENDAR", "FREQ=DAILY")]
+        elif "ALL_SCHEDULER_CHAINS" in u:
+            self._rows = [("SALES", "CHN_LOAD", 3, 4)]
+        elif "ALL_RULES" in u:
+            self._rows = [("SALES", "RUL_HIGH_VALUE", "amount > 10000")]
+        elif "ALL_INDEXES" in u:
+            self._rows = [("SALES", "IX_ORDERS_DT", "SALES", "ORDERS",
+                           "NORMAL", "NONUNIQUE")]
+        elif "ALL_PART_TABLES" in u:
+            self._rows = [("SALES", "ORDERS", "RANGE", "ORDER_DATE", 1)]
         return self
 
     def fetchall(self):
@@ -1545,6 +1575,93 @@ def test_a_composite_key_keeps_its_column_order():
         list(by_name.values()))[("s", "t")] == ["A", "B"]
 
 
+def test_oracle_reports_the_classes_a_table_inventory_cannot_see(
+        ora_driver, monkeypatch):
+    """Types, the rest of the scheduler, rules and indexes all exist in a
+    real estate and none of them appear in a table-and-view inventory —
+    which is exactly how "26 tables, straightforward" hides a rewrite."""
+    monkeypatch.setenv("MB_ORACLE_PASSWORD", "x")
+    r = livecheck.introspect("oracle", dict(ORA_PARAMS))
+    assert [o["name"] for o in r["types"]] == ["ADDRESS_T", "PHONE_LIST_T"]
+    assert [o["name"] for o in r["scheduler_programs"]] == ["PRG_NIGHTLY"]
+    assert [o["name"] for o in r["scheduler_schedules"]] == ["SCH_DAILY"]
+    assert [o["name"] for o in r["scheduler_chains"]] == ["CHN_LOAD"]
+    assert [o["name"] for o in r["rules"]] == ["RUL_HIGH_VALUE"]
+    assert r["rules"][0]["definition"] == "amount > 10000"
+    assert [o["name"] for o in r["indexes"]] == ["IX_ORDERS_DT"]
+    assert r["indexes"][0]["table"] == "SALES.ORDERS"
+    # the scheduler classes that already worked are still there
+    assert [o["name"] for o in r["scheduler_jobs"]] == ["JOB_NIGHTLY"]
+    assert r["grants"][0]["role"] == "ANALYST"
+
+
+def test_oracle_partitioning_is_visible_as_a_table_attribute(ora_driver,
+                                                             monkeypatch,
+                                                             tmp_path):
+    """Partitioning is not an object, which is why it goes missing — and
+    it is the strongest evidence for the target's clustering key."""
+    monkeypatch.setenv("MB_ORACLE_PASSWORD", "x")
+    r = livecheck.introspect("oracle", dict(ORA_PARAMS))
+    orders = {t["name"]: t for t in r["tables"]}["ORDERS"]
+    assert orders["partition_strategy"] == "RANGE"
+    assert orders["partition_key"] == ["ORDER_DATE"]
+    assert r["readiness"]["partitioned_tables"] == 1
+    # and it is carried to the scaffold as evidence, not applied
+    from metabridge.scaffold import load_table_manifest
+    f = tmp_path / "m.yml"
+    f.write_text(r["manifest_yaml"])
+    tables, _ = load_table_manifest(str(f))
+    assert {t["name"]: t for t in tables}["ORDERS"]["partition_key"] \
+        == ["ORDER_DATE"]
+
+
+def test_pg_triggers_indexes_and_grants_are_finally_read(pg_driver,
+                                                         monkeypatch):
+    """PostgreSQL HAS triggers, and no cloud warehouse does — each one is
+    logic that has to move. Grants were read for every connector but this."""
+    monkeypatch.setenv("MB_POSTGRES_PASSWORD", "x")
+    r = livecheck.introspect("postgres", dict(PG_PARAMS))
+    assert [o["name"] for o in r["triggers"]] == ["trg_audit"]
+    assert r["triggers"][0]["table"] == "orders"
+    assert [o["name"] for o in r["indexes"]] == ["orders_dt_idx"]
+    assert r["grants"][0] == {"role": "analyst", "privilege": "SELECT",
+                              "granted_on": "TABLE",
+                              "object": "public.orders"}
+    assert r["readiness"]["triggers"] == 1
+    assert r["readiness"]["grants"] == 1
+
+
+def test_pg_declarative_partitioning_is_reported(pg_driver, monkeypatch):
+    monkeypatch.setenv("MB_POSTGRES_PASSWORD", "x")
+    r = livecheck.introspect("postgres", dict(PG_PARAMS))
+    orders = {t["name"]: t for t in r["tables"]}["orders"]
+    assert orders["partition_strategy"] == "RANGE"
+    assert orders["partition_key"] == ["dt"]
+    assert r["readiness"]["partitioned_tables"] == 1
+
+
+def test_databricks_partitioning_is_reported(dbx_driver, monkeypatch):
+    """Unity Catalog records partitioning on the COLUMN, not the table."""
+    monkeypatch.setenv("MB_DATABRICKS_TOKEN", "t")
+    r = livecheck.introspect("databricks", dict(DBX_PARAMS))
+    orders = {t["name"]: t for t in r["tables"]}["orders"]
+    assert orders["partition_key"] == ["dt"]
+    assert r["readiness"]["partitioned_tables"] == 1
+
+
+def test_snowflake_reports_its_existing_clustering_key(fake_driver,
+                                                       monkeypatch):
+    """A source estate's partition key MAPS to a clustering key, so the
+    target's existing choice has to be visible to compare against."""
+    monkeypatch.setenv("MB_SNOWFLAKE_PASSWORD", "x")
+    r = livecheck.introspect("snowflake", dict(PARAMS,
+                                               database="SF_SAMPLES_DB"))
+    orders = {t["name"]: t for t in r["tables"]}["ORDERS"]
+    assert orders["partition_strategy"] == "CLUSTER BY"
+    assert orders["partition_key"] == ["LINEAR(O_ORDERDATE)"]
+    assert r["readiness"]["partitioned_tables"] == 1
+
+
 def test_oracle_is_a_live_source_but_not_a_live_load_target():
     """Oracle is read and inventoried; MetaBridge never writes to it, and
     live_load must not claim otherwise."""
@@ -1561,8 +1678,46 @@ def test_console_renders_the_oracle_object_classes():
     html = (Path(__file__).resolve().parent.parent / "web" / "templates"
             / "console.html").read_text(encoding="utf-8")
     for cls in ("d.packages", "d.triggers", "d.synonyms", "d.db_links",
-                "d.scheduler_jobs"):
+                "d.scheduler_jobs", "d.queues", "d.types", "d.rules",
+                "d.indexes", "d.scheduler_programs", "d.scheduler_schedules",
+                "d.scheduler_chains"):
         assert "push(%s," % cls in html, cls
+    # constraints render differently (they describe a table, not a schema
+    # object) so they get their own branch rather than a push()
+    assert "d.constraints || []" in html
+
+
+def test_every_object_class_the_backend_returns_is_rendered(ora_driver,
+                                                            pg_driver,
+                                                            monkeypatch):
+    """The estate list is an explicit allowlist, so a class the backend
+    returns but the console never registers vanishes silently. This walks a
+    real introspect result rather than a hand-kept list, so adding a class
+    to the backend and forgetting the console fails HERE."""
+    from pathlib import Path
+    html = (Path(__file__).resolve().parent.parent / "web" / "templates"
+            / "console.html").read_text(encoding="utf-8")
+    # keys that are not object classes: scalars, tables/views (rendered by
+    # their own branch), and the report's own metadata
+    not_a_class = {
+        "ok", "connector", "database", "schema", "elapsed_ms", "context",
+        "capabilities", "recommendations", "tables", "views",
+        "view_definitions", "secret_findings", "readiness", "manifest_yaml",
+        "task_dag", "available_databases", "mode", "databases", "error",
+    }
+    monkeypatch.setenv("MB_ORACLE_PASSWORD", "x")
+    monkeypatch.setenv("MB_POSTGRES_PASSWORD", "x")
+    for report in (livecheck.introspect("oracle", dict(ORA_PARAMS)),
+                   livecheck.introspect("postgres", dict(PG_PARAMS))):
+        for key, value in report.items():
+            if key in not_a_class or not isinstance(value, list):
+                continue
+            # either a plain push() or a dedicated branch for the classes
+            # whose identity is not a schema-qualified name
+            rendered = ("push(d.%s," % key in html
+                        or "(d.%s || [])" % key in html)
+            assert rendered, ("%s is returned by %s but never rendered"
+                              % (key, report["connector"]))
 
 
 # ---------------------------------------------------------------------------

@@ -7679,9 +7679,23 @@ function estateAssets(d) {
   push(d.volumes, 'Volume');
   push(d.packages, 'Package');
   push(d.triggers, 'Trigger');
+  push(d.types, 'Object type');
+  push(d.rules, 'Rule');
+  push(d.indexes, 'Index');
+  push(d.scheduler_programs, 'Scheduler program');
+  push(d.scheduler_schedules, 'Schedule');
+  push(d.scheduler_chains, 'Scheduler chain');
   push(d.synonyms, 'Synonym');
   push(d.db_links, 'Database link');
   push(d.queues, 'Queue');
+  // A grant has no name of its own — it is a (role, privilege, object)
+  // fact — so it gets its own branch rather than a push(). It was returned
+  // by every connector and rendered by none.
+  (d.grants || []).forEach(o => A.push({
+    name: o.privilege + ' on ' + o.object, type: 'Grant',
+    schema: String(o.object || '').split('.')[0], rows: null, columns: null,
+    definition: 'GRANT ' + o.privilege + ' ON ' + (o.granted_on || 'TABLE')
+      + ' ' + o.object + ' TO ' + o.role}));
   // a constraint's identity is the table it guards, so `table` is what the
   // schema/name pair means here — the estate list keys off `name`
   (d.constraints || []).forEach(o => A.push({

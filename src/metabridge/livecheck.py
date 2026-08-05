@@ -308,6 +308,38 @@ def _group_constraints(rows) -> List[dict]:
                   key=lambda c: (c["schema"], c["table"], c["name"]))
 
 
+def _apply_partitioning(tables: Dict[tuple, dict], rows) -> int:
+    """Attach a table's partitioning to it, from ``(schema, table, strategy,
+    column, position)`` rows. Returns how many tables carried one.
+
+    Partitioning is a table ATTRIBUTE, not an object, which is exactly why
+    it goes missing: a schema that reads as "26 tables, straightforward" can
+    hide four partitioning strategies, and the object count never shows it.
+    Nothing here migrates literally — cloud targets partition themselves —
+    but the partition KEY is the strongest available evidence for what the
+    target's clustering key should be, and an interval or reference strategy
+    is a redesign the estimate has to include.
+    """
+    keyed: Dict[tuple, List[tuple]] = {}
+    for r in rows:
+        key = (_at(r, 0), _at(r, 1))
+        if key not in tables:
+            continue
+        strategy = str(_at(r, 2) or "").strip().upper()
+        if strategy:
+            tables[key]["partition_strategy"] = strategy
+        col = _at(r, 3)
+        if col:
+            try:
+                pos = int(_at(r, 4, "0") or 0)
+            except ValueError:
+                pos = 0
+            keyed.setdefault(key, []).append((pos, col))
+    for key, cols in keyed.items():
+        tables[key]["partition_key"] = [c for _, c in sorted(cols)]
+    return sum(1 for t in tables.values() if t.get("partition_strategy"))
+
+
 def _ansi_constraint_sql(catalog_pred: str, scope_pred: str,
                          with_check: bool = True) -> str:
     """The INFORMATION_SCHEMA constraint query, in the `_group_constraints`
@@ -623,6 +655,14 @@ def _manifest_entry(table: dict, database: str,
     declared = list((pks or {}).get(key, []))
     if declared:
         entry["unique_key"] = declared
+    # The source's partition key is the strongest available evidence for what
+    # the target's clustering key should be — carried as fact, not applied:
+    # cloud targets partition themselves, and copying a strategy across is a
+    # decision for a human.
+    if table.get("partition_key"):
+        entry["partition_key"] = list(table["partition_key"])
+    if table.get("partition_strategy"):
+        entry["partition_strategy"] = table["partition_strategy"]
     entry["columns"] = [_column_entry(c) for c in table["columns"]]
     return entry
 
@@ -1184,6 +1224,23 @@ def _databricks_introspect(params: Dict[str, str],
             _guarded(caps, "constraints", _constraints))
         primary_keys = _primary_keys_from(constraints)
 
+        # Unity Catalog records partitioning on the COLUMN
+        # (partition_index), not on the table, so the strategy is implied
+        # rather than named — Databricks has only one.
+        def _partitioning():
+            cur.execute(
+                "SELECT table_schema, table_name, 'PARTITION BY', "
+                "column_name, partition_index "
+                "FROM information_schema.columns "
+                "WHERE partition_index IS NOT NULL "
+                "AND table_schema = COALESCE(?, table_schema) "
+                "ORDER BY table_schema, table_name, partition_index",
+                [schema or None])
+            return cur.fetchall()
+
+        partitioned = _apply_partitioning(
+            tables, _guarded(caps, "partitioning", _partitioning))
+
         objects = _databricks_objects(cur, caps, schema)
         available_databases = _databricks_catalogs(cur)
     except Exception as e:  # noqa: BLE001
@@ -1226,6 +1283,7 @@ def _databricks_introspect(params: Dict[str, str],
         "column_sizes_measured": measured,
         **_column_readiness(base_tables),
         **_constraint_readiness(constraints),
+        "partitioned_tables": partitioned,
         "tables_with_primary_key": sum(
             1 for t in base_tables
             if primary_keys.get((t["schema"], t["name"]))),
@@ -1733,6 +1791,73 @@ def _sqldb_introspect(key: str, params: Dict[str, str],
             on_error=_rollback, cap=_MAX_OBJECTS))
         secret_findings = [f for o in functions + procedures
                            for f in o.get("secret_findings", [])]
+
+        # PostgreSQL HAS triggers and they were never read. No cloud
+        # warehouse has an equivalent, so each one is logic that has to move
+        # into the ELT layer or a stream+task pair — and it is invisible
+        # until somebody lists it.
+        trg_where, trg_args = _scope_pred("trigger_schema")
+        triggers = [
+            {"schema": _at(r, 0), "name": _at(r, 1), "table": _at(r, 2),
+             "event": _at(r, 3), "timing": _at(r, 4)}
+            for r in _guarded(
+                caps, "triggers",
+                _q("SELECT trigger_schema, trigger_name, event_object_table, "
+                   "event_manipulation, action_timing "
+                   "FROM information_schema.triggers "
+                   "WHERE trigger_catalog = current_database() %s "
+                   "ORDER BY trigger_schema, trigger_name LIMIT %d"
+                   % (trg_where, _MAX_OBJECTS), trg_args),
+                on_error=_rollback, cap=_MAX_OBJECTS)]
+
+        # Indexes are dropped on a cloud target, but the indexed columns are
+        # the best evidence of the real query patterns — which is what a
+        # clustering key should be chosen from.
+        idx_where, idx_args = _scope_pred("schemaname")
+        indexes = [
+            {"schema": _at(r, 0), "name": _at(r, 2), "table": _at(r, 1),
+             "definition": _at(r, 3)}
+            for r in _guarded(
+                caps, "indexes",
+                _q("SELECT schemaname, tablename, indexname, indexdef "
+                   "FROM pg_indexes WHERE true %s "
+                   "ORDER BY schemaname, indexname LIMIT %d"
+                   % (idx_where, _MAX_OBJECTS), idx_args),
+                on_error=_rollback, cap=_MAX_OBJECTS)]
+
+        # Grants were read for every connector except this one.
+        gr_where, gr_args = _scope_pred("table_schema")
+        grants = [
+            {"role": _at(r, 2), "privilege": _at(r, 3),
+             "granted_on": "TABLE",
+             "object": "%s.%s" % (_at(r, 0), _at(r, 1))}
+            for r in _guarded(
+                caps, "grants",
+                _q("SELECT table_schema, table_name, grantee, privilege_type "
+                   "FROM information_schema.table_privileges "
+                   "WHERE table_catalog = current_database() %s "
+                   "ORDER BY table_schema, table_name LIMIT %d"
+                   % (gr_where, _MAX_OBJECTS), gr_args),
+                on_error=_rollback, cap=_MAX_OBJECTS)]
+
+        # Declarative partitioning (PG 10+). relispartition marks the CHILD
+        # partitions, which are storage for the parent and not estate
+        # objects of their own; pg_partitioned_table marks the parents.
+        partitioned = _apply_partitioning(tables, _guarded(
+            caps, "partitioning",
+            _q("SELECT n.nspname, c.relname, "
+               "CASE p.partstrat WHEN 'r' THEN 'RANGE' WHEN 'l' THEN 'LIST' "
+               "WHEN 'h' THEN 'HASH' ELSE p.partstrat::text END, "
+               "a.attname, k.ordinality "
+               "FROM pg_partitioned_table p "
+               "JOIN pg_class c ON c.oid = p.partrelid "
+               "JOIN pg_namespace n ON n.oid = c.relnamespace "
+               "LEFT JOIN LATERAL unnest(p.partattrs) "
+               "WITH ORDINALITY AS k(attnum, ordinality) ON true "
+               "LEFT JOIN pg_attribute a ON a.attrelid = c.oid "
+               "AND a.attnum = k.attnum "
+               "ORDER BY n.nspname, c.relname, k.ordinality", ()),
+            on_error=_rollback))
     except Exception as e:  # noqa: BLE001
         try:
             conn.close()
@@ -1777,6 +1902,9 @@ def _sqldb_introspect(key: str, params: Dict[str, str],
         "sequences": sequences,
         "functions": functions,
         "procedures": procedures,
+        "triggers": triggers,
+        "indexes": indexes,
+        "grants": grants,
         "constraints": constraints,
         "secret_findings": secret_findings,
         "readiness": {
@@ -1788,6 +1916,7 @@ def _sqldb_introspect(key: str, params: Dict[str, str],
             "column_sizes_measured": measured,
             **_column_readiness(base_tables),
             **_constraint_readiness(constraints),
+            "partitioned_tables": partitioned,
             "tables_with_primary_key": sum(
                 1 for t in base_tables
                 if primary_keys.get((t["schema"], t["name"]))),
@@ -1795,6 +1924,9 @@ def _sqldb_introspect(key: str, params: Dict[str, str],
             "sequences": len(sequences),
             "functions": len(functions),
             "procedures": len(procedures),
+            "triggers": len(triggers),
+            "indexes": len(indexes),
+            "grants": len(grants),
             "views_convertible": len(convertible),
             "views_needing_review": needs_review,
             "verdict": "READY" if base_tables or convertible else
@@ -2337,6 +2469,125 @@ def _oracle_objects(cur, caps: dict, schema: str) -> Dict[str, list]:
             "SELECT owner, name, queue_table, queue_type FROM all_queues "
             "WHERE name NOT LIKE 'AQ$%'", "ORDER BY owner, name"))]
 
+    # Object types, VARRAYs and nested tables. No cloud warehouse has an
+    # equivalent — they flatten to columns or become VARIANT/OBJECT/ARRAY —
+    # so each one is a redesign decision, and they are invisible in a
+    # table-and-view inventory.
+    out["types"] = [
+        _with_body({"schema": _at(r, 0), "name": _at(r, 1)},
+                   "".join(bodies.get((_at(r, 0), _at(r, 1), t), "")
+                           for t in ("TYPE", "TYPE BODY")),
+                   "type %s.%s" % (_at(r, 0), _at(r, 1)))
+        for r in g("types", q(
+            "SELECT owner, type_name FROM all_types WHERE 1 = 1",
+            "ORDER BY owner, type_name"))]
+
+    # The scheduler is four object classes, not one. Reporting only JOB
+    # showed half the picture: a chain IS the dependency graph, and a
+    # program is the thing a job actually runs.
+    out["scheduler_programs"] = [
+        _with_body({"schema": _at(r, 0), "name": _at(r, 1),
+                    "type": _at(r, 2)}, _at(r, 3),
+                   "scheduler program %s.%s" % (_at(r, 0), _at(r, 1)))
+        for r in g("scheduler_programs", q(
+            "SELECT owner, program_name, program_type, program_action "
+            "FROM all_scheduler_programs WHERE 1 = 1",
+            "ORDER BY owner, program_name"))]
+
+    out["scheduler_schedules"] = [
+        {"schema": _at(r, 0), "name": _at(r, 1),
+         "schedule": _at(r, 3) or _at(r, 2)}
+        for r in g("scheduler_schedules", q(
+            "SELECT owner, schedule_name, schedule_type, repeat_interval "
+            "FROM all_scheduler_schedules WHERE 1 = 1",
+            "ORDER BY owner, schedule_name"))]
+
+    out["scheduler_chains"] = [
+        {"schema": _at(r, 0), "name": _at(r, 1), "rules": _at(r, 2),
+         "steps": _at(r, 3)}
+        for r in g("scheduler_chains", q(
+            "SELECT owner, chain_name, number_of_rules, number_of_steps "
+            "FROM all_scheduler_chains WHERE 1 = 1",
+            "ORDER BY owner, chain_name"))]
+
+    # Streams/AQ rules — the routing logic behind the queues. A queue
+    # migrated without its rules moves the pipe and drops the routing.
+    # ALL_RULES spells its owner column RULE_OWNER, so it needs its own
+    # scoping predicate.
+    rule_where, rule_binds = _ora_owner_pred("rule_owner", schema)
+    out["rules"] = [
+        _with_body({"schema": _at(r, 0), "name": _at(r, 1)}, _at(r, 2),
+                   "rule %s.%s" % (_at(r, 0), _at(r, 1)))
+        for r in g("rules", lambda: (
+            cur.execute(_ora_top(
+                "SELECT rule_owner, rule_name, rule_condition "
+                "FROM all_rules WHERE 1 = 1 %s "
+                "ORDER BY rule_owner, rule_name" % rule_where,
+                _MAX_OBJECTS), rule_binds),
+            cur.fetchall())[1])]
+
+    # Indexes are mostly DROPPED going to a cloud warehouse — micro-
+    # partitions replace them — but they are not nothing: a function-based
+    # index carries an expression somebody relies on, and the set of indexed
+    # columns is the best evidence of the real query patterns, which is what
+    # a clustering key should be chosen from. SYS_IL% are the LOB indexes
+    # Oracle builds for us.
+    out["indexes"] = [
+        {"schema": _at(r, 0), "name": _at(r, 1),
+         "table": "%s.%s" % (_at(r, 2), _at(r, 3)) if _at(r, 2)
+         else _at(r, 3), "index_type": _at(r, 4),
+         "unique": _at(r, 5) == "UNIQUE"}
+        for r in g("indexes", q(
+            "SELECT owner, index_name, table_owner, table_name, index_type, "
+            "uniqueness FROM all_indexes "
+            "WHERE index_type <> 'LOB' AND index_name NOT LIKE 'SYS_IL%'",
+            "ORDER BY owner, index_name"))]
+
+    out["scheduler_jobs"] = [
+        _with_body({"schema": _at(r, 0), "name": _at(r, 1),
+                    "schedule": _at(r, 3) or _at(r, 2), "state": _at(r, 4)},
+                   _at(r, 5), "scheduler job %s.%s" % (_at(r, 0), _at(r, 1)))
+        for r in g("scheduler_jobs", q(
+            "SELECT owner, job_name, schedule_type, repeat_interval, state, "
+            "job_action FROM all_scheduler_jobs WHERE 1 = 1",
+            "ORDER BY owner, job_name"))]
+
+    out["grants"] = [
+        {"role": _at(r, 0), "privilege": _at(r, 3), "granted_on": "TABLE",
+         "object": "%s.%s" % (_at(r, 1), _at(r, 2))}
+        for r in g("grants", q(
+            "SELECT grantee, owner, table_name, privilege FROM all_tab_privs "
+            "WHERE 1 = 1", "ORDER BY grantee, owner, table_name"))]
+    return out
+
+
+def _oracle_partitioning(cur, schema: str):
+    """``(schema, table, strategy, column, position)`` rows for
+    `_apply_partitioning`. Oracle keeps the strategy on ALL_PART_TABLES and
+    the key columns on ALL_PART_KEY_COLUMNS, so they are joined here.
+
+    SUBPARTITIONING_TYPE is folded into the strategy when there is one, so
+    a composite strategy reads as what it is (RANGE/HASH) rather than
+    losing half of itself.
+    """
+    where, binds = _ora_owner_pred("pt.owner", schema)
+    try:
+        cur.execute(
+            "SELECT pt.owner, pt.table_name, "
+            "CASE WHEN pt.subpartitioning_type = 'NONE' "
+            "THEN pt.partitioning_type "
+            "ELSE pt.partitioning_type || '/' || pt.subpartitioning_type "
+            "END, pkc.column_name, pkc.column_position "
+            "FROM all_part_tables pt "
+            "LEFT JOIN all_part_key_columns pkc ON pt.owner = pkc.owner "
+            "AND pt.table_name = pkc.name "
+            "WHERE 1 = 1 %s "
+            "ORDER BY pt.owner, pt.table_name, pkc.column_position"
+            % where, binds)
+        return cur.fetchall()
+    except Exception:  # noqa: BLE001 — partitioning is an extra-cost option
+        return []
+
     out["scheduler_jobs"] = [
         _with_body({"schema": _at(r, 0), "name": _at(r, 1),
                     "schedule": _at(r, 3) or _at(r, 2), "state": _at(r, 4)},
@@ -2473,6 +2724,8 @@ def _oracle_introspect(params: Dict[str, str],
         caps["views"] = {"status": "available" if views else "empty"}
         constraints = _oracle_constraints(cur, schema)
         primary_keys = _primary_keys_from(constraints)
+        partitioned = _apply_partitioning(
+            tables, _oracle_partitioning(cur, schema))
         objects = _oracle_objects(cur, caps, schema)
     except Exception as e:  # noqa: BLE001
         try:
@@ -2515,6 +2768,9 @@ def _oracle_introspect(params: Dict[str, str],
         "column_sizes_measured": measured,
         **_column_readiness(base_tables),
         **_constraint_readiness(constraints),
+        # partitioning does not migrate literally, but each partitioned
+        # table is a clustering-key decision the estimate has to include
+        "partitioned_tables": partitioned,
         # Oracle enforces primary keys, so a table WITH one can be loaded by
         # MERGE; one without still falls through to a full reload.
         "tables_with_primary_key": sum(
@@ -3007,16 +3263,22 @@ def introspect(key: str, params: Dict[str, str],
         schema_pred_tc = "AND tc.table_schema = %s" if schema else \
             "AND tc.table_schema <> 'INFORMATION_SCHEMA'"
         args = (schema,) if schema else ()
+        # CLUSTERING_KEY is Snowflake's answer to partitioning, and it is
+        # the thing a source estate's partition key should MAP to — so the
+        # target's existing choice has to be visible when comparing.
         rows = cur.execute(
             "SELECT table_schema, table_name, table_type, row_count, "
-            "bytes FROM INFORMATION_SCHEMA.TABLES "
+            "bytes, clustering_key FROM INFORMATION_SCHEMA.TABLES "
             "WHERE table_catalog = CURRENT_DATABASE() %s "
             "ORDER BY table_schema, table_name LIMIT %d"
             % (schema_pred, max_tables), args).fetchall()
         tables = {(r[0], r[1]): {"schema": r[0], "name": r[1],
                                  "type": str(r[2] or "BASE TABLE"),
                                  "rows": int(r[3] or 0),
-                                 "bytes": int(r[4] or 0), "columns": []}
+                                 "bytes": int(r[4] or 0), "columns": [],
+                                 **({"partition_strategy": "CLUSTER BY",
+                                     "partition_key": [_at(r, 5)]}
+                                    if _at(r, 5) else {})}
                   for r in rows}
         for r in _fetch_columns(
                 lambda sql: cur.execute(sql % schema_pred, args).fetchall(),
@@ -3115,6 +3377,8 @@ def introspect(key: str, params: Dict[str, str],
         "column_sizes_measured": measured,
         **_column_readiness(base_tables),
         **_constraint_readiness(constraints),
+        "partitioned_tables": sum(1 for t in base_tables
+                                  if t.get("partition_strategy")),
         # load behaviour: tables with no declared PK fall back to FULL reload
         "tables_with_primary_key": sum(
             1 for t in base_tables
