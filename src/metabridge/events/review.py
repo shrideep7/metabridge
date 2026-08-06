@@ -40,7 +40,7 @@ def _deterministic_findings(cer: CER) -> List[dict]:
                           "confirm state-store sizing on the target"
                           % (t.window.size_ms // 60000)})
     # schema evolution
-    for s in cer.schemas:
+    for s in cer.current_schemas():   # per subject, not per version
         if s.compatibility in ("", "NONE"):
             findings.append({
                 "kind": "schema_evolution", "object": s.name,

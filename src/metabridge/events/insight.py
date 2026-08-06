@@ -221,6 +221,17 @@ def analyze_partitions(cer: CER) -> dict:
 # §3 schema evolution
 # ===========================================================================
 
+# Type changes an Avro reader resolves on its own (spec: "Schema
+# Resolution"). Promoting inside this set is NOT a breaking change —
+# flagging it would fail migrations that are actually safe. Anything
+# outside it is breaking, because the reader cannot decode the old bytes.
+_AVRO_PROMOTIONS = frozenset({
+    ("int", "long"), ("int", "float"), ("int", "double"),
+    ("long", "float"), ("long", "double"), ("float", "double"),
+    ("string", "bytes"), ("bytes", "string"),
+})
+
+
 def _field_map(schema) -> Dict[str, dict]:
     out = {}
     for f in schema.fields:
@@ -255,6 +266,8 @@ def analyze_schema_evolution(cer: CER) -> dict:
             if removed and compat in ("BACKWARD", "FULL", "UNSET"):
                 breaking += ["field '%s' removed" % f for f in removed]
             for f in type_changes:
+                if (fo[f]["type"], fn[f]["type"]) in _AVRO_PROMOTIONS:
+                    continue          # reader resolves this itself
                 breaking.append("field '%s' type %s -> %s"
                                 % (f, fo[f]["type"], fn[f]["type"]))
             for f in nullable_changes:
@@ -430,7 +443,9 @@ def analyze_quality(cer: CER) -> dict:
               "dead-letter chain cycles back through '%s'" % cur,
               "terminate the chain in a parking-lot queue with manual "
               "review")
-    fmts = {s.name: s.format for s in cer.schemas}
+    # current_schemas(): the format to compare a converter against is the
+    # one in force now, not whichever version sorted last in the history
+    fmts = {s.name: s.format for s in cer.current_schemas()}
     for ch in cer.channels:
         if ch.schema and ch.schema in fmts and \
                 ch.properties.get("value.converter", ""):
@@ -441,8 +456,11 @@ def analyze_quality(cer: CER) -> dict:
                   % (fmts[ch.schema], conv),
                   "align converter and registry format")
     return {"findings": findings,
+            # sorted: a set comprehension here made key order vary with
+            # the process hash seed, so identical input serialized to
+            # different bytes run to run
             "counts": {k: sum(1 for x in findings if x["kind"] == k)
-                       for k in {x["kind"] for x in findings}}}
+                       for k in sorted({x["kind"] for x in findings})}}
 
 
 # ===========================================================================
@@ -682,7 +700,9 @@ def readiness_scores(cer: CER, validation: dict, base: dict,
                    + 10 * len(cer.cdc_sources)
                    + 5 * sum(1 for c in cer.channels
                              if c.ordering in ("fifo", "global")))
-    confidence = max(0, 100 - 5 * manual - 2 * warnings)
+    # computed by event_intelligence(); recomputing it here let the two
+    # definitions drift apart silently
+    confidence = base["semantic_confidence"]
 
     def why(*parts):
         return " ".join(p for p in parts if p)

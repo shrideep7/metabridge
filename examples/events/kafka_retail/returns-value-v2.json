@@ -1,0 +1,3 @@
+{"subject": "returns.v2-value", "version": 2, "schemaType": "AVRO",
+ "compatibility": "BACKWARD",
+ "schema": "{\"type\":\"record\",\"name\":\"Return\",\"fields\":[{\"name\":\"return_id\",\"type\":\"string\"},{\"name\":\"store_id\",\"type\":\"long\"},{\"name\":\"refund\",\"type\":\"double\"},{\"name\":\"event_ts\",\"type\":\"long\"},{\"name\":\"reason\",\"type\":[\"null\",\"string\"],\"default\":null}]}"}

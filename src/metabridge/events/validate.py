@@ -193,13 +193,44 @@ def validate_cer(cer: CER, target: str = "") -> dict:
                 "Channel '%s' references schema '%s' not present in "
                 "the import" % (ch.name, ch.schema), ch.name))
 
-    for s in cer.schemas:
+    # per subject: iterating the version history raised the same finding
+    # once for every registered version of the same schema
+    for s in cer.current_schemas():
         if not s.compatibility:
             findings.append(_f(
                 "INFO", "SCHEMA_EVOLUTION_UNSET",
                 "Schema '%s' has no compatibility mode — evolution "
                 "behaviour is registry default" % s.name, s.name,
                 "Pin BACKWARD (or FULL) before migrating consumers."))
+
+    # `checks_run` has always advertised schema_compatibility, but the
+    # version diff lives in insight.analyze_schema_evolution and nothing
+    # here consulted it — a subject could carry a consumer-breaking change
+    # and still pass. Reuse that analyzer rather than writing a second
+    # comparator that could drift from it. Imported inside the function:
+    # insight imports this module at load time.
+    from .insight import analyze_schema_evolution
+    for subj in analyze_schema_evolution(cer)["subjects"]:
+        for chg in subj["changes"]:
+            if not chg["breaking_changes"]:
+                continue
+            mode = (chg["compatibility_mode"] or "UNSET").upper()
+            # Under an enforced mode the registry itself would reject the
+            # write, so the estate is already inconsistent — that is an
+            # ERROR. Under NONE the break is permitted but consumers still
+            # need porting, so warn rather than fail.
+            enforced = mode.startswith(("BACKWARD", "FULL", "FORWARD"))
+            findings.append(_f(
+                "ERROR" if enforced else "WARNING",
+                "SCHEMA_INCOMPATIBLE",
+                "Schema '%s' v%s->v%s breaks %s compatibility: %s"
+                % (subj["schema"], chg["from_version"],
+                   chg["to_version"], mode,
+                   "; ".join(chg["breaking_changes"])),
+                subj["schema"],
+                "Publish the new shape as a new subject rather than "
+                "mutating this one, or relax the subject's compatibility "
+                "mode deliberately before migrating."))
 
     for p in cer.producers:
         if p.acks in ("0", "1") and not p.idempotent:
@@ -234,6 +265,18 @@ def validate_cer(cer: CER, target: str = "") -> dict:
                     "watermark — late events are undefined" % t.name,
                     t.name, "Declare an allowed lateness / watermark "
                             "delay before porting."))
+            elif t.window.time_semantics == "unknown":
+                # Previously every window was assumed to be event-time,
+                # so this case reported a definite watermark gap on
+                # evidence the import never contained.
+                findings.append(_f(
+                    "WARNING", "WINDOW_TIME_SEMANTICS_UNKNOWN",
+                    "Windowed job '%s' does not state its time semantics "
+                    "— whether the window closes on event or processing "
+                    "time cannot be determined from the import" % t.name,
+                    t.name,
+                    "Confirm against the running job, then declare a "
+                    "timestamp column and watermark on the target."))
             if t.window.kind == "hopping" and \
                     t.window.slide_ms > t.window.size_ms:
                 findings.append(_f(
@@ -243,11 +286,16 @@ def validate_cer(cer: CER, target: str = "") -> dict:
                     % (t.name, t.window.slide_ms, t.window.size_ms),
                     t.name))
         for i in t.inputs:
-            if i not in names:
+            # inputs are table names as written in the SQL; a declared
+            # stream resolves to the topic it was declared over. Checking
+            # the raw SQL name reported every such job as reading a
+            # channel that does not exist.
+            src = cer.resolve_stream(i)
+            if src not in names:
                 findings.append(_f(
                     "WARNING", "TRANSFORM_INPUT_UNRESOLVED",
                     "Streaming job '%s' reads '%s' which is not in the "
-                    "import" % (t.name, i), t.name))
+                    "import" % (t.name, src), t.name))
 
     for cdc in cer.cdc_sources:
         if not cdc.snapshot_mode:
@@ -361,7 +409,21 @@ def event_intelligence(cer: CER, validation: dict,
              if f["severity"] in ("ERROR", "WARNING")][:20]
 
     # Import-side score: how much of the source was understood.
-    score = round(100.0 * auto_units / units, 1)
+    understanding = round(100.0 * auto_units / units, 1)
+    errors = sum(1 for f in validation["findings"]
+                 if f["severity"] == "ERROR")
+    warnings = sum(1 for f in validation["findings"]
+                   if f["severity"] == "WARNING")
+    # Automation has to fall when the estate carries work a human must do
+    # before a migration can run — that is exactly what errors and
+    # warnings are. Deducting only MANUAL issues made this a constant:
+    # no example estate produces one, so every import scored 100%,
+    # including estates whose generated SQL would not run.
+    score = round(max(0.0, understanding - 5.0 * errors
+                      - 1.5 * warnings), 1)
+    # Same formula the import route computed inline; consumers that call
+    # the engine directly (CLI, REST) never saw it.
+    confidence = max(0, 100 - 5 * len(manual) - 2 * warnings)
     gen_block = None
     if generation:
         skipped = list(generation.get("unemitted") or [])
@@ -396,7 +458,8 @@ def event_intelligence(cer: CER, validation: dict,
                s.get("reason", "unsupported")) for s in skipped][:20]
     return {
         "automation_score": score,
-        "import_understanding_score": round(100.0 * auto_units / units, 1),
+        "semantic_confidence": confidence,
+        "import_understanding_score": understanding,
         "generation": gen_block,
         "streaming_complexity": complexity,
         "complexity_level": ("LOW" if complexity < 20 else
