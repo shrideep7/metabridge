@@ -2074,9 +2074,25 @@
           path: create it once in Snowflake and name it here.</div>
         <div class="row">
           <div><label>Stage URI</label><input id="mvStageUri" placeholder="s3://my-bucket/mb"></div>
+          <div><label>Bucket region (optional)</label><input id="mvRegion" placeholder="ap-south-1"></div>
           <div><label>Named source stage (optional)</label><input id="mvSourceStage" placeholder="MB_S3_STAGE"></div>
+          <div><label>Named source credential (optional)</label><input id="mvSourceCredential" placeholder="MB_S3"></div>
+          <div><label>Named target stage (optional)</label><input id="mvTargetStage" placeholder="MB_LANDING_STAGE"></div>
           <div><label>Target IAM role ARN</label><input id="mvIamRole" placeholder="arn:aws:iam::123456789012:role/RedshiftCopy"></div>
         </div>
+        <div style="font-size:12px;color:var(--muted);margin:2px 0 8px">
+          <b>Bucket region</b> is only needed for SAP HANA sources: HANA puts it in the URI
+          scheme (<code>s3-ap-south-1://</code>) where every other platform takes a plain
+          <code>s3://</code>. Leave it blank and the HANA unload comes out with a
+          <code>&lt;region&gt;</code> placeholder to fill in by hand.<br>
+          <b>Named source credential</b> is the <code>PURPOSE</code> of a credential you
+          create once on the source — <code>CREATE CREDENTIAL FOR COMPONENT
+          'SAPHANAIMPORTEXPORT' PURPOSE 'MB_S3' …</code> on SAP HANA. It is a name, not a
+          secret: the key stays in the source system and never reaches a generated file.<br>
+          <b>Named target stage</b> is a Snowflake stage built on a storage integration.
+          Set it and the load reads <code>FROM @MB_LANDING_STAGE/table/</code> with no
+          <code>CREDENTIALS</code> clause at all &mdash; the only form that never puts an
+          access key in a generated file.</div>
         <div style="display:flex;gap:10px;align-items:center">
           <button type="button" id="mvSave" class="secondary" style="margin-top:0">Save movement settings</button>
           <span id="mvStatus" style="font-size:13px;color:var(--ink3)"></span>
@@ -7214,9 +7230,13 @@ async function loadMovementSettings() {
   try {
     const d = await api('/api/settings/movement');
     $('#mvStageUri').value = d.stage_uri || '';
+    $('#mvRegion').value = d.region || '';
     $('#mvSourceStage').value = d.source_stage || '';
+    $('#mvSourceCredential').value = d.source_credential || '';
+    $('#mvTargetStage').value = d.target_stage || '';
     $('#mvIamRole').value = d.iam_role || '';
-    const set = !!(d.stage_uri || d.iam_role || d.source_stage);
+    const set = !!(d.stage_uri || d.iam_role || d.source_stage || d.region
+                   || d.source_credential || d.target_stage);
     $('#mvState').textContent = set
       ? '— configured; generated scripts come out fully substituted'
       : '— not set; generated scripts will carry <placeholders>';
@@ -7229,7 +7249,10 @@ $('#mvSave').onclick = async () => {
     await api('/api/settings/movement', {method: 'PUT',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({stage_uri: $('#mvStageUri').value.trim(),
+                            region: $('#mvRegion').value.trim(),
                             source_stage: $('#mvSourceStage').value.trim(),
+                            source_credential: $('#mvSourceCredential').value.trim(),
+                            target_stage: $('#mvTargetStage').value.trim(),
                             iam_role: $('#mvIamRole').value.trim()})});
     $('#mvStatus').textContent = 'Saved - the next Generate uses these values.';
     loadMovementSettings();

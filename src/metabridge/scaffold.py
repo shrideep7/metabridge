@@ -386,7 +386,8 @@ def scaffold(source_key: str, target_key: str, tables_file: str, out_dir: str,
     ddl = generate_target_ddl(pipeline, str(out / "ddl"), source=source,
                               target=target,
                               source_params=source_params or {},
-                              movement=movement or {})
+                              movement=movement or {},
+                              target_params=target_params or {})
 
     # 3. Informatica assets
     from .generators.idmc_generator import generate_idmc

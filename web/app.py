@@ -3651,7 +3651,10 @@ def get_movement_settings():
     mv = _load_settings_doc().get("movement", {}) or {}
     return {"stage_uri": str(mv.get("stage_uri", "") or ""),
             "iam_role": str(mv.get("iam_role", "") or ""),
-            "source_stage": str(mv.get("source_stage", "") or "")}
+            "source_stage": str(mv.get("source_stage", "") or ""),
+            "region": str(mv.get("region", "") or ""),
+            "source_credential": str(mv.get("source_credential", "") or ""),
+            "target_stage": str(mv.get("target_stage", "") or "")}
 
 
 @app.put("/api/settings/movement")
@@ -3662,14 +3665,25 @@ async def put_movement_settings(request: Request):
     iam_role = str(body.get("iam_role", "") or "").strip()
     source_stage = str(body.get("source_stage", "") or "").strip() \
         .lstrip("@")
+    region = str(body.get("region", "") or "").strip().lower()
+    source_credential = str(body.get("source_credential", "") or "").strip()
+    target_stage = str(body.get("target_stage", "") or "").strip().lstrip("@")
     if stage_uri and "://" not in stage_uri:
         raise HTTPException(422, "stage_uri must be an object-storage URI "
                                  "(s3://…, gs://…, abfss://…)")
     if iam_role and not iam_role.startswith("arn:"):
         raise HTTPException(422, "iam_role must be a role ARN "
                                  "(arn:aws:iam::…:role/…)")
+    # Loose on purpose: new AWS regions appear regularly, so a hardcoded
+    # list would reject a valid one. This only rules out an obviously wrong
+    # entry — a full URI, or a bucket name pasted into the wrong box.
+    if region and not re.fullmatch(r"[a-z0-9-]{3,32}", region):
+        raise HTTPException(422, "region must be a bare region code such as "
+                                 "ap-south-1 — not a URI or bucket name")
     for name, val in (("stage_uri", stage_uri), ("iam_role", iam_role),
-                      ("source_stage", source_stage)):
+                      ("source_stage", source_stage),
+                      ("source_credential", source_credential),
+                      ("target_stage", target_stage)):
         low = val.lower()
         if "secret" in low or "password" in low or "aws_key" in low:
             raise HTTPException(422, "%s looks like it contains a "
@@ -3679,7 +3693,9 @@ async def put_movement_settings(request: Request):
     from metabridge.llm.assist import _settings_file
     doc = _load_settings_doc()
     doc["movement"] = {"stage_uri": stage_uri, "iam_role": iam_role,
-                       "source_stage": source_stage}
+                       "source_stage": source_stage, "region": region,
+                       "source_credential": source_credential,
+                       "target_stage": target_stage}
     f = _settings_file()
     f.parent.mkdir(parents=True, exist_ok=True)
     f.write_text(json.dumps(doc, indent=2), encoding="utf-8")

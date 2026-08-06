@@ -158,6 +158,35 @@ def test_stopped_instance_is_actionable(fake_hana):
     assert "RUNNING" in r["error"] and "stop every evening" in r["error"]
 
 
+def test_ssl_engine_error_points_at_the_stopped_instance_first(fake_hana):
+    """MEASURED against a real free-tier HANA Cloud instance, both ways.
+
+    Stopped, the driver raises "Cannot create SSL engine: The credentials
+    supplied were not complete" — because SAP's edge keeps terminating TLS
+    on the hostname after the tenant behind it is gone. Started, the very
+    same call reached authentication. Plain Python TLS handshakes fine in
+    BOTH states, so a successful TLS probe proves the endpoint answers, not
+    that the database is there.
+
+    That is why the hint must lead with instance state: an SSL-shaped error
+    reads like a crypto problem and sends people hunting driver versions,
+    crypto providers and trust stores for what is a one-click fix.
+    """
+    fake_hana["raise"] = (
+        "(-10709, 'Connection failed (RTE:[300012] Cannot create SSL "
+        "engine: The credentials supplied were not complete, and could not "
+        "be verified.')")
+    r = livecheck.test_connection("sap_hana", dict(HANA_PARAMS))
+    assert r["ok"] is False
+    err = r["error"]
+    # the likely cause, stated first
+    assert "NOT RUNNING" in err and "stop every evening" in err
+    # the local-TLS case is kept, but as the FALLBACK
+    assert err.index("NOT RUNNING") < err.index("If it IS running")
+    # never advice that was tested and found not to work
+    assert "hdbcli==" not in err
+
+
 def test_unresolvable_host_says_so(fake_hana):
     fake_hana["raise"] = ("Connection failed (RTE:[89001] Cannot resolve "
                           "host name 'nope.invalid')")

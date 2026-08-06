@@ -306,6 +306,63 @@ def _probe_widths(spec: Optional[ConnectorSpec], dialect: str,
             + "\n\n".join(parts) + "\n")
 
 
+def _target_context(dialect: str,
+                    target_params: Optional[Dict[str, str]]) -> List[str]:
+    """Statements that put the session somewhere before anything is created.
+
+    01_create_landing.sql issues CREATE SCHEMA and CREATE TABLE with no
+    database qualifier, so it lands wherever the session happens to point —
+    or fails outright if it points nowhere. The unload script has always set
+    its own context for exactly this reason; the landing script needs it just
+    as much, and not having it was a step every operator had to know about
+    and perform by hand.
+
+    Same convention as the unload: a known value becomes a real statement, an
+    unknown one a commented line naming what to set. Dialects that resolve
+    the database at CONNECT time (PostgreSQL, Redshift) or carry it in every
+    identifier (BigQuery) get a note rather than a statement they cannot run.
+    """
+    p = target_params or {}
+
+    def val(name: str) -> str:
+        return str(p.get(name, "") or "").strip()
+
+    lines: List[str] = []
+    if dialect == "snowflake":
+        db, wh = val("database"), val("warehouse")
+        lines.append("USE DATABASE %s;" % db if db
+                     else "-- USE DATABASE <database>;    -- uncomment and set")
+        # CREATE SCHEMA/TABLE are metadata-only on Snowflake and need no
+        # running warehouse, so this is emitted only when one is known —
+        # a commented placeholder would imply a requirement that is not real.
+        if wh:
+            lines.append("USE WAREHOUSE %s;" % wh)
+    elif dialect == "databricks":
+        cat = val("catalog")
+        lines.append("USE CATALOG %s;" % cat if cat
+                     else "-- USE CATALOG <catalog>;      -- uncomment and set")
+    elif dialect == "tsql":
+        db = val("database")
+        lines.append("USE %s;" % db if db
+                     else "-- USE <database>;             -- uncomment and set")
+    elif dialect == "teradata":
+        db = val("database")
+        lines.append("DATABASE %s;" % db if db
+                     else "-- DATABASE <database>;        -- uncomment and set")
+    elif dialect in ("postgres", "redshift"):
+        db = val("database")
+        lines.append("-- Connect to database %s before running — %s selects "
+                     "the database at" % (db, dialect) if db
+                     else "-- Connect to the target database before running "
+                          "— %s selects it at" % dialect)
+        lines.append("-- connect time, so there is no in-session statement "
+                     "to switch it.")
+    if not lines:
+        return []
+    return ["-- Session context, so this runs the same from any worksheet:"] \
+        + lines + [""]
+
+
 def _create_table(src: SourceTable, dialect: str, hint: dict,
                   source_platform: str = "") -> str:
     cols = ",\n".join("    %-32s %s" % (_quote(dialect, c.name),
@@ -340,12 +397,51 @@ def _create_table(src: SourceTable, dialect: str, hint: dict,
 # Anything not configured stays an explicit <angle-bracket> token and is
 # listed in the README. Credentials are NEVER written into these files.
 
+# Where a PostgreSQL \copy lands when the stage is object storage. Relative
+# on purpose: it resolves against wherever psql was launched, needs no
+# privileges, and is obvious to clean up.
+_PG_LOCAL_EXPORT_DIR = "./mb_export"
+
+
+def _hana_object_uri(uri: str, region: str = "") -> str:
+    """Rewrite an object-storage URI into the form SAP HANA accepts.
+
+    HANA puts the REGION in the scheme — `s3-ap-south-1://bucket/path` —
+    where Snowflake, Databricks and Redshift all take a plain `s3://`. The
+    same workspace stage URI therefore has to render differently on the two
+    halves of the package, so this converts only for HANA and leaves the
+    load side untouched. That is also why the region is its own setting
+    rather than something the user bakes into the stage URI: written there,
+    HANA would be right and every other target would break.
+
+    Verified against SAP HANA Cloud 2026.14: `s3-ap-south-1://` exported
+    successfully. The region cannot be inferred from a bucket name, so
+    without one a plain `s3://` becomes an explicit `<region>` placeholder
+    rather than a guess. A URI that already names its region is left alone.
+    """
+    if uri.startswith("s3://"):
+        return "s3-%s://%s" % (region or "<region>", uri[len("s3://"):])
+    return uri
+
+
 def _mv(movement: Optional[dict]) -> dict:
     m = movement or {}
     return {"stage_uri": str(m.get("stage_uri", "") or "").rstrip("/"),
             "iam_role": str(m.get("iam_role", "") or "").strip(),
             "source_stage":
-                str(m.get("source_stage", "") or "").strip().lstrip("@")}
+                str(m.get("source_stage", "") or "").strip().lstrip("@"),
+            # Consumed only by the SAP HANA unload — see _hana_object_uri.
+            "region": str(m.get("region", "") or "").strip().lower(),
+            # A NAMED credential, created once on the source. Like
+            # source_stage it is an identifier, not a secret, so storing it
+            # keeps the generated script complete without holding a key.
+            "source_credential":
+                str(m.get("source_credential", "") or "").strip(),
+            # The target-side mirror of source_stage: a Snowflake stage
+            # built on a storage integration, so the load needs no
+            # CREDENTIALS clause and no key reaches a generated file.
+            "target_stage":
+                str(m.get("target_stage", "") or "").strip().lstrip("@")}
 
 
 def _unload(spec: Optional[ConnectorSpec], dialect: str,
@@ -377,20 +473,31 @@ def _unload(spec: Optional[ConnectorSpec], dialect: str,
     # connection, so db_of()/fq() are deliberately NOT used here: prefixing
     # the tenant would build an invalid three-part name.
     if spec is not None and spec.key == "sap_hana":
+        hana_uri = _hana_object_uri(uri, mv["region"])
+        cred = mv["source_credential"] or "<credentials>"
         head += [
             "-- EXPORT INTO writes CSV; SAP HANA has no Parquet export form.",
             "-- The matching load on the target must therefore read CSV.",
             "--",
-            "-- <credentials> is a NAMED credential, created ONCE on HANA so",
-            "-- no key material ever appears in this file:",
+            # NB: no literal <region> token in this comment — the README's
+            # placeholder scan is a substring match over this file, and an
+            # illustration containing it would report a substitution that is
+            # already filled in.
+            "-- The REGION belongs in the scheme (e.g. s3-ap-south-1://),",
+            "-- which is HANA-specific: the load side keeps a plain s3://.",
+            "--",
+            "-- The credential is a NAME, not a secret: create it ONCE on "
+            "HANA and",
+            "-- no key material ever appears in this file.",
             "--   CREATE CREDENTIAL FOR COMPONENT 'SAPHANAIMPORTEXPORT'",
-            "--     PURPOSE '<credentials>' TYPE 'PASSWORD'",
+            "--     PURPOSE '%s' TYPE 'PASSWORD'" % cred,
             "--     USING 'user=<access-key>;password=<secret-key>';",
             ""]
         body = ["EXPORT INTO '%s/%s/'\n  FROM %s\n"
-                "  WITH CREDENTIAL '<credentials>'\n"
+                "  WITH CREDENTIAL '%s'\n"
                 "       COLUMN LIST IN FIRST ROW;"
-                % (uri, t.name.lower(), _qualified(dialect, t.schema, t.name))
+                % (hana_uri, t.name.lower(),
+                   _qualified(dialect, t.schema, t.name), cred)
                 for t in tables]
     elif dialect == "snowflake":
         db = next((db_of(t) for t in tables if db_of(t)), "")
@@ -446,11 +553,46 @@ def _unload(spec: Optional[ConnectorSpec], dialect: str,
         db = next((db_of(t) for t in tables if db_of(t)), "")
         head += ["-- psql meta-command: run with psql, not a SQL client."
                  + (" Connect to database '%s'." % db if db else ""), ""]
-        body = ["\\copy (SELECT * FROM %s) TO '%s/%s.csv' "
-                "WITH (FORMAT csv, HEADER true);"
-                % (_qualified("postgres", t.schema, t.name), uri,
-                   t.name.lower())
-                for t in tables]
+        # \copy cannot name a bucket as a FILE, but it can pipe to a
+        # PROGRAM, and that program runs on the client where the AWS CLI
+        # already is. `aws s3 cp - <uri>` reads stdin, so the rows stream
+        # straight to object storage with nothing staged on disk and no
+        # server-side privilege needed.
+        #
+        # The path is <uri>/<table>/<table>.csv, NOT <uri>/<table>.csv:
+        # step 3 loads FROM '<uri>/<table>/', treating it as a prefix, and a
+        # file written beside that prefix rather than inside it is invisible
+        # to the load. The two halves have to agree on layout or the COPY
+        # succeeds having read nothing.
+        remote = "://" in uri
+        if remote:
+            head += [
+                "-- \\copy streams straight to object storage by piping to "
+                "the AWS CLI,",
+                "-- which runs on the machine running psql — no local "
+                "staging, and no",
+                "-- server-side privilege. The CLI must be installed and "
+                "authenticated.",
+                "--",
+                "-- No CLI? Write locally instead and upload afterwards, "
+                "keeping the",
+                "-- per-table folders so step 3 still finds the files:",
+                "--   TO '%s/<table>/<table>.csv'" % _PG_LOCAL_EXPORT_DIR,
+                "--   aws s3 cp %s %s/ --recursive"
+                % (_PG_LOCAL_EXPORT_DIR, uri),
+                ""]
+            body = ["\\copy (SELECT * FROM %s) TO PROGRAM "
+                    "'aws s3 cp - %s/%s/%s.csv' "
+                    "WITH (FORMAT csv, HEADER true);"
+                    % (_qualified("postgres", t.schema, t.name), uri,
+                       t.name.lower(), t.name.lower())
+                    for t in tables]
+        else:
+            body = ["\\copy (SELECT * FROM %s) TO '%s/%s.csv' "
+                    "WITH (FORMAT csv, HEADER true);"
+                    % (_qualified("postgres", t.schema, t.name), uri,
+                       t.name.lower())
+                    for t in tables]
     else:
         name = spec.name if spec is not None else "the source"
         head += ["-- %s has no generated bulk-export form in MetaBridge yet."
@@ -465,13 +607,16 @@ def _unload(spec: Optional[ConnectorSpec], dialect: str,
 def _source_writes_csv(source: Optional[ConnectorSpec]) -> bool:
     """Whether step 2 produced CSV rather than Parquet.
 
-    Deliberately narrow: only SAP HANA is listed, because only its unload was
-    written against this helper. PostgreSQL's `\\copy` also writes CSV while
-    its load still says PARQUET — the same defect — but widening this changes
-    output for an already-shipped connector, so it stays a separate decision
-    rather than a side effect of the SAP work.
+    Both entries are facts about what _unload() actually emits, not
+    preferences: SAP HANA's EXPORT INTO has no Parquet form, and
+    PostgreSQL's `\\copy ... WITH (FORMAT csv)` is CSV by construction. A
+    load that reads Parquet from either fails on the first row.
+
+    Everything else here unloads Parquet, so the default stays Parquet —
+    which is also the better format when a source can produce it, since it
+    carries its own types instead of re-inferring them at load time.
     """
-    return source is not None and source.key == "sap_hana"
+    return source is not None and source.key in ("sap_hana", "postgres")
 
 
 def _load(spec: Optional[ConnectorSpec], dialect: str,
@@ -507,11 +652,24 @@ def _load(spec: Optional[ConnectorSpec], dialect: str,
         else:
             fmt = ("  FILE_FORMAT = (TYPE = PARQUET)\n"
                    "  MATCH_BY_COLUMN_NAME = CASE_INSENSITIVE;")
-        body = ["COPY INTO %s\n  FROM '%s/%s/'\n"
-                "  CREDENTIALS = (<credentials>)\n%s"
-                % (_qualified("snowflake", t.schema, t.name), uri,
-                   t.name.lower(), fmt)
-                for t in tables]
+        if mv["target_stage"]:
+            # A stage built on a STORAGE INTEGRATION holds its own
+            # credential inside Snowflake, so the statement carries none —
+            # this is the only form here that never puts a key in a file.
+            head += ["-- Loading through the named stage from your Data "
+                     "movement settings:",
+                     "-- its storage credential lives in Snowflake, so no "
+                     "key appears below.", ""]
+            src_ref = ["@%s/%s/" % (mv["target_stage"], t.name.lower())
+                       for t in tables]
+            cred_line = ""
+        else:
+            src_ref = ["'%s/%s/'" % (uri, t.name.lower()) for t in tables]
+            cred_line = "  CREDENTIALS = (<credentials>)\n"
+        body = ["COPY INTO %s\n  FROM %s\n%s%s"
+                % (_qualified("snowflake", t.schema, t.name), ref,
+                   cred_line, fmt)
+                for t, ref in zip(tables, src_ref)]
     elif dialect == "databricks":
         body = ["COPY INTO %s\n  FROM '%s/%s/'\n"
                 "  FILEFORMAT = %s\n"
@@ -610,6 +768,11 @@ def _readme(pipeline: Pipeline, source: Optional[ConnectorSpec],
                              "appears here at all",
             "<database>": "source database to unload from",
             "<warehouse>": "source warehouse (an unload needs compute)",
+            "<region>": "the bucket's AWS region, e.g. `ap-south-1`. SAP "
+                        "HANA puts it in the URI scheme "
+                        "(`s3-ap-south-1://`) where the target takes a "
+                        "plain `s3://`, and it cannot be inferred from the "
+                        "bucket name",
         }
         lines += ["## Substitute before running", "",
                   "| token | meaning |", "|---|---|"]
@@ -656,7 +819,8 @@ def generate_target_ddl(pipeline: Pipeline, out_dir: str,
                         target: Optional[ConnectorSpec] = None,
                         dialect: str = "",
                         source_params: Optional[Dict[str, str]] = None,
-                        movement: Optional[dict] = None) -> dict:
+                        movement: Optional[dict] = None,
+                        target_params: Optional[Dict[str, str]] = None) -> dict:
     """Write the landing-layer DDL + movement scripts. -> file manifest.
 
     ``movement`` carries the workspace Data movement settings; whatever it
@@ -707,6 +871,7 @@ def generate_target_ddl(pipeline: Pipeline, out_dir: str,
             "metadata.",
             "-- Column names and order match the source, so a bulk load",
             "-- maps positionally as well as by name.", ""]
+    body += _target_context(dialect, target_params)
     if schemas:
         body += ["-- schemas the dbt sources.yml expects "
                  "(needs CREATE SCHEMA privilege):",
@@ -735,11 +900,13 @@ def generate_target_ddl(pipeline: Pipeline, out_dir: str,
     files.append(ld)
 
     # honest bookkeeping for the README and the UI: what came pre-filled,
-    # what still needs a hand
-    both = un_text + ld_text
+    # what still needs a hand. The LANDING text is scanned too — it now
+    # carries session context, and a <database> left unfilled there is just
+    # as much a substitution as one in the unload.
+    both = "\n".join(body) + un_text + ld_text
     placeholders = [t for t in ("<stage-uri>", "<iam-role-arn>",
                                 "<credentials>", "<database>",
-                                "<warehouse>") if t in both]
+                                "<warehouse>", "<region>") if t in both]
     prefilled = []
     if mv["stage_uri"]:
         prefilled.append("stage URI")
@@ -747,6 +914,16 @@ def generate_target_ddl(pipeline: Pipeline, out_dir: str,
         prefilled.append("IAM role")
     if mv["source_stage"]:
         prefilled.append("named source stage")
+    if mv["region"] and "<region>" not in both:
+        prefilled.append("bucket region")
+    # Scoped to the UNLOAD text on purpose: the source credential is a
+    # source-side fact, and the target's own <credentials> lives in the load
+    # file. Checking both would report the source one as unfilled whenever
+    # the target still needs one.
+    if mv["source_credential"] and "<credentials>" not in un_text:
+        prefilled.append("named source credential")
+    if mv["target_stage"] and "<credentials>" not in ld_text:
+        prefilled.append("named target stage")
 
     (out / "README.md").write_text(
         _readme(pipeline, source, target, dialect, tables, files,

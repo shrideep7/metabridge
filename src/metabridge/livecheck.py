@@ -3436,6 +3436,28 @@ def _hana_test(params: Dict[str, str]) -> dict:
                     "SAP BTP cockpit login.")
         elif "cannot resolve host" in low or "no such host" in low:
             hint = " — the host could not be resolved; check for a typo."
+        elif ("ssl engine" in low or "sslcontext" in low
+                or "crypto lib" in low or "handshake" in low):
+            # MUST be tested BEFORE the generic branch below: the driver
+            # reports this as "Connection failed (RTE:[300012] Cannot create
+            # SSL engine ...)", so a plain "connection failed" match sends
+            # the reader off checking a server that is demonstrably up. The
+            # TCP connection SUCCEEDED here; the driver's own TLS layer
+            # failed to initialise locally, before any certificate or
+            # credential was examined.
+            # Measured, not assumed: against a STOPPED free-tier HANA Cloud
+            # instance the driver reports exactly "Cannot create SSL engine",
+            # because SAP's edge keeps answering TLS on the hostname after
+            # the tenant behind it is gone. Starting the instance made the
+            # same call succeed. So an SSL-shaped error here is overwhelmingly
+            # a stopped instance, and that has to be said FIRST — a local
+            # TLS theory sends people on a long hunt for a one-click fix.
+            hint = (" — this usually means the instance is NOT RUNNING: "
+                    "free-tier HANA Cloud instances stop every evening, and "
+                    "the endpoint still answers TLS after the tenant behind "
+                    "it is gone. Start it in HANA Cloud Central and retry. "
+                    "If it IS running, the driver's own TLS layer is failing "
+                    "on this host.")
         elif ("connection failed" in low or "cannot connect" in low
                 or "timeout" in low or "refused" in low):
             hint = (" — check the instance is RUNNING (free-tier HANA Cloud "
