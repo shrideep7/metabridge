@@ -1,0 +1,9 @@
+{"topics": [
+  {"name": "returns.v2", "partitions": 6, "replication_factor": 3,
+   "config": {"retention.ms": "1209600000", "cleanup.policy": "delete",
+              "compression.type": "zstd", "min.insync.replicas": "2"}},
+  {"name": "returns.hourly", "partitions": 6, "replication_factor": 3,
+   "config": {"retention.ms": "2592000000", "cleanup.policy": "delete"}},
+  {"name": "returns.dlq", "partitions": 3, "replication_factor": 2,
+   "config": {"retention.ms": "1209600000"}}
+]}

@@ -1,0 +1,10 @@
+{"name": "cdc-returns-mysql",
+ "config": {
+   "connector.class": "io.debezium.connector.mysql.MySqlConnector",
+   "database.hostname": "mysql01", "database.dbname": "retail",
+   "topic.prefix": "cdc.retail",
+   "table.include.list": "retail.returns,retail.stores",
+   "snapshot.mode": "when_needed",
+   "transforms": "unwrap",
+   "transforms.unwrap.type": "io.debezium.transforms.ExtractNewRecordState"
+ }}

@@ -54,7 +54,7 @@ from typing import Dict, List, Optional
 from .cer import (
     CDCSource, CER, Channel, Consumer, EventSchema, IoTSource, Producer,
     RetentionPolicy, RetryPolicy, RoutingRule, SecurityPolicy,
-    StreamTransformation, Window,
+    StreamDeclaration, StreamTransformation, Window,
 )
 
 EVENT_PLATFORMS = ("kafka", "confluent", "pulsar", "rabbitmq", "ibmmq",
@@ -175,6 +175,7 @@ def _parse_connect(doc: dict, cer: CER, fname: str) -> bool:
             tables=tables,
             snapshot_mode=str(cfg.get("snapshot.mode", "")),
             output_channels=outs,
+            topic_prefix=prefix,
             properties={k: str(v) for k, v in cfg.items()
                         if "password" not in k.lower()}))
         for out in outs:
@@ -282,6 +283,21 @@ def parse_streaming_sql(text: str, fname: str, cer: CER) -> bool:
                             r"=\s*'([^']+)'", with_m.group(1), re.I)
             if t_m:
                 topic = t_m.group(1)
+        # Window time semantics, claimed only where the source states it.
+        # ksqlDB's ROWTIME defaults to the Kafka record timestamp, which
+        # is producer- or broker-assigned depending on the topic's
+        # message.timestamp.type — not knowable from a static import. The
+        # old unconditional "event_time" default made every windowed job
+        # look like it needed a watermark whether or not that was true.
+        ts_col = ""
+        if with_m:
+            ts_m = re.search(r"\bTIMESTAMP\s*=\s*'([^']+)'",
+                             with_m.group(1), re.I)
+            if ts_m:
+                ts_col = ts_m.group(1)
+        semantics = ("event_time"
+                     if ts_col or "WATERMARK" in stmt.upper()
+                     else "unknown")
         window: Optional[Window] = None
         wm = _KSQL_WINDOW_RE.search(stmt)
         if wm:
@@ -296,7 +312,8 @@ def parse_streaming_sql(text: str, fname: str, cer: CER) -> bool:
                             else 0,
                             gap_ms=_dur_ms(*sizes[0])
                             if kind_w == "session" and sizes else 0,
-                            watermark_delay_ms=default_watermark)
+                            watermark_delay_ms=default_watermark,
+                            time_semantics=semantics)
         else:
             fm = _FLINK_WINDOW_RE.search(stmt)
             if fm:
@@ -309,7 +326,8 @@ def parse_streaming_sql(text: str, fname: str, cer: CER) -> bool:
                                 slide_ms=_dur_ms(*sizes[0])
                                 if kind_w == "hopping" and len(sizes) > 1
                                 else 0,
-                                watermark_delay_ms=default_watermark)
+                                watermark_delay_ms=default_watermark,
+                                time_semantics=semantics)
         sel = re.search(r"\bAS\s+(SELECT.+)$", stmt, re.I | re.S)
         sql, inputs, group_by, joins = "", [], [], []
         if sel:
@@ -334,13 +352,30 @@ def parse_streaming_sql(text: str, fname: str, cer: CER) -> bool:
                               "Statement defining %s could not be "
                               "parsed — raw SQL preserved" % name,
                               obj=name, detail=stmt[:300])
-        tr = StreamTransformation(
-            name=name, kind=kind, inputs=inputs, output=topic or name,
-            sql=sql, raw=stmt, window=window, group_by=group_by,
-            joins=joins, engine=engine)
-        if window is not None:
-            tr.state_stores.append(name + "_window_state")
-        cer.transformations.append(tr)
+        # A job that declares no timestamp of its own still runs on event
+        # time if the stream it READS declared one — that is the usual
+        # ksqlDB shape, so judging each statement in isolation reported
+        # "unknown" for jobs whose semantics the import does state.
+        if window is not None and window.time_semantics == "unknown":
+            if any(d.timestamp_column for i in inputs
+                   for d in cer.declarations if d.name == i):
+                window.time_semantics = "event_time"
+        if sel is None:
+            # No AS SELECT: this DDL declares a stream/table OVER a
+            # topic, it does not process anything. Recording it as a job
+            # made `output` the topic it reads, which reversed the
+            # lineage arrow and counted a declaration as a streaming job.
+            cer.declarations.append(StreamDeclaration(
+                name=name, topic=topic, kind=kind, engine=engine,
+                timestamp_column=ts_col, raw=stmt))
+        else:
+            tr = StreamTransformation(
+                name=name, kind=kind, inputs=inputs,
+                output=topic or name, sql=sql, raw=stmt, window=window,
+                group_by=group_by, joins=joins, engine=engine)
+            if window is not None:
+                tr.state_stores.append(name + "_window_state")
+            cer.transformations.append(tr)
         if topic and cer.channel(topic) is None:
             cer.channels.append(Channel(name=topic, kind="topic"))
     return found
@@ -377,7 +412,11 @@ def parse_rabbitmq(doc: dict, cer: CER) -> bool:
                                  _clean(b.get("destination", ""))),
             source=_clean(b.get("source", "")),
             target=_clean(b.get("destination", "")),
-            condition=b.get("routing_key", ""), kind="binding"))
+            condition=b.get("routing_key", ""), kind="binding",
+            # a binding always originates at an exchange; the
+            # destination may be a queue or another exchange
+            source_kind="exchange",
+            target_kind=str(b.get("destination_type", "queue"))))
     for perm in doc.get("permissions", []):
         cer.security.append(SecurityPolicy(
             principal=perm.get("user", ""),
@@ -415,6 +454,16 @@ def parse_mqsc(text: str, cer: CER) -> bool:
                                  if k in ("MAXDEPTH", "DEFPSIST",
                                           "CLUSTER", "TARGET")})
         cer.channels.append(ch)
+        target = _clean(props.get("TARGET", ""))
+        if target and target != ch.name:
+            # A QALIAS resolves to a base queue. TARGET was kept as a
+            # property but never became a link, so the alias appeared as
+            # an unconnected queue and nothing recorded that applications
+            # writing to it actually land on the base queue.
+            cer.routing.append(RoutingRule(
+                name="alias_%s_%s" % (ch.name, target),
+                source=ch.name, target=target, kind="alias",
+                condition="QALIAS resolves to %s" % target))
         if retry.max_attempts:
             cer.consumers.append(Consumer(
                 name="backout_%s" % ch.name, channels=[ch.name],

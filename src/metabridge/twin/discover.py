@@ -122,19 +122,17 @@ def add_event_estate(twin: DigitalTwin, cer, source: str = "") -> None:
             cid = node_id("topic", ch)
             if cid in twin.nodes:
                 twin.add_edge(cid, cn.id, "consumes", src)
-    # ksqlDB/Flink jobs reference STREAM aliases, not topics — resolve
-    # an alias through the topic that backs it
-    alias_topic = {t.name: t.output for t in cer.transformations
-                   if t.output}
+    # ksqlDB/Flink jobs reference STREAM aliases, not topics — resolve an
+    # alias through the topic that backs it. This used to rebuild the
+    # alias map from transformations and skip declaration-only entries by
+    # heuristic, because bare DDL was stored as a job; declarations are
+    # now their own kind and cer.resolve_stream is the single mapping.
     for t in cer.transformations:
-        if not t.inputs and not t.sql and t.output and \
-                t.output != t.name:
-            continue        # declaration-only stream = alias, not a job
         j = twin.add_node("streaming_job", t.name, src,
                           technology=t.engine or cer.source_platform)
         for i in t.inputs:
             resolved = i if node_id("topic", i) in twin.nodes \
-                else alias_topic.get(i, i)
+                else cer.resolve_stream(i)
             cid = node_id("topic", resolved)
             if cid in twin.nodes:
                 twin.add_edge(cid, j.id, "feeds", src)

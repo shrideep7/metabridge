@@ -11,8 +11,9 @@ from metabridge.events.graph import event_lineage, execution_graph, to_mermaid
 from metabridge.events.parsers import parse_events
 
 EV = Path(__file__).resolve().parent.parent / "examples" / "events"
-SOURCES = ("kafka", "rabbitmq", "ibmmq", "kinesis", "azure", "pubsub",
-           "awsiot", "nifi", "streamsets", "goldengate", "pulsar")
+SOURCES = ("kafka", "kafka_retail", "rabbitmq", "ibmmq", "kinesis",
+           "azure", "pubsub", "awsiot", "nifi", "streamsets",
+           "goldengate", "pulsar")
 
 
 @pytest.mark.parametrize("source", SOURCES)
@@ -139,7 +140,10 @@ def test_events_api_flow(client):
     assert "orders_per_customer" in d["streaming_jobs"]
     assert d["automation_score"] is not None
     assert d["semantic_confidence"] is not None
-    assert d["validation_verdict"] == "PASS_WITH_WARNINGS"
+    # FAIL: the kafka fixture carries a BACKWARD-breaking schema change
+    # (orders.v1 amount double->string) that the compatibility check now
+    # actually reports instead of only advertising in checks_run.
+    assert d["validation_verdict"] == "FAIL"
     assert d["lineage"]["event_flow"]
 
     c = client.post("/api/events/convert",

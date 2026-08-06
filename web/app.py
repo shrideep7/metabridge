@@ -4052,10 +4052,9 @@ async def events_analyze(request: Request):
         "cdc_sources": [c.name for c in cer.cdc_sources],
         "iot_sources": [i.name for i in cer.iot_sources],
         "automation_score": intelligence["automation_score"],
-        "semantic_confidence": max(
-            0, 100 - 5 * len(intelligence["manual_review_items"])
-            - 2 * sum(1 for f in validation["findings"]
-                      if f["severity"] == "WARNING")),
+        # computed in event_intelligence() — this route used to own the
+        # formula, so CLI and REST consumers of the engine never got it
+        "semantic_confidence": intelligence["semantic_confidence"],
         "manual_review_items": intelligence["manual_review_items"],
         "validation_verdict": validation["verdict"],
         "lineage": event_lineage(cer),

@@ -140,6 +140,31 @@ class Window:
 
 
 @dataclass
+class StreamDeclaration:
+    """A stream/table DECLARED over an existing channel.
+
+    ksqlDB's ``CREATE STREAM orders_src (...) WITH (KAFKA_TOPIC='o.v1')``
+    binds a SQL name to a topic — it reads nothing and writes nothing.
+    Modelling it as a StreamTransformation made it a job whose output was
+    its own source topic, which pointed the lineage arrow backwards,
+    inflated every job count, and left dependent SQL referencing a stream
+    that was never emitted.
+    """
+    name: str
+    topic: str = ""
+    kind: str = "stream"     # stream | table
+    engine: str = ""
+    timestamp_column: str = ""   # WITH (TIMESTAMP='...') if declared
+    raw: str = ""            # original DDL, always preserved
+
+    def to_dict(self) -> dict:
+        return {"name": self.name, "topic": self.topic,
+                "kind": self.kind, "engine": self.engine,
+                "timestamp_column": self.timestamp_column,
+                "raw": self.raw}
+
+
+@dataclass
 class StreamTransformation:
     """One streaming job / stream / SMT chain."""
     name: str
@@ -174,7 +199,13 @@ class RoutingRule:
     source: str = ""
     target: str = ""
     condition: str = ""      # routing predicate / binding key / IoT SQL
-    kind: str = "route"      # route | binding | iot_rule | dlx
+    kind: str = "route"      # route | binding | iot_rule | dlx | alias
+    # What each endpoint IS. A RabbitMQ estate can declare an exchange
+    # and a queue under the same name (payments.dlx), so a binding cannot
+    # be resolved by name alone. Blank means "a channel", which is what
+    # every other platform's routing means.
+    source_kind: str = ""    # exchange | (blank = channel)
+    target_kind: str = ""    # exchange | queue | (blank = channel)
 
     def to_dict(self) -> dict:
         return {k: v for k, v in self.__dict__.items() if v}
@@ -199,6 +230,11 @@ class CDCSource:
     tables: List[str] = field(default_factory=list)
     snapshot_mode: str = ""
     output_channels: List[str] = field(default_factory=list)
+    # Prefix the SOURCE used to name emitted topics (Debezium
+    # topic.prefix / database.server.name). Kept because output_channels
+    # are built from it: regenerating with a different prefix renames
+    # every topic and silently breaks consumers that subscribe by name.
+    topic_prefix: str = ""
     properties: Dict[str, str] = field(default_factory=dict)
 
     def to_dict(self) -> dict:
@@ -229,6 +265,7 @@ class CER:
     schemas: List[EventSchema] = field(default_factory=list)
     transformations: List[StreamTransformation] = field(
         default_factory=list)
+    declarations: List[StreamDeclaration] = field(default_factory=list)
     routing: List[RoutingRule] = field(default_factory=list)
     security: List[SecurityPolicy] = field(default_factory=list)
     cdc_sources: List[CDCSource] = field(default_factory=list)
@@ -244,6 +281,69 @@ class CER:
                 return c
         return None
 
+    def exchanges(self) -> List[RoutingRule]:
+        """Exchanges declared by the import.
+
+        An exchange is a real, declared object that routes messages to
+        queues, but it is stored as a routing rule rather than a channel.
+        With no node of its own, a binding naming one resolved to nothing
+        and the graph reported a declared exchange as "not present in the
+        import" — which was simply false.
+        """
+        return [r for r in self.routing
+                if r.condition.startswith("exchange:")]
+
+    def independent_iot_sources(self) -> List[IoTSource]:
+        """IoT sources that are not already modelled as a job.
+
+        AWS IoT parses one rule into both an IoTSource and a rule
+        transformation. Both the node and the edge must agree on which
+        one represents it, or the graph grows an orphan.
+        """
+        job_names = {t.name for t in self.transformations}
+        return [i for i in self.iot_sources if i.name not in job_names]
+
+    def resolve_stream(self, name: str) -> str:
+        """SQL identifier -> the channel it actually reads.
+
+        A job's `inputs` are table names exactly as they appear in its
+        SQL. Where such a name is a declared stream, the real channel is
+        the topic it was declared over — treating the SQL name as a
+        channel reports a topic that never existed and draws an edge from
+        a node that has to be invented to receive it.
+        """
+        for d in self.declarations:
+            if d.name == name and d.topic:
+                return d.topic
+        return name
+
+    def current_schemas(self) -> List[EventSchema]:
+        """Newest version of each subject, in first-appearance order.
+
+        `schemas` is deliberately the full version HISTORY — a subject
+        registered four times appears four times, and schema-evolution
+        analysis needs every one of them to diff. But anything asking
+        "what is the schema for X?" — a generated .avsc, a Flink column
+        type, a registry POST — wants the current version specifically.
+        Building a dict straight off `schemas` answers that question with
+        whichever entry happened to be last, which is filename sort order,
+        not version order.
+        """
+        best: Dict[str, EventSchema] = {}
+        order: List[str] = []
+        for s in self.schemas:
+            if s.name not in best:
+                order.append(s.name)
+                best[s.name] = s
+            elif s.version > best[s.name].version:
+                best[s.name] = s
+        return [best[n] for n in order]
+
+    def schema_versions(self, name: str) -> List[EventSchema]:
+        """Every version of one subject, oldest first."""
+        return sorted((s for s in self.schemas if s.name == name),
+                      key=lambda s: s.version)
+
     def add_issue(self, severity: str, code: str, message: str,
                   obj: str = "", detail: str = "",
                   suggestion: str = "") -> None:
@@ -255,13 +355,18 @@ class CER:
         """End-to-end event flow: producer -> channel -> transformation
         -> channel -> consumer (+ routing + DLQ edges)."""
         edges: List[dict] = []
+
+        def _endpoint(name: str, kind: str) -> str:
+            return ("exchange:" if kind == "exchange"
+                    else "channel:") + name
+
         for p in self.producers:
             for ch in p.channels:
                 edges.append({"from": "producer:" + p.name,
                               "to": "channel:" + ch, "kind": "produce"})
         for t in self.transformations:
             for i in t.inputs:
-                edges.append({"from": "channel:" + i,
+                edges.append({"from": "channel:" + self.resolve_stream(i),
                               "to": "transform:" + t.name,
                               "kind": "consume"})
             if t.output:
@@ -270,8 +375,8 @@ class CER:
                               "kind": "produce"})
         for r in self.routing:
             if r.source and r.target:
-                edges.append({"from": "channel:" + r.source,
-                              "to": "channel:" + r.target,
+                edges.append({"from": _endpoint(r.source, r.source_kind),
+                              "to": _endpoint(r.target, r.target_kind),
                               "kind": r.kind,
                               "condition": r.condition})
         for c in self.consumers:
@@ -288,6 +393,20 @@ class CER:
                 edges.append({"from": "channel:" + ch.name,
                               "to": "channel:" + ch.dead_letter,
                               "kind": "dead_letter"})
+        # CDC and IoT sources feed channels, but nothing emitted an edge
+        # for them: cdc_lineage recorded the link while the graph showed
+        # the channels floating unconnected — a goldengate import drew
+        # two nodes and zero edges.
+        for c in self.cdc_sources:
+            for ch_name in c.output_channels:
+                edges.append({"from": "cdc:" + c.name,
+                              "to": "channel:" + ch_name,
+                              "kind": "capture"})
+        for i in self.independent_iot_sources():
+            for topic in i.topics:
+                edges.append({"from": "iot:" + i.name,
+                              "to": "channel:" + topic,
+                              "kind": "ingest"})
         return edges
 
     def inventory(self) -> dict:
@@ -299,8 +418,14 @@ class CER:
             "consumers": len(self.consumers),
             "consumer_groups": len({c.group for c in self.consumers
                                     if c.group}),
-            "schemas": len(self.schemas),
+            # subjects, not registered versions: counting history made a
+            # single evolving subject look like several schemas
+            "schemas": len(self.current_schemas()),
+            "schema_versions": len(self.schemas),
             "streaming_jobs": len(self.transformations),
+            # declarations bind a SQL name to a channel; they are not
+            # jobs and must not inflate streaming_jobs or complexity
+            "stream_declarations": len(self.declarations),
             "routing_rules": len(self.routing),
             "security_policies": len(self.security),
             "cdc_sources": len(self.cdc_sources),
@@ -318,6 +443,7 @@ class CER:
             "schemas": [s.to_dict() for s in self.schemas],
             "transformations": [t.to_dict()
                                 for t in self.transformations],
+            "declarations": [d.to_dict() for d in self.declarations],
             "routing": [r.to_dict() for r in self.routing],
             "security": [s.to_dict() for s in self.security],
             "cdc_sources": [c.to_dict() for c in self.cdc_sources],
@@ -390,6 +516,11 @@ def cer_from_dict(doc: dict) -> CER:
             group_by=td.get("group_by", []), joins=td.get("joins", []),
             state_stores=td.get("state_stores", []),
             engine=td.get("engine", "")))
+    for dd in doc.get("declarations", []):
+        cer.declarations.append(StreamDeclaration(
+            name=dd["name"], topic=dd.get("topic", ""),
+            kind=dd.get("kind", "stream"), engine=dd.get("engine", ""),
+            raw=dd.get("raw", "")))
     for rd in doc.get("routing", []):
         cer.routing.append(RoutingRule(
             name=rd.get("name", ""), source=rd.get("source", ""),
