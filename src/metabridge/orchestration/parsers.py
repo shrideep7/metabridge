@@ -1625,7 +1625,25 @@ def parse_idmc_taskflow(path: str) -> COR:
             wf.schedules.append(Schedule(kind="cron",
                                          cron=str(sched["cron"]),
                                          raw=json.dumps(sched)[:150]))
-        prev = ""
+        # `steps` is an ordered list forming a default sequential flow;
+        # `next`/`onSuccess` REPLACES a step's outgoing edge, and a step
+        # named by `onFailure` is an out-of-band handler that must not be
+        # chained by file order. Deriving both from one `prev` cursor
+        # dropped the incoming edge of any step that declared its own
+        # successor, emitted that successor's edge twice, and wired the
+        # failure handler in as a normal sequential step.
+        def _key_of(step) -> str:
+            return _clean(step.get("name", "step"))
+
+        handlers = {_clean(str(s["onFailure"])) for s in steps
+                    if s.get("onFailure")}
+        flow = [s for s in steps if _key_of(s) not in handlers]
+        explicit = {}
+        for s in steps:
+            nxt = s.get("onSuccess") or s.get("next")
+            if nxt:
+                explicit[_key_of(s)] = _clean(str(nxt))
+
         for st in steps:
             key = _clean(st.get("name", "step"))
             stype = str(st.get("taskType", st.get("type", ""))).upper()
@@ -1648,15 +1666,22 @@ def parse_idmc_taskflow(path: str) -> COR:
                              "Taskflow step %s (%s) needs manual porting"
                              % (key, stype))
             wf.tasks.append(t)
-            nxt = st.get("onSuccess") or st.get("next")
-            if nxt:
-                wf.dependencies.append(Dependency(key, _clean(str(nxt))))
-            elif prev:
-                wf.dependencies.append(Dependency(prev, key))
+        seen = set()
+
+        def _dep(a: str, b: str, kind: str = "success") -> None:
+            if a != b and (a, b, kind) not in seen:
+                seen.add((a, b, kind))
+                wf.dependencies.append(Dependency(a, b, kind))
+
+        for i, st in enumerate(flow):
+            key = _key_of(st)
+            if key in explicit:
+                _dep(key, explicit[key])
+            elif i + 1 < len(flow):
+                _dep(key, _key_of(flow[i + 1]))
+        for st in steps:
             if st.get("onFailure"):
-                wf.dependencies.append(Dependency(
-                    key, _clean(str(st["onFailure"])), "failure"))
-            prev = key
+                _dep(_key_of(st), _clean(str(st["onFailure"])), "failure")
         cor.workflows.append(wf)
     if not cor.workflows:
         raise FileNotFoundError("No IDMC taskflow JSON under %s" % path)
