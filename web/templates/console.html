@@ -5550,13 +5550,31 @@ function updateModPickCount() {
 function filterManifestYaml(yml, keep) {
   const lines = String(yml || '').split('\n');
   const out = [];
-  let block = null, blockName = '', blockSchema = '';
+  let block = null, blockName = '', blockSchema = '', tail = false;
   const flush = () => {
     if (block && keep(blockSchema, blockName)) out.push(...block);
     block = null;
   };
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
+    // A top-level key other than `tables:` ENDS the table list. `procedures:`
+    // carries the stored-procedure bodies, and its entries look exactly like
+    // table entries (`- name:` then `schema:`) — so without this they were
+    // tested against the table selection, never matched it, and every one of
+    // them was dropped. Worse, the section HEADER fell inside whichever table
+    // block happened to be open last, so deselecting that one table silently
+    // took the whole curated layer's logic with it.
+    if (!tail && /^[A-Za-z_][\w-]*:/.test(line) && !/^tables:/.test(line)) {
+      // indent-0 comments just above the key introduce the section, not the
+      // table above it — carry them across rather than lose them with it
+      const lead = [];
+      while (block && block.length &&
+             /^(#|\s*$)/.test(block[block.length - 1])) lead.unshift(block.pop());
+      flush();
+      tail = true;
+      out.push(...lead);
+    }
+    if (tail) { out.push(line); continue; }
     const mo = line.match(/^(\s*)-\s+name:\s+(\S+)\s*$/);
     const nx = mo && (lines[i + 1] || '')
       .match(/^(\s*)schema:\s*(\S*)\s*$/);

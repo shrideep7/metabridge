@@ -5,6 +5,9 @@ SILVER schema whose procedures build the curated layer. Landing the tables is
 half the migration; these tests are about the other half arriving.
 """
 import json
+import shutil
+import subprocess
+from pathlib import Path
 
 import pytest
 import yaml
@@ -419,6 +422,87 @@ def test_watermark_suggestion_is_valid_yaml_once_uncommented(tmp_path):
     by_name = {t["name"]: t for t in doc["tables"]}
     assert by_name["CUSTOMERS"]["incremental_column"] == "UPDATED_AT"
     assert by_name["ORDERS"]["unique_key"] == []
+
+
+# ---------------------------------------------------------------------------
+# The console's object picker slices the manifest TEXT before the handoff
+# ---------------------------------------------------------------------------
+
+REPO = Path(__file__).resolve().parent.parent
+CONSOLE = REPO / "web" / "templates" / "console.html"
+
+
+def _slice_manifest(yml: str, keep_js: str) -> str:
+    """Run the console's real filterManifestYaml over `yml`.
+
+    The repo has no JS test runner, but it does already require node for
+    tools/check_console_js.py — and a text assertion could not have caught this
+    bug, because the slicer read as correct. Only running it showed that a
+    `procedures:` entry looks exactly like a table entry to it.
+    """
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node is not on PATH")
+    html = CONSOLE.read_text(encoding="utf-8")
+    start = html.index("function filterManifestYaml")
+    fn = html[start:html.index("\n}\n", start) + 3]
+    harness = ("%s\nconst fs=require('fs');"
+               "process.stdout.write(filterManifestYaml("
+               "fs.readFileSync(process.argv[2],'utf8'), %s));" % (fn, keep_js))
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        js, ym = Path(d) / "s.js", Path(d) / "m.yml"
+        js.write_text(harness, encoding="utf-8")
+        ym.write_text(yml, encoding="utf-8")
+        out = subprocess.run([node, str(js), str(ym)], capture_output=True,
+                             text=True, timeout=60)
+    assert out.returncode == 0, out.stderr
+    return out.stdout
+
+
+def _manifest_with_procedures() -> str:
+    return _manifest_yaml(
+        [{"name": "ORDERS", "schema": "RAW",
+          "columns": [{"name": "ID", "type": "NUMBER"}]},
+         {"name": "SLV_ORDERS", "schema": "SILVER",
+          "columns": [{"name": "ID", "type": "NUMBER"}]}],
+        "DB", None,
+        [{"schema": "SILVER", "name": "LOAD_SLV_ORDERS", "language": "PL/SQL",
+          "definition": LOAD_CUSTOMER_DIM}])
+
+
+def test_deselecting_a_table_does_not_drop_the_procedures():
+    """The picker keeps table blocks by (schema, name). A `procedures:` entry
+    is `- name:` followed by `schema:` — the same shape — so it was tested
+    against the TABLE selection, never matched, and every procedure vanished.
+    The section header fell inside the last table's block too, so deselecting
+    one table silently took the whole curated layer's logic with it."""
+    yml = _manifest_with_procedures()
+    kept = _slice_manifest(yml, "(s, n) => s === 'RAW'")   # silver deselected
+    assert "- name: ORDERS" in kept
+    assert "- name: SLV_ORDERS" not in kept                # the table went
+    assert "procedures:" in kept                           # the logic stayed
+    assert "LOAD_SLV_ORDERS" in kept
+    assert "INSERT INTO customer_dim" in kept              # body intact
+
+
+def test_selecting_everything_leaves_the_manifest_byte_identical():
+    """The picker is a way to NARROW an analysis, so the no-interaction path
+    has to be exactly what it was before the picker existed."""
+    yml = _manifest_with_procedures()
+    assert _slice_manifest(yml, "() => true") == yml
+
+
+def test_a_sliced_manifest_still_loads_both_sections():
+    yml = _slice_manifest(_manifest_with_procedures(), "(s, n) => s === 'RAW'")
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        f = Path(d) / "m.yml"
+        f.write_text(yml, encoding="utf-8")
+        assert [t["name"] for t in load_table_manifest(str(f))[0]] == ["ORDERS"]
+        (proc,) = load_procedures(str(f))
+        assert proc["name"] == "LOAD_SLV_ORDERS"
+        assert "BEGIN" in proc["definition"]
 
 
 def test_procedures_from_a_live_analysis_report():
