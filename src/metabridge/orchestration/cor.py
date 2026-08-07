@@ -318,6 +318,35 @@ _CRON_FIELD_RE = _re.compile(
     r"^(\*|\?|L|W|[\d*/,\-LW#?]+|[A-Z]{3}(?:-[A-Z]{3})?(?:,[A-Z]{3})*)$")
 
 
+# A year field is '*', a 4-digit year/range, or a step. NOT '?' — that is
+# only legal in day-of-month/day-of-week, so a trailing '?' means this is
+# the seconds-first Quartz form and the LAST field is day-of-week. Letting
+# '?' match here trimmed the wrong end: '0 0 2 * * ?' (02:00 daily) became
+# '0 0 2 * *' (midnight on the 2nd).
+_YEAR_FIELD_RE = _re.compile(r"^(\*|\d{4}(?:-\d{4})?(?:/\d+)?|\*/\d+)$")
+
+
+def cron_to_posix(expr: str) -> str:
+    """Quartz / AWS EventBridge cron -> 5-field POSIX cron.
+
+    AWS writes ``cron(0 2 * * ? *)``: six fields ending in a YEAR, with
+    ``?`` meaning "no specific value" in whichever of day-of-month or
+    day-of-week is not being used. POSIX crontab — and therefore Airflow
+    and dbt Cloud — takes five fields and rejects ``?``. Emitting the
+    source dialect unchanged produced a schedule the target cannot read.
+
+    Only the AWS/Quartz *year-last* six-field form is converted. The
+    seconds-first Quartz variant is left untouched rather than guessed
+    at, because dropping the wrong end silently shifts every run.
+    """
+    parts = normalize_cron(expr).split()
+    if len(parts) == 6 and _YEAR_FIELD_RE.match(parts[5]):
+        parts = parts[:5]
+    if len(parts) != 5:
+        return normalize_cron(expr)
+    return " ".join("*" if p == "?" else p for p in parts)
+
+
 def cron_is_valid(expr: str) -> bool:
     expr = normalize_cron(expr)
     parts = expr.split()

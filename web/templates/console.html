@@ -1692,6 +1692,47 @@
         <div style="font-size:12px;color:var(--muted);margin-top:6px">
           💡 <b>No connection yet?</b> Go to <b>Marketplace</b> in the sidebar to add one first.
         </div>
+
+        <!-- Schema + object picker. Populated from the introspection report:
+             the whole estate is read once, then the user narrows it to the
+             schemas and objects they actually want to modernize. The manifest
+             handed to Pipeline Studio is filtered to that selection. -->
+        <div id="modPickPanel" style="display:none;margin-top:14px;border:1px solid var(--border);border-radius:6px;overflow:hidden">
+          <div style="background:#F8FAFC;border-bottom:1px solid var(--border);padding:10px 14px;display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+            <b style="font-size:13px" id="modPickTitle">Select what to modernize</b>
+            <span id="modPickCount" style="font-size:12px;color:var(--muted)"></span>
+            <button type="button" id="modPickCancel" class="secondary"
+                    style="margin:0 0 0 auto;padding:5px 12px;font-size:12px">Cancel</button>
+          </div>
+          <div style="display:flex;flex-wrap:wrap;align-items:stretch">
+            <div style="flex:0 0 220px;border-right:1px solid var(--border);max-height:330px;overflow:auto">
+              <div style="padding:8px 12px;font-size:11px;font-weight:700;letter-spacing:.04em;color:var(--muted);text-transform:uppercase">Schemas</div>
+              <div id="modSchemaList"></div>
+            </div>
+            <div style="flex:1 1 340px;min-width:280px;display:flex;flex-direction:column;max-height:330px">
+              <div style="padding:8px 12px;display:flex;gap:8px;align-items:center;border-bottom:1px solid var(--border)">
+                <input type="text" id="modObjFilter" placeholder="Filter objects…" autocomplete="off"
+                       style="margin:0;flex:1;height:30px;font-size:12.5px">
+                <button type="button" id="modObjAll" class="secondary" style="margin:0;padding:5px 10px;font-size:12px">All</button>
+                <button type="button" id="modObjNone" class="secondary" style="margin:0;padding:5px 10px;font-size:12px">None</button>
+              </div>
+              <div id="modObjList" style="flex:1;overflow:auto;padding:4px 0"></div>
+            </div>
+          </div>
+          <div style="border-top:1px solid var(--border);padding:10px 14px;display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+            <button type="button" id="modPickNext" style="margin:0;padding:0 18px;height:34px">Preview manifest</button>
+            <span style="font-size:12px;color:var(--muted)">Builds a manifest from the selected objects only.</span>
+          </div>
+        </div>
+
+        <!-- YAML preview of the filtered selection, shown before handoff. -->
+        <div id="modManifestPanel" style="display:none;margin-top:14px">
+          <div id="modManifestPreview"></div>
+          <div style="display:flex;gap:10px;align-items:center;margin-top:12px;flex-wrap:wrap">
+            <button type="button" id="modManifestGo" style="margin:0;padding:0 18px;height:34px">Continue to Pipeline Studio →</button>
+            <button type="button" id="modManifestBack" class="secondary" style="margin:0;padding:0 14px;height:34px">← Change selection</button>
+          </div>
+        </div>
       </div>
 
       <!-- ── Target Platform ─────────────────────────────────────────── -->
@@ -4215,9 +4256,7 @@ async function openJobDetail(jobId) {
       + '<button class="secondary" style="margin-top:14px" onclick="closeModal()">Close</button>';
     return;
   }
-  const st = j.status === 'done' ? badge('done', 'var(--green)')
-    : j.status === 'failed' ? badge('failed', 'var(--red)')
-    : badge(j.status || 'running', 'var(--amber)');
+  const st = runStatusChip(j);
   const rows = [];
   const add = (k, v, mono) => { if (v !== undefined && v !== '' && v != null) rows.push(
     '<dt>' + esc(k) + '</dt><dd' + (mono ? ' class="mono"' : '') + '>' + v + '</dd>'); };
@@ -4462,7 +4501,8 @@ function jobLabel(j) {
 const STATUS = {
   DISCOVERED:{c:'var(--ink3)',l:'Discovered'}, ANALYZING:{c:'var(--amber)',l:'Analyzing'},
   ANALYZED:{c:'var(--accent)',l:'Analyzed'}, READY:{c:'var(--accent)',l:'Ready'},
-  MODERNIZING:{c:'var(--amber)',l:'Modernizing'},
+  QUEUED:{c:'var(--ink3)',l:'Queued'},
+  MODERNIZING:{c:'var(--amber)',l:'Running'},
   // Neutral, NOT green. GENERATED is what verdictToStatus() falls back to when a
   // run carries no validation verdict — "converted but never validated". Green
   // made it read identically to PASSED, while the Validation pass rate card
@@ -4481,6 +4521,56 @@ function verdictToStatus(v) {
   return {PASS:'PASSED', PASS_WITH_WARNINGS:'WARNING', MANUAL_REVIEW:'MANUAL_REVIEW',
           FAIL:'FAILED'}[v] || 'GENERATED';
 }
+// Kinds that PRODUCE something a validation pass could later judge. For these,
+// finishing is not success — it is "generated, not yet checked". Every other
+// kind reads metadata and writes documents; there is nothing to validate, so
+// finishing IS the terminal state.
+const RUN_KIND_GENERATES = {convert:1, govern:1, scaffold:1, events:1,
+                            orchestration:1, objects_convert:1};
+// The ONE place that decides what state a run is in.
+//
+// Execution state (queued/running/failed) is plumbing and is shown only while a
+// run is unfinished. Once it finishes, only the migration lifecycle is shown —
+// so a converted-but-never-validated run reads GENERATED, in neutral grey.
+// Three call sites used to answer this question independently and disagree:
+// job detail and the Overview row both rendered a green `done` badge, while the
+// Reports table rendered a neutral `Generated` chip for the very same run. Green
+// is the strongest signal in the UI and it was being spent on runs nobody had
+// checked — the exact misread the STATUS comment above was written to prevent.
+function runStatus(j) {
+  j = j || {};
+  const st = String(j.status || '').toLowerCase();
+  if (st === 'failed') return 'FAILED';
+  if (st === 'queued') return 'QUEUED';
+  if (st && st !== 'done') return 'MODERNIZING';
+  const verdict = (j.migration_validation || {}).verdict;
+  if (verdict) return verdictToStatus(verdict);
+  return RUN_KIND_GENERATES[j.kind] ? 'GENERATED' : 'PASSED';
+}
+// A settled outcome is a solid dot; work still outstanding is a hollow ring.
+// The label carries the meaning, the dot carries the state — no icons, no
+// capsules, so a status can never be mistaken for a button.
+const RUN_STATUS_PENDING = {QUEUED:1, MODERNIZING:1, VALIDATING:1, ANALYZING:1};
+function runStatusChip(j) {
+  const k = runStatus(j);
+  const s = STATUS[k] || {c:'var(--ink3)', l:k};
+  const dot = RUN_STATUS_PENDING[k]
+    ? 'background:transparent;border:2px solid ' + s.c + ';border-radius:50%'
+    : 'background:' + s.c;
+  return '<span class="stat" title="' + esc(RUN_STATUS_HINT[k] || s.l) + '">'
+    + '<i style="' + dot + '"></i>' + s.l + '</span>';
+}
+const RUN_STATUS_HINT = {
+  GENERATED: 'Converted, but no validation has run against the output yet',
+  PASSED: 'Validated with no blocking issues',
+  WARNING: 'Validated, with non-blocking issues',
+  MANUAL_REVIEW: 'Needs a human before this can be trusted',
+  FAILED: 'Did not complete — the error is on the run',
+  DEPLOYED: 'Applied to the target',
+  QUEUED: 'Waiting for a worker',
+  MODERNIZING: 'Running now',
+  VALIDATING: 'Validation checks in flight',
+};
 let jobReportsCache = {};
 async function jobReport(id) {
   if (!jobReportsCache[id]) {
@@ -4904,7 +4994,9 @@ async function loadDashboard() {
     if (j.kind === 'convert') figures = (s.automated_conversion_rate||0) + '% automated';
     if (j.kind === 'govern') figures = (s.classified_columns||0) + ' classified, ' + (s.violations||0) + ' violations';
     if (j.kind === 'scaffold') figures = (s.objects_total||0) + ' pipelines';
-    const st = (j.status === 'done' ? badge('done','var(--green)') : j.status === 'failed' ? badge('failed','var(--red)') : badge(j.status,'var(--amber)'))
+    // runStatusChip, not a green `done` badge: this row and the Reports table
+    // describe the same runs and used to disagree about them.
+    const st = runStatusChip(j)
       + (j.autofix ? ' ' + badge('⚡ fixed','var(--accent)') : '');
     // Availability is decided by the SERVER (has_findings / has_download from
     // /api/jobs), not guessed from status. Only convert & govern jobs write a
@@ -5297,16 +5389,251 @@ async function fillModConnList() {
         const d = await api('/api/v1/connections/' + b.dataset.cid + '/introspect', {method:'POST', timeoutMs: 90000});
         if (!d.ok) throw new Error(d.error || 'analysis failed');
         const row = allConnections.find(x => x.id === b.dataset.cid);
-        await handoffToScaffold(
-          new File([d.manifest_yaml], row.connector + '_manifest.yml', {type:'text/yaml'}),
-          '<b>' + row.connector + '_manifest.yml</b> (' + d.readiness.tables
-            + ' tables from ' + esc(row.name) + ')',
-          row.connector);
+        // Do NOT hand the whole estate straight to Pipeline Studio: an
+        // introspection can return hundreds of tables across many schemas.
+        // Open the picker so the user scopes it down first; the handoff
+        // happens from there with a manifest filtered to the selection.
+        openModPicker(d, row);
       } catch (e) { mbAlert((e && e.message) || 'Could not analyze this system — check its connection under Integrations.'); }
       finally { b.disabled = false; b.textContent = label; }
     });
   } catch (e) { $('#modConnList').textContent = '—'; }
 }
+
+/* ---------------- live-connection schema / object picker ----------------
+   An introspection report covers the whole reachable estate. Modernizing all
+   of it is almost never what is wanted, so the report is held here and the
+   user narrows it: pick schemas, then pick the tables/views inside them. The
+   manifest handed to Pipeline Studio is sliced down to that selection.
+
+   The slice is done on the manifest TEXT rather than rebuilt from `tables`,
+   because `manifest_yaml` carries generated content the console must not
+   re-derive (column entries, declared unique_key, and the commented
+   incremental_column / unique_key suggestions). Dropping whole `- name:`
+   blocks keeps every one of those intact for the tables that survive. */
+let modPick = null;
+
+function modObjKey(o) { return o.schema + '.' + o.name; }
+
+function openModPicker(report, row) {
+  // Split tables from views exactly the way the engine's `base_tables` does
+  // ("VIEW" not in type) — an exact !== 'VIEW' test would let MATERIALIZED
+  // VIEW through as a table and list it twice, since it is already in `views`.
+  // Views have no manifest block (the manifest is table-only), but they are
+  // still part of what gets modernized downstream, so they are selectable and
+  // reported in the count — they simply do not filter any YAML.
+  const tables = (report.tables || [])
+    .filter(t => !String(t.type || '').toUpperCase().includes('VIEW'));
+  const views = report.views || [];
+  const objs = tables.map(t => ({schema: t.schema || '', name: t.name,
+                                 kind: 'table', rows: t.rows}))
+    .concat(views.map(v => ({schema: v.schema || '', name: v.name, kind: 'view'})));
+  const schemas = [...new Set(objs.map(o => o.schema))].sort();
+  modPick = {
+    report: report, row: row, objs: objs, schemas: schemas,
+    // Default to everything selected: the picker is a way to NARROW an
+    // analysis, so the no-interaction path must match the old behaviour.
+    schemaSel: new Set(schemas),
+    objSel: new Set(objs.map(modObjKey)),
+    activeSchema: schemas[0] || '',
+    filter: ''
+  };
+  $('#modPickTitle').textContent = 'Select what to modernize from ' + row.name;
+  $('#modManifestPanel').style.display = 'none';
+  $('#modPickPanel').style.display = '';
+  $('#modObjFilter').value = '';
+  renderModPicker();
+  $('#modPickPanel').scrollIntoView({behavior:'smooth', block:'nearest'});
+}
+
+function closeModPicker() {
+  modPick = null;
+  $('#modPickPanel').style.display = 'none';
+  $('#modManifestPanel').style.display = 'none';
+}
+
+/* Objects in the schemas currently ticked — the selection the manifest and
+   the count are both derived from. An object in an unticked schema is out of
+   scope even if its own box is still ticked, so unticking a schema hides its
+   objects without destroying the choices made inside it. */
+function modSelectedObjs() {
+  if (!modPick) return [];
+  return modPick.objs.filter(o => modPick.schemaSel.has(o.schema)
+                              && modPick.objSel.has(modObjKey(o)));
+}
+
+function renderModPicker() {
+  if (!modPick) return;
+  const sl = $('#modSchemaList');
+  sl.innerHTML = modPick.schemas.map(s => {
+    const n = modPick.objs.filter(o => o.schema === s).length;
+    const on = modPick.schemaSel.has(s);
+    const active = s === modPick.activeSchema;
+    return '<div data-schema="' + esc(s) + '" style="display:flex;gap:8px;'
+      + 'align-items:center;padding:6px 12px;cursor:pointer;font-size:12.5px;'
+      + (active ? 'background:#EEF4FF;font-weight:600' : '') + '">'
+      + '<input type="checkbox" data-schemabox="' + esc(s) + '"'
+      + (on ? ' checked' : '') + ' style="width:auto;margin:0">'
+      + '<span style="flex:1;overflow:hidden;text-overflow:ellipsis">'
+      + esc(s || '(default)') + '</span>'
+      + '<span style="color:var(--muted);font-size:11.5px">' + n + '</span></div>';
+  }).join('') || '<div style="padding:8px 12px;font-size:12px;color:var(--muted)">No schemas found</div>';
+
+  sl.querySelectorAll('[data-schema]').forEach(el => el.onclick = ev => {
+    if (ev.target.matches('[data-schemabox]')) return;   // the box has its own handler
+    modPick.activeSchema = el.dataset.schema;
+    renderModPicker();
+  });
+  sl.querySelectorAll('[data-schemabox]').forEach(cb => cb.onchange = () => {
+    const s = cb.dataset.schemabox;
+    if (cb.checked) modPick.schemaSel.add(s); else modPick.schemaSel.delete(s);
+    renderModPicker();
+  });
+
+  const q = (modPick.filter || '').toLowerCase();
+  const shown = modPick.objs.filter(o => o.schema === modPick.activeSchema
+    && (!q || o.name.toLowerCase().includes(q)));
+  const schemaOn = modPick.schemaSel.has(modPick.activeSchema);
+  $('#modObjList').innerHTML = shown.length
+    ? shown.map(o => {
+        const k = modObjKey(o);
+        return '<label style="display:flex;gap:8px;align-items:center;padding:5px 12px;'
+          + 'font-size:12.5px;cursor:pointer;text-transform:none;font-weight:400;margin:0'
+          + (schemaOn ? '' : ';opacity:.45') + '">'
+          + '<input type="checkbox" data-objbox="' + esc(k) + '"'
+          + (modPick.objSel.has(k) ? ' checked' : '')
+          + (schemaOn ? '' : ' disabled') + ' style="width:auto;margin:0">'
+          + '<span style="flex:1;overflow:hidden;text-overflow:ellipsis">' + esc(o.name) + '</span>'
+          + '<span style="color:var(--muted);font-size:11px">'
+          + (o.kind === 'view' ? 'view'
+             : (o.rows == null ? 'table' : Number(o.rows).toLocaleString() + ' rows'))
+          + '</span></label>';
+      }).join('')
+    : '<div style="padding:10px 12px;font-size:12px;color:var(--muted)">'
+      + (modPick.filter ? 'No objects match this filter.' : 'No objects in this schema.') + '</div>';
+
+  $('#modObjList').querySelectorAll('[data-objbox]').forEach(cb => cb.onchange = () => {
+    const k = cb.dataset.objbox;
+    if (cb.checked) modPick.objSel.add(k); else modPick.objSel.delete(k);
+    updateModPickCount();
+  });
+  updateModPickCount();
+}
+
+function updateModPickCount() {
+  const sel = modSelectedObjs();
+  const t = sel.filter(o => o.kind === 'table').length;
+  const v = sel.length - t;
+  $('#modPickCount').textContent = sel.length
+    ? t + ' table' + (t === 1 ? '' : 's')
+      + (v ? ' + ' + v + ' view' + (v === 1 ? '' : 's') : '')
+      + ' across ' + new Set(sel.map(o => o.schema)).size + ' schema'
+      + (new Set(sel.map(o => o.schema)).size === 1 ? '' : 's') + ' selected'
+    : 'Nothing selected';
+  $('#modPickNext').disabled = !sel.length;
+}
+
+/* Keep only the table blocks whose (schema, name) is selected.
+
+   Indentation alone cannot find the block boundaries: safe_dump emits a
+   table entry as `- name: X` at indent 2, and a COLUMN entry inside that
+   table's `columns:` list at the SAME indent 2 — so matching every
+   `- name:` line splits each table at its first column and truncates it.
+
+   The reliable discriminator is the key that follows: a table entry's next
+   key is always `schema:` (_manifest_entry writes name then schema), while a
+   column entry's is `type:`/`nullable:`. So a boundary is a `- name:` line
+   whose FOLLOWING line is a `schema:` at the matching depth. Everything up to
+   the next such boundary — columns, unique_key list items, and the generated
+   `# incremental_column:` / `# unique_key:` suggestion comments — stays with
+   the table it belongs to. Header comments before `tables:` pass through. */
+function filterManifestYaml(yml, keep) {
+  const lines = String(yml || '').split('\n');
+  const out = [];
+  let block = null, blockName = '', blockSchema = '';
+  const flush = () => {
+    if (block && keep(blockSchema, blockName)) out.push(...block);
+    block = null;
+  };
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const mo = line.match(/^(\s*)-\s+name:\s+(\S+)\s*$/);
+    const nx = mo && (lines[i + 1] || '')
+      .match(/^(\s*)schema:\s*(\S*)\s*$/);
+    // the `schema:` key sits one level in from the `- ` bullet: two extra
+    // columns for the dash and its space
+    if (mo && nx && nx[1].length === mo[1].length + 2) {
+      flush();
+      block = [line]; blockName = mo[2];
+      // a table with no schema is dumped as `schema: ''` — unquote it back to
+      // the empty string so it compares equal to the report's own value
+      blockSchema = (nx[2] || '').replace(/^(['"])(.*)\1$/, '$2');
+      continue;
+    }
+    if (block) block.push(line); else out.push(line);
+  }
+  flush();
+  return out.join('\n');
+}
+
+$('#modPickCancel').onclick = closeModPicker;
+$('#modManifestBack').onclick = () => {
+  $('#modManifestPanel').style.display = 'none';
+  $('#modPickPanel').style.display = '';
+};
+$('#modObjFilter').oninput = e => {
+  if (!modPick) return;
+  modPick.filter = e.target.value; renderModPicker();
+};
+$('#modObjAll').onclick = () => {
+  if (!modPick) return;
+  modPick.objs.filter(o => o.schema === modPick.activeSchema)
+    .forEach(o => modPick.objSel.add(modObjKey(o)));
+  renderModPicker();
+};
+$('#modObjNone').onclick = () => {
+  if (!modPick) return;
+  modPick.objs.filter(o => o.schema === modPick.activeSchema)
+    .forEach(o => modPick.objSel.delete(modObjKey(o)));
+  renderModPicker();
+};
+
+$('#modPickNext').onclick = () => {
+  if (!modPick) return;
+  const sel = modSelectedObjs();
+  if (!sel.length) return;
+  const keepSet = new Set(sel.filter(o => o.kind === 'table').map(modObjKey));
+  // The manifest's `schema:` is only emitted when introspection knew one; fall
+  // back to matching on the bare name so single-schema sources still filter.
+  const byName = new Set(sel.filter(o => o.kind === 'table').map(o => o.name));
+  const yml = filterManifestYaml(modPick.report.manifest_yaml || '',
+    (schema, name) => schema ? keepSet.has(schema + '.' + name) : byName.has(name));
+  modPick.yml = yml;
+  $('#modManifestPreview').innerHTML = manifestPreviewHtml(
+    yml, modPick.row.connector + '_manifest.yml');
+  $('#modPickPanel').style.display = 'none';
+  $('#modManifestPanel').style.display = '';
+  $('#modManifestPanel').scrollIntoView({behavior:'smooth', block:'nearest'});
+};
+
+$('#modManifestGo').onclick = async () => {
+  if (!modPick) return;
+  const row = modPick.row, sel = modSelectedObjs();
+  const nTables = sel.filter(o => o.kind === 'table').length;
+  // The preview is editable in place. Its container id keys the raw cache
+  // that "Edit Manifest in UI" writes back to, so read the YAML from THAT
+  // entry — hand edits (uncommenting an incremental_column, setting a
+  // unique_key) must survive the handoff, not be replaced by the pre-edit text.
+  const box = $('#modManifestPreview').querySelector('[id^="manifestBox_"]');
+  const cached = box && (window._manifestRawCache || {})[box.id];
+  const yml = (cached && cached.yml) || modPick.yml;
+  await handoffToScaffold(
+    new File([yml], row.connector + '_manifest.yml', {type:'text/yaml'}),
+    '<b>' + row.connector + '_manifest.yml</b> (' + nTables
+      + ' selected table' + (nTables === 1 ? '' : 's') + ' from ' + esc(row.name) + ')',
+    row.connector);
+  closeModPicker();
+};
 
 /* ---------------- marketplace ---------------- */
 let allConnectors = [], activeCat = '';
@@ -6249,8 +6576,15 @@ function esc(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').re
 function manifestStats(yml) {
   const lines = String(yml || '').split('\n');
   let tables = 0, keys = 0, suggested = 0, missingKey = 0, active = 0;
-  lines.forEach(l => {
-    if (/^\s*-\s+name:/.test(l)) tables++;
+  lines.forEach((l, i) => {
+    // A TABLE entry and a COLUMN entry are both `- name: X`, and safe_dump
+    // indents them identically — so `- name:` alone counted every column as a
+    // table (a 3-table manifest with 33 columns reported "36 tables"). The
+    // discriminator is the following key: _manifest_entry writes name then
+    // schema for a table, whereas a column is followed by type:/nullable:.
+    const mo = l.match(/^(\s*)-\s+name:/);
+    const nx = mo && (lines[i + 1] || '').match(/^(\s*)schema:/);
+    if (mo && nx && nx[1].length === mo[1].length + 2) tables++;
     else if (/^\s*#\s*incremental_column:/.test(l)) suggested++;
     else if (/^\s*#\s*unique_key:/.test(l)) missingKey++;
     else if (/^\s*unique_key:/.test(l)) keys++;
@@ -9063,12 +9397,12 @@ async function loadSystem() {
 
     const acts = ins.activity || [];
     $('#sysActivity').innerHTML = acts.length ? acts.map(j => {
-      const col = j.status === 'done' ? '#1e8449' : j.status === 'failed' ? '#c0392b' : '#c77d0a';
+      // Lifecycle state, not process state — this list describes the same runs
+      // as Overview and the Reports table and must not disagree with them.
       const dur = (j.seconds != null) ? (j.seconds < 60 ? j.seconds + 's' : Math.round(j.seconds / 60) + 'm') : '';
       return '<div class="sys-act-row" data-id="' + esc(j.id) + '" style="display:flex;gap:10px;align-items:center;padding:7px 0;border-bottom:1px solid #f0f2f6;cursor:pointer">'
-        + '<span style="width:8px;height:8px;border-radius:50%;background:' + col + ';flex:none"></span>'
         + '<span style="font-weight:600;font-size:12.5px;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(SYS_KIND_LABELS[j.kind] || j.kind) + '</span>'
-        + '<span style="font-size:11.5px;color:' + col + '">' + esc(j.status) + '</span>'
+        + '<span style="font-size:11.5px">' + runStatusChip(j) + '</span>'
         + (dur ? '<span style="font-size:11.5px;color:#98a0ad">' + dur + '</span>' : '')
         + '<span style="font-size:11.5px;color:#98a0ad;flex:none">' + esc(fmtAgo(j.created)) + '</span></div>';
     }).join('')
@@ -9577,7 +9911,9 @@ async function loadReports() {
       + 'title="Open job detail" style="color:var(--accent);cursor:pointer;font-family:monospace;font-size:12px">'
       + esc(j.id) + '</a></td>'
     + '<td>' + esc((j.created || '').replace('T', ' ')) + '</td>'
-    + '<td>' + statChip(j.status === 'done' ? 'GENERATED' : j.status === 'failed' ? 'FAILED' : 'MODERNIZING') + '</td>'
+    // Was hardcoded done -> GENERATED, so a run that actually PASSED validation
+    // still read "Generated" here while the modernization table read "Passed".
+    + '<td>' + runStatusChip(j) + '</td>'
     + '<td>' + (j.status === 'done'
       ? '<a class="jobopen" data-id="' + esc(j.id) + '" style="color:var(--accent);cursor:pointer">View</a> · '
         + '<a href="' + withKey('/api/jobs/' + j.id + '/download') + '" style="color:var(--accent)">Export</a>' : '') + '</td></tr>');

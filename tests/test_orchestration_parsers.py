@@ -155,3 +155,101 @@ def test_legacy_bridge_preserves_failure_paths():
     by = {t.key: t for t in wf.tasks}
     assert by["DFT_LoadSales"].type == "mapping"
     assert by["NotifyFailure"].type == "email"
+
+
+# --- dependency, schedule and loss-declaration regressions ---------------
+
+def test_idmc_step_with_explicit_next_keeps_its_predecessor():
+    """O1/O2/O3: one `prev` cursor drove both the incoming fallback and
+    the declared successor, so a step declaring `next` lost its
+    predecessor, its successor's edge was emitted twice, and the
+    onFailure handler was chained in as a sequential step."""
+    wf = parse_orchestration(str(ORCH / "idmc_taskflow")).workflows[0]
+    edges = [(d.from_task, d.to_task, d.kind) for d in wf.dependencies]
+    assert edges.count(("check_volume", "m_load_customers",
+                        "success")) == 1              # no duplicate
+    assert ("m_load_orders", "check_volume", "success") in edges
+    assert ("m_load_orders", "notify_fail", "failure") in edges
+    # the handler must not be a sequential successor of the last step
+    assert ("m_load_customers", "notify_fail", "success") not in edges
+    assert len(edges) == 3
+    # and nothing may be left unreachable by the fix
+    reachable = {"m_load_orders"} | {b for _a, b, _k in edges}
+    assert {t.key for t in wf.tasks} <= reachable
+
+
+def test_interval_schedule_keeps_its_start_time():
+    """O5: _cron_of hardcoded midnight and never read Schedule.start_date,
+    which the parser populates — every interval workflow moved to 00:00."""
+    from metabridge.orchestration.generators import _cron_of
+    wf = parse_orchestration(str(ORCH / "adf")).workflow("pl_daily_sales")
+    s = wf.schedules[0]
+    assert s.start_date == "2024-01-01T03:00:00Z"      # parser was fine
+    assert _cron_of(wf) == "0 3 * * *"                 # generator was not
+
+
+def test_aws_cron_is_translated_to_posix():
+    """O6: Glue's cron(0 2 * * ? *) went into Airflow verbatim — six
+    fields and a '?', neither of which POSIX cron accepts."""
+    from metabridge.orchestration.cor import cron_to_posix
+    from metabridge.orchestration.generators import _cron_of
+    wf = parse_orchestration(str(ORCH / "glue")).workflows[0]
+    assert _cron_of(wf) == "0 2 * * *"
+    assert len(_cron_of(wf).split()) == 5 and "?" not in _cron_of(wf)
+    # a seconds-first Quartz form must be left alone, not mis-trimmed
+    assert cron_to_posix("0 0 2 * * ?") == "0 0 2 * * ?"
+
+
+def test_stepfunctions_branches_are_all_reachable():
+    """O7: every Choice rule carried the identical predicate, and ASL is
+    first-match-wins, so only the first branch could ever run."""
+    from metabridge.orchestration.generators import generate_stepfunctions
+    wf = parse_orchestration(str(ORCH / "adf")).workflow("pl_daily_sales")
+    choice = generate_stepfunctions(wf)["States"]["If_Has_Rows"]
+    preds = [(c["Variable"], c["StringEquals"]) for c in choice["Choices"]]
+    assert len(set(preds)) == len(preds) > 1           # all distinct
+    assert [c["Next"] for c in choice["Choices"]] == \
+        [c["StringEquals"] for c in choice["Choices"]]
+    assert "PLACEHOLDER" in choice["_metabridge_note"]
+    # the source expression must still be recoverable
+    assert all(c["_metabridge_condition"] for c in choice["Choices"])
+
+
+def test_generation_declares_what_it_could_not_express():
+    """O8: the module promises 'declared loss, never silent loss', but the
+    manifest reported only files and workflow names."""
+    import tempfile
+    from metabridge.orchestration.generators import generate_orchestration
+    cor = parse_orchestration(str(ORCH / "adf"))
+    with tempfile.TemporaryDirectory() as d:
+        m = generate_orchestration(cor, "autosys", d)
+        notes = (Path(d) / "_metabridge_generation_notes.md").read_text(
+            encoding="utf-8")
+    codes = {e["code"] for e in m["unemitted"]}
+    assert {"CHOICE_NOT_EXPRESSIBLE", "LOOP_NOT_EXPRESSIBLE",
+            "CONDITION_NOT_ENFORCED"} <= codes
+    assert "If_Has_Rows" in notes
+    # a target with native branching reports the weaker placeholder code
+    with tempfile.TemporaryDirectory() as d:
+        sf = generate_orchestration(cor, "stepfunctions", d)
+    assert "BRANCH_PREDICATE_PLACEHOLDER" in {e["code"]
+                                              for e in sf["unemitted"]}
+
+
+@pytest.mark.parametrize("target,enforces", [
+    ("adf", True), ("fabric", True), ("stepfunctions", True),
+    ("controlm", False), ("powercenter", False), ("autosys", False),
+    ("airflow", False), ("dbtcloud", False)])
+def test_targets_without_a_real_predicate_declare_the_branch_loss(target,
+                                                                  enforces):
+    """Control-M gives both branch children the same eventsToWaitFor and
+    PowerCenter gives both TASKLINKs no condition — branch-shaped output
+    with no predicate, so both branches run. Grouping them with targets
+    that do carry an expression suppressed exactly this warning."""
+    import tempfile
+    from metabridge.orchestration.generators import generate_orchestration
+    cor = parse_orchestration(str(ORCH / "adf"))
+    with tempfile.TemporaryDirectory() as d:
+        codes = {e["code"]
+                 for e in generate_orchestration(cor, target, d)["unemitted"]}
+    assert ("CONDITION_NOT_ENFORCED" in codes) is not enforces

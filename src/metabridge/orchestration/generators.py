@@ -24,7 +24,7 @@ import json
 import re
 from typing import Dict, List, Optional
 
-from .cor import COR, Task, Workflow, normalize_cron
+from .cor import COR, Task, Workflow, cron_to_posix, normalize_cron
 from .graph import to_mermaid
 
 ORCH_TARGETS = ("airflow", "adf", "fabric", "stepfunctions", "controlm",
@@ -37,16 +37,102 @@ def _pyid(s: str) -> str:
     return ("t_" + s) if s[0].isdigit() else s
 
 
+# Semantics no target can express, by source task type. The module has
+# always promised "declared loss, never silent loss", but nothing
+# collected it: the manifest reported files and workflow names only, so a
+# run that flattened every branch looked identical to a clean one.
+_LOSSY_TYPES = {
+    "choice": "branch predicate is not translated — every branch is "
+              "emitted as an unconditional successor unless the target "
+              "has native choice support",
+    "loop": "loop/iterator is emitted as a single task — the source "
+            "iterated over a collection",
+    "parallel": "parallel container is flattened; concurrency limits "
+                "from the source are not enforced",
+    "approval": "manual approval gate has no automated equivalent",
+    "unknown": "source task type was not recognised and is emitted as a "
+               "placeholder command",
+}
+
+
+def loss_report(wf: Workflow, target: str) -> List[dict]:
+    """What `target` could not express about `wf`, as structured entries.
+
+    Deliberately derived from the COR rather than recorded by each
+    generator: a per-generator hook would only report the losses someone
+    remembered to annotate, which is how these went unnoticed.
+    """
+    out: List[dict] = []
+    # How much of a branch each target actually keeps. Control-M and
+    # PowerCenter emit a branch-shaped node but NO predicate — Control-M
+    # gives both children the same eventsToWaitFor, PowerCenter gives both
+    # TASKLINKs no condition — so both branches run. Grouping them with
+    # the targets that do carry an expression suppressed the very warning
+    # this report exists to raise.
+    branch_support = {
+        "adf": "expression", "fabric": "expression",
+        "stepfunctions": "placeholder",
+    }.get(target, "none")
+    for t in wf.tasks:
+        if t.type not in _LOSSY_TYPES:
+            continue
+        if t.type == "choice" and branch_support != "none":
+            out.append({"kind": "task", "name": t.key, "code":
+                        "BRANCH_PREDICATE_PLACEHOLDER"
+                        if branch_support == "placeholder"
+                        else "BRANCH_CHILDREN_NOT_NESTED",
+                        "detail": "%s emits a native branch node, but %s"
+                                  % (target,
+                                     "the predicate is a placeholder the "
+                                     "source expression is kept beside"
+                                     if branch_support == "placeholder"
+                                     else "the branch children are "
+                                          "emitted as siblings rather "
+                                          "than nested under it")})
+            continue
+        out.append({"kind": "task", "name": t.key,
+                    "code": t.type.upper() + "_NOT_EXPRESSIBLE",
+                    "detail": _LOSSY_TYPES[t.type]})
+    for d in wf.dependencies:
+        if d.kind == "conditional" and d.condition and \
+                branch_support == "none":
+            out.append({"kind": "dependency",
+                        "name": "%s -> %s" % (d.from_task, d.to_task),
+                        "code": "CONDITION_NOT_ENFORCED",
+                        "detail": "runs only when [%s] in the source; the "
+                                  "target cannot express this, so it runs "
+                                  "on every upstream success"
+                                  % d.condition[:160]})
+    return out
+
+
+def _phase_of(s) -> tuple:
+    """The hour and minute an interval schedule actually starts at.
+
+    An interval carries a start time as well as a period: ADF's daily
+    trigger at 03:00Z is not the same schedule as one at midnight. The
+    parser records it in `start_date`; ignoring it here silently moved
+    every interval-scheduled workflow to 00:00.
+    """
+    m = re.search(r"T(\d{2}):(\d{2})", s.start_date or "")
+    return (int(m.group(2)), int(m.group(1))) if m else (0, 0)
+
+
 def _cron_of(wf: Workflow) -> str:
     for s in wf.schedules:
         if s.kind == "cron" and s.cron:
-            return normalize_cron(s.cron)
+            # the source dialect may be Quartz/AWS; POSIX targets cannot
+            # read a six-field expression or a '?' field
+            return cron_to_posix(s.cron)
         if s.kind == "interval" and s.interval_seconds:
+            mi, hr = _phase_of(s)
             if s.interval_seconds % 86400 == 0:
-                return "0 0 */%d * *" % max(1, s.interval_seconds // 86400) \
-                    if s.interval_seconds > 86400 else "0 0 * * *"
+                return "%d %d */%d * *" % (
+                    mi, hr, max(1, s.interval_seconds // 86400)) \
+                    if s.interval_seconds > 86400 else "%d %d * * *" % (mi, hr)
             if s.interval_seconds % 3600 == 0:
-                return "0 */%d * * *" % max(1, s.interval_seconds // 3600)
+                return "%d */%d * * *" % (
+                    mi, max(1, s.interval_seconds // 3600))
             return "*/%d * * * *" % max(1, s.interval_seconds // 60)
     return ""
 
@@ -283,8 +369,15 @@ def generate_stepfunctions(wf: Workflow) -> dict:
             choices, default = [], None
             for d in succ.get(t.key, []):
                 if d.kind == "conditional" and d.condition != "default":
-                    choices.append({"Variable": "$.condition",
-                                    "IsPresent": True,
+                    # Every rule used to carry the SAME predicate
+                    # ($.condition IsPresent), and ASL takes the first
+                    # match — so only the first branch was ever
+                    # reachable and the rest were dead code in output
+                    # that looked complete. Route on a distinct value
+                    # per branch instead: still a placeholder, but an
+                    # honest one that every branch can reach.
+                    choices.append({"Variable": "$.metabridge_branch",
+                                    "StringEquals": d.to_task,
                                     "Next": d.to_task,
                                     "_metabridge_condition":
                                         d.condition[:200]})
@@ -295,6 +388,12 @@ def generate_stepfunctions(wf: Workflow) -> dict:
                     "Next": default or "Done_%s" % wf.name}]}
             if default:
                 st["Default"] = default
+            if choices:
+                st["_metabridge_note"] = (
+                    "branch predicates are PLACEHOLDERS — set "
+                    "$.metabridge_branch upstream to the next state's "
+                    "name, or translate the source expression kept in "
+                    "each rule's _metabridge_condition")
         elif t.type == "wait":
             st = {"Type": "Wait",
                   "Seconds": int(t.action.get("seconds", 60) or 60)}
@@ -398,14 +497,24 @@ def generate_autosys(wf: Workflow) -> str:
                   or t.action.get("mapping", "")
                   or "echo TODO_%s" % t.key)
         lines.append("command: %s" % cmd[:200])
-        conds = []
+        conds, branch_notes = [], []
         for d in wf.dependencies:
             if d.to_task == t.key:
                 fn = "f" if d.kind == "failure" else \
                     "d" if d.kind == "always" else "s"
                 conds.append("%s(%s)" % (fn, _pyid(d.from_task).upper()))
+                if d.kind == "conditional" and d.condition:
+                    branch_notes.append(d.condition[:160])
         if conds:
             lines.append("condition: %s" % " & ".join(conds))
+        # JIL has no branch predicate, so mutually exclusive branches all
+        # became plain s(<upstream>) and every one of them ran. The
+        # condition text used to be discarded here entirely, leaving no
+        # way to reconstruct which branch was meant to fire.
+        for c in branch_notes:
+            lines.append("/* MANUAL: runs only when — %s — JIL cannot "
+                         "express this predicate, so this job currently "
+                         "runs on every upstream success */" % c)
         if t.retry.max_attempts:
             lines.append("n_retrys: %d" % t.retry.max_attempts)
         if t.timeout_seconds:
@@ -663,5 +772,17 @@ def generate_orchestration(cor: COR, target: str, out_dir: str) -> dict:
         else:
             raise ValueError("Unknown orchestration target: %s (one of %s)"
                              % (target, ", ".join(ORCH_TARGETS)))
+    unemitted = [dict(e, workflow=wf.name)
+                 for wf in cor.workflows
+                 for e in loss_report(wf, target)]
+    if unemitted:
+        w("_metabridge_generation_notes.md", "\n".join(
+            ["# Generation notes — %s" % target, "",
+             "What the source expressed and this target could not. Each "
+             "entry needs a human decision before cutover.", ""]
+            + ["- **%s** `%s` (%s) — %s" % (e["code"], e["name"],
+                                            e["workflow"], e["detail"])
+               for e in unemitted]) + "\n")
     return {"target": target, "files": written,
-            "workflows": [wf.name for wf in cor.workflows]}
+            "workflows": [wf.name for wf in cor.workflows],
+            "unemitted": unemitted}

@@ -3449,6 +3449,12 @@ def system_insights(request: Request):
         entry = {"id": j.get("id", ""), "kind": j.get("kind", ""),
                  "status": j.get("status", ""),
                  "created": j.get("created", "")}
+        # The console derives a run's LIFECYCLE state from its validation
+        # verdict, not from whether the process exited. Without the verdict this
+        # list could only say "done", which reads as success for a run nothing
+        # has validated — the one thing the status vocabulary exists to prevent.
+        if j.get("migration_validation"):
+            entry["migration_validation"] = j["migration_validation"]
         try:
             a = datetime.datetime.fromisoformat(j["created"])
             b = datetime.datetime.fromisoformat(j["finished"])

@@ -3,7 +3,7 @@
   "configurations": [
     {
       "name": "metabridge-web",
-      "runtimeExecutable": ".venv/bin/python",
+      "runtimeExecutable": ".venv/Scripts/python.exe",
       "runtimeArgs": [
         "-m",
         "uvicorn",
