@@ -30,6 +30,8 @@ import time
 from pathlib import Path
 from typing import Dict, List, Optional
 
+import yaml
+
 
 # Connectors that have a REAL, live driver in this build. Snowflake,
 # Databricks and Oracle each use their native driver; PostgreSQL and Amazon
@@ -511,6 +513,10 @@ def _with_body(obj: dict, raw: object, where: str) -> dict:
                          "evidence": "body withheld — secret scan "
                                      "unavailable"}]
     obj["definition"] = text[:_MAX_BODY]
+    # A cut body converts PARTIALLY — the statements past the cut are simply
+    # not there. Silence would present that as a complete conversion.
+    if len(text) > _MAX_BODY:
+        obj["definition_truncated"] = True
     if findings:
         obj["secret_findings"] = findings
     return obj
@@ -667,18 +673,87 @@ def _manifest_entry(table: dict, database: str,
     return entry
 
 
+# How many procedure bodies travel in one manifest. The introspect itself
+# caps object COUNTS at _MAX_OBJECTS; this is about the file a human opens and
+# uploads, where several hundred PL/SQL bodies stop being reviewable.
+_MAX_MANIFEST_PROCEDURES = 100
+
+
+class _ManifestDumper(yaml.SafeDumper):
+    """Emits multi-line strings as block scalars.
+
+    A procedure body is the one field in this file a human actually reads, and
+    an escaped "\\n  BEGIN\\n  INSERT..." one-liner is not reading material.
+    PyYAML falls back to a quoted style on its own for anything a block cannot
+    represent, so this never writes YAML it could not load back.
+    """
+
+
+def _represent_str(dumper, data):
+    style = "|" if "\n" in data else None
+    return dumper.represent_scalar("tag:yaml.org,2002:str", data, style=style)
+
+
+_ManifestDumper.add_representer(str, _represent_str)
+
+
+def _procedures_yaml(procedures: List[dict]) -> str:
+    """The manifest's `procedures:` section.
+
+    The bodies travel WITH the tables they read. Without them a scaffold gets
+    the raw layer and none of the logic that builds the curated one — a dbt
+    project of pass-through models, and the transformation left behind in the
+    source system.
+    """
+    rows: List[dict] = []
+    for obj in procedures[:_MAX_MANIFEST_PROCEDURES]:
+        entry: Dict[str, object] = {"name": obj.get("name", "")}
+        for key in ("schema", "language", "kind"):
+            if obj.get(key):
+                entry[key] = obj[key]
+        if obj.get("definition_truncated"):
+            entry["definition_truncated"] = True
+        # \r would force PyYAML off block style; the body's own line breaks
+        # are what makes it readable
+        body = str(obj.get("definition") or "").replace("\r\n", "\n") \
+            .replace("\r", "\n")
+        if body.strip():
+            entry["definition"] = body
+        rows.append(entry)
+    if not rows:
+        return ""
+    head = ("\n# Stored-procedure logic read from the source catalog. The "
+            "scaffold converts\n# the set-based statements in these bodies "
+            "(INSERT..SELECT / MERGE / CTAS) into\n# transformation models; "
+            "cursors, dynamic SQL and control flow are reported for\n# review "
+            "instead of being faked. Delete an entry to leave it out.\n")
+    if len(procedures) > _MAX_MANIFEST_PROCEDURES:
+        head += ("# NOTE: %d of %d carried — the rest were left out to keep "
+                 "this file reviewable.\n"
+                 % (_MAX_MANIFEST_PROCEDURES, len(procedures)))
+    body_yaml = yaml.dump({"procedures": rows}, Dumper=_ManifestDumper,
+                          sort_keys=False, width=100, allow_unicode=True,
+                          default_flow_style=False)
+    return head + body_yaml
+
+
 def _manifest_yaml(base_tables: List[dict], database: str,
-                   pks: Optional[Dict[tuple, List[str]]] = None) -> str:
+                   pks: Optional[Dict[tuple, List[str]]] = None,
+                   procedures: Optional[List[dict]] = None) -> str:
     """Scaffold-ready manifest YAML.
 
     Inferred watermarks are appended as commented `incremental_column:` lines
     under their table, so the manifest runs as-is (full reload — always
     correct, just expensive) and becomes incremental the moment a human
     uncomments a line they have verified.
+
+    `procedures` carries the curated layer's LOGIC alongside the tables — the
+    handoff to the scaffold is this one file, so anything not in it is left
+    behind.
     """
-    import yaml as _yaml
     doc = {"tables": [_manifest_entry(t, database, pks) for t in base_tables]}
-    text = _yaml.safe_dump(doc, sort_keys=False, width=100)
+    text = yaml.safe_dump(doc, sort_keys=False, width=100)
+    procs_yaml = _procedures_yaml(procedures or [])
 
     suggestions: Dict[str, List[str]] = {}
     missing_key: List[str] = []
@@ -689,7 +764,7 @@ def _manifest_yaml(base_tables: List[dict], database: str,
         if not (pks or {}).get((t["schema"], t["name"])):
             missing_key.append(t["name"])
     if not suggestions and not missing_key:
-        return text
+        return text + procs_yaml
 
     # Re-emit line by line. A table's comments are held until the NEXT table
     # starts (or EOF) and inserted BEFORE that line, so they close the block
@@ -699,7 +774,12 @@ def _manifest_yaml(base_tables: List[dict], database: str,
 
     for line in text.splitlines():
         mo = re.match(r"^(\s*)-\s+name:\s+(\S+)\s*$", line)
-        if mo and len(mo.group(1)) <= 2:       # top-level table entry under `tables:`
+        # ONLY a top-level table entry under `tables:`, which safe_dump writes
+        # unindented. A column is `  - name: ID` — two spaces — and treating
+        # that as a table boundary flushed the suggestions INTO the columns
+        # list, where uncommenting one (which the header tells the reader to
+        # do) is a YAML syntax error rather than a MERGE load.
+        if mo and not mo.group(1):
             out.extend(pending)
             pending = []
             pad, tname = "  ", mo.group(2)
@@ -720,7 +800,7 @@ def _manifest_yaml(base_tables: List[dict], database: str,
               "get MERGE\n"
               "# loads - until then every table is a FULL reload on every "
               "run.\n")
-    return header + "\n".join(out) + "\n"
+    return header + "\n".join(out) + "\n" + procs_yaml
 
 
 def _at(row, i: int, default: str = "") -> str:
@@ -1315,7 +1395,8 @@ def _databricks_introspect(params: Dict[str, str],
         "constraints": constraints,
         "secret_findings": secret_findings,
         "readiness": readiness,
-        "manifest_yaml": _manifest_yaml(base_tables, catalog, primary_keys),
+        "manifest_yaml": _manifest_yaml(base_tables, catalog, primary_keys,
+                                        objects.get("procedures")),
         **objects,
     }
 
@@ -1940,7 +2021,8 @@ def _sqldb_introspect(key: str, params: Dict[str, str],
             "verdict": "READY" if base_tables or convertible else
                        "NOTHING_TO_CONVERT",
         },
-        "manifest_yaml": _manifest_yaml(base_tables, database, primary_keys),
+        "manifest_yaml": _manifest_yaml(base_tables, database, primary_keys,
+                                        procedures),
     }
 
 
@@ -1970,6 +2052,22 @@ _ORACLE_SYSTEM_SCHEMAS = (
     "ANONYMOUS", "DIP", "ORACLE_OCM", "SYSBACKUP", "SYSDG", "SYSKM", "SYSRAC",
     "SYS$UMF", "GGSYS", "REMOTE_SCHEDULER_AGENT", "OJVMSYS", "DBSFWUSER",
     "GSMCATUSER", "GSMUSER", "PDBADMIN", "FLOWS_FILES", "RDSADMIN",
+    # Feature and option schemas an install creates. VECSYS is what turned
+    # this list from a nuisance into a wrong ANSWER: a stock 23ai database
+    # puts 13 AI Vector Search tables there, so a five-table estate reported
+    # 18 objects, generated 26 staging models for Oracle's own index
+    # metadata, and quoted a 5.3% conversion rate against work nobody asked
+    # for. The criterion for this list is "Oracle installs it", never "it
+    # looks internal" — hiding a schema someone actually built would be the
+    # far worse failure.
+    "VECSYS",                                   # 23ai AI Vector Search
+    "SYSMAN", "MGMT_VIEW",                      # Enterprise Manager
+    "ORDS_METADATA", "ORDS_PUBLIC_USER",        # REST Data Services
+    "EXFSYS", "WKSYS", "WK_TEST", "WKPROXY",    # Expression Filter, UltraSearch
+    "OWBSYS", "OWBSYS_AUDIT",                   # Warehouse Builder
+    "DMSYS", "ODM", "ODM_MTR",                  # Data Mining
+    "MDDATA", "SPATIAL_CSW_ADMIN_USR", "SPATIAL_WFS_ADMIN_USR",   # Spatial
+    "TSMSYS", "MGDSYS", "PERFSTAT", "XS$NULL",
 )
 
 # Table NAMES Oracle generates for its own machinery. No catalog flag marks
@@ -1982,6 +2080,19 @@ _ORACLE_SYSTEM_SCHEMAS = (
 # single-character wildcard, and `AQ$_%` would need an ESCAPE clause to mean
 # what it looks like it means).
 _ORACLE_INTERNAL_TABLES = (
+    # `$` is the marker ORACLE ITSELF reserves for generated object names, so
+    # this one pattern outlives the list below it — it catches the next
+    # release's feature tables without waiting for their schema to be added
+    # to _ORACLE_SYSTEM_SCHEMAS. It is what 23ai's VECTOR$INDEX,
+    # HNSW_IND_STATS$ and DV_HITCOUNTS$ have in common, and it holds when
+    # those tables live under a schema the scan IS scoped to.
+    #
+    # The trade: a hand-built table with `$` in its name is excluded too.
+    # That name needs quoting in every target dialect and is vanishingly rare
+    # in an application schema, which is why Oracle chose the character.
+    "%$%",
+    # Kept for the record — each is already covered by `%$%` or names what it
+    # excludes more precisely than a wildcard could.
     "AQ$%",             # Advanced Queuing: subscriber, history, index tables
     "MLOG$%",           # materialized view logs
     "RUPD$%",           # updatable materialized view logs
@@ -2110,7 +2221,7 @@ def _oracle_context(cur) -> dict:
     inventory."""
     ctx = {"user": "", "current_role": "", "database": "", "schema": "",
            "version": "", "account": "", "warehouse": "", "edition": "n/a",
-           "available_roles": []}
+           "database_label": "", "available_roles": []}
     try:
         cur.execute("SELECT SYS_CONTEXT('USERENV', 'SESSION_USER'), "
                     "SYS_CONTEXT('USERENV', 'CURRENT_SCHEMA'), "
@@ -2124,7 +2235,15 @@ def _oracle_context(cur) -> dict:
         ctx["schema"] = _at(r, 1)
         # CON_NAME is the pluggable database and is what the user connected
         # to; it is empty on a non-CDB, where DB_NAME is the whole story.
-        ctx["database"] = _at(r, 3) or _at(r, 2)
+        con_name = _at(r, 3)
+        ctx["database"] = con_name or _at(r, 2)
+        # ...and it is NOT the "database" other engines mean. On Oracle the
+        # namespace that holds a set of tables is a SCHEMA (a user); this name
+        # is the container the session is inside, and it is the service you
+        # dial, never a name you picked for your data. Calling it "database"
+        # flat is what produces "but my database is called <their schema>".
+        if con_name:
+            ctx["database_label"] = "pluggable database"
     except Exception:  # noqa: BLE001
         pass
     try:
@@ -2805,7 +2924,12 @@ def _oracle_introspect(params: Dict[str, str],
         "view_definitions": {v["name"]: v["definition"] for v in views},
         "secret_findings": secret_findings,
         "readiness": readiness,
-        "manifest_yaml": _manifest_yaml(base_tables, database, primary_keys),
+        # Oracle keeps its ETL in packages as often as in standalone
+        # procedures, and both carry the same set-based statements.
+        "manifest_yaml": _manifest_yaml(
+            base_tables, database, primary_keys,
+            list(objects.get("procedures") or [])
+            + list(objects.get("packages") or [])),
         **objects,
     }
 
@@ -3360,7 +3484,7 @@ def _teradata_introspect(params: Dict[str, str],
             "verdict": "READY" if base_tables or convertible else
                        "NOTHING_TO_CONVERT",
         },
-        "manifest_yaml": _manifest_yaml(base_tables, "", pks),
+        "manifest_yaml": _manifest_yaml(base_tables, "", pks, procedures),
     }
 
 
@@ -3840,7 +3964,7 @@ def _hana_introspect(params: Dict[str, str],
             "verdict": "READY" if base_tables or convertible else
                        "NOTHING_TO_CONVERT",
         },
-        "manifest_yaml": _manifest_yaml(base_tables, "", pks),
+        "manifest_yaml": _manifest_yaml(base_tables, "", pks, procedures),
     }
 
 
@@ -4462,6 +4586,7 @@ def introspect(key: str, params: Dict[str, str],
         "task_dag": _build_task_dag(objects.get("tasks", [])),
         "secret_findings": secret_findings,
         "readiness": readiness,
-        "manifest_yaml": _manifest_yaml(base_tables, database, primary_keys),
+        "manifest_yaml": _manifest_yaml(base_tables, database, primary_keys,
+                                        objects.get("procedures")),
         **objects,
     }

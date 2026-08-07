@@ -401,6 +401,9 @@ def _create_table(src: SourceTable, dialect: str, hint: dict,
 # on purpose: it resolves against wherever psql was launched, needs no
 # privileges, and is obvious to clean up.
 _PG_LOCAL_EXPORT_DIR = "./mb_export"
+# SQLcl spools to a FILE, never to a bucket, so an Oracle export always lands
+# locally first and is uploaded afterwards.
+_ORACLE_LOCAL_EXPORT_DIR = "./mb_export"
 
 
 def _hana_object_uri(uri: str, region: str = "") -> str:
@@ -529,6 +532,65 @@ def _unload(spec: Optional[ConnectorSpec], dialect: str,
         body = ["COPY INTO %s/%s/\n  FROM %s\n  "
                 "HEADER = TRUE OVERWRITE = TRUE;"
                 % (stage_ref, t.name.lower(), fq(t)) for t in tables]
+    elif dialect == "oracle":
+        # Oracle has no single bulk-export statement, and the two paths it
+        # does have are not interchangeable:
+        #
+        #   DBMS_CLOUD.EXPORT_DATA  writes Parquet straight to object storage,
+        #                           but ships only on Autonomous Database
+        #   SQLcl SET SQLFORMAT csv works on EVERY edition including Free/XE,
+        #                           and produces CSV
+        #
+        # Data Pump (expdp) is the usual Oracle answer and is useless here: a
+        # .dmp is a proprietary format no cloud warehouse can COPY from.
+        #
+        # SQLcl is generated because it runs everywhere; the Autonomous form
+        # rides along as a comment for estates that have it. The load side
+        # follows this choice — see _source_writes_csv.
+        head += [
+            "-- Oracle has no single bulk-export statement. This is the SQLcl",
+            "-- form, which works on every edition (including Free/XE).",
+            "-- Run with `sql` (SQLcl), NOT sqlplus — sqlplus has no",
+            "-- SET SQLFORMAT csv.",
+            "--",
+            "-- Data Pump (expdp) is NOT used: a .dmp file is proprietary and",
+            "-- no cloud warehouse can load one.",
+            "--",
+            "-- On Autonomous Database, prefer Parquet straight to object",
+            "-- storage (and set the load side to PARQUET to match):",
+            "--   BEGIN DBMS_CLOUD.EXPORT_DATA(",
+            "--     credential_name => '<credential>',",
+            "--     file_uri_list   => '%s/<table>/'," % uri,
+            "--     format          => JSON_OBJECT('type' VALUE 'parquet'),",
+            "--     query           => 'SELECT * FROM <schema>.<table>');",
+            "--   END;",
+            "--   /",
+            "",
+            "SET SQLFORMAT csv",
+            "SET FEEDBACK OFF",
+            "SET HEADING ON",
+            "SET TERMOUT OFF",
+            "",
+        ]
+        # One file per table, in its own folder: step 3 loads FROM
+        # '<uri>/<table>/' as a PREFIX, so a file written beside that prefix
+        # rather than inside it is invisible to the load.
+        local = _ORACLE_LOCAL_EXPORT_DIR
+        body = []
+        for t in tables:
+            low = t.name.lower()
+            # SCHEMA.TABLE, never fq(): on Oracle the PDB is the CONNECTION,
+            # not a name part. `FREEPDB1.RAW_SCHEMA.ORDERS` does not address
+            # the table — Oracle reads it as schema FREEPDB1, table
+            # RAW_SCHEMA, column ORDERS, and every line fails ORA-00942.
+            body.append("SPOOL %s/%s/%s.csv\nSELECT * FROM %s;\nSPOOL OFF"
+                        % (local, low, low,
+                           _qualified("oracle", t.schema, t.name)))
+        head += ["-- Written locally first, then uploaded — SQLcl spools to a",
+                 "-- file, not to a bucket. Create the folders, run this, then:",
+                 "--   aws s3 cp %s %s/ --recursive --exclude '*' "
+                 "--include '*.csv'" % (local, uri),
+                 ""]
     elif dialect == "bigquery":
         body = ["EXPORT DATA OPTIONS(uri='%s/%s/*.parquet',\n"
                 "  format='PARQUET', overwrite=true) AS\n"
@@ -607,16 +669,20 @@ def _unload(spec: Optional[ConnectorSpec], dialect: str,
 def _source_writes_csv(source: Optional[ConnectorSpec]) -> bool:
     """Whether step 2 produced CSV rather than Parquet.
 
-    Both entries are facts about what _unload() actually emits, not
-    preferences: SAP HANA's EXPORT INTO has no Parquet form, and
-    PostgreSQL's `\\copy ... WITH (FORMAT csv)` is CSV by construction. A
-    load that reads Parquet from either fails on the first row.
+    Every entry is a fact about what _unload() actually emits, not a
+    preference: SAP HANA's EXPORT INTO has no Parquet form, PostgreSQL's
+    `\\copy ... WITH (FORMAT csv)` is CSV by construction, and Oracle's only
+    export path available on every edition is SQLcl's `SET SQLFORMAT csv`
+    (DBMS_CLOUD.EXPORT_DATA writes Parquet but ships only on Autonomous, so
+    it cannot be the generated default). A load that reads Parquet from any
+    of them fails on the first row.
 
     Everything else here unloads Parquet, so the default stays Parquet —
     which is also the better format when a source can produce it, since it
     carries its own types instead of re-inferring them at load time.
     """
-    return source is not None and source.key in ("sap_hana", "postgres")
+    return source is not None and source.key in ("sap_hana", "postgres",
+                                                 "oracle")
 
 
 def _load(spec: Optional[ConnectorSpec], dialect: str,

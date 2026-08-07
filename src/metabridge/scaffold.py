@@ -18,6 +18,20 @@ Table manifest format:
         columns:                  # optional but recommended
           - {name: MATNR, type: nvarchar(18)}
           - {name: AEDAT, type: dats}
+
+    procedures:                   # optional — the curated layer's LOGIC
+      - name: LOAD_MATERIAL_DIM
+        schema: SILVER
+        language: PL/SQL
+        definition: |
+          PROCEDURE load_material_dim IS
+          BEGIN
+            INSERT INTO material_dim (...) SELECT ... FROM mara ...;
+          END;
+
+Tables alone produce a landing layer: every model a `select` over its source.
+The `procedures:` section is what carries the transformation — its set-based
+statements become models with real SQL (see `metabridge.procedures`).
 """
 from __future__ import annotations
 
@@ -328,18 +342,48 @@ def load_table_manifest(tables_file: str):
     return tables, notes
 
 
+def load_procedures(tables_file: str) -> List[dict]:
+    """Stored-procedure bodies carried by a manifest (`procedures:`).
+
+    Optional and purely additive: a manifest without the section scaffolds
+    exactly as it did before. With it, the logic that builds the curated layer
+    travels WITH the tables it reads, instead of being left behind in the
+    source system for someone to port by hand. Bad YAML is not reported here —
+    `load_table_manifest` runs first and says so properly.
+    """
+    try:
+        docs = [d for d in yaml.safe_load_all(
+            Path(tables_file).read_text(encoding="utf-8")) if d is not None]
+    except (yaml.YAMLError, OSError):
+        return []
+    out: List[dict] = []
+    for doc in docs:
+        if not isinstance(doc, dict):
+            continue
+        for item in doc.get("procedures") or []:
+            if isinstance(item, dict) and (item.get("name")
+                                           or item.get("object_name")):
+                out.append(dict(item))
+    return out
+
+
 def scaffold(source_key: str, target_key: str, tables_file: str, out_dir: str,
              project: str = "", source_params: Optional[Dict[str, str]] = None,
              target_params: Optional[Dict[str, str]] = None,
              source_region: str = "", target_region: str = "",
              governance: bool = True,
-             movement: Optional[dict] = None) -> dict:
+             movement: Optional[dict] = None,
+             procedures: Optional[List[dict]] = None) -> dict:
     """Generate the target stacks from a table manifest.
 
     ``governance`` is opt-out: with it False the residency/classification scan
     is skipped entirely — no governance report is written and the returned
     report carries no ``governance`` key. The source/target REGIONS only feed
-    that scan, so they are irrelevant when it is off."""
+    that scan, so they are irrelevant when it is off.
+
+    ``procedures`` overrides the manifest's own `procedures:` section (the CLI
+    passes a directory of PL/SQL sources this way). Pass an empty list to
+    convert the tables only."""
     reg = get_registry()
     source = reg.get(source_key)
     target = reg.get(target_key)
@@ -350,6 +394,8 @@ def scaffold(source_key: str, target_key: str, tables_file: str, out_dir: str,
         raise ValueError("Unknown target connector: %s" % target_key)
 
     tables, manifest_notes = load_table_manifest(tables_file)
+    procs = list(procedures) if procedures is not None \
+        else load_procedures(tables_file)
 
     project = project or "%s_to_%s" % (source.key, target.key)
     pipeline = build_pipeline(project, source, tables)
@@ -368,6 +414,16 @@ def scaffold(source_key: str, target_key: str, tables_file: str, out_dir: str,
     # the TARGET database — so the sources.yml writer must not pin it.
     if source.key != target.key:
         pipeline.metadata["landing_target"] = True
+
+    # Stored-procedure logic joins the pipeline BEFORE anything is generated,
+    # so every generator downstream — dbt, landing DDL, IDMC, PowerCenter, the
+    # conversion and governance reports — sees the curated layer too, not just
+    # the raw one. Tables alone would produce a project of pass-through models.
+    logic: dict = {}
+    if procs:
+        from .procedures import merge_procedure_logic
+        logic = merge_procedure_logic(pipeline, procs,
+                                      dialect=source.dialect or "")
 
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
@@ -417,6 +473,9 @@ def scaffold(source_key: str, target_key: str, tables_file: str, out_dir: str,
     if manifest_notes:
         report["manifest_notes"] = manifest_notes
     report["ddl"] = ddl
+    if procs:
+        from .procedures import write_logic_pack
+        report["procedures"] = write_logic_pack(logic, str(out), procs)
     if governance:
         from .governance.engine import govern, write_governance_report
         gov = govern(pipeline, source_region=source_region,

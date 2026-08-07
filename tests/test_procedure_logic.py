@@ -1,0 +1,516 @@
+"""Stored-procedure logic -> transformation models.
+
+The scenario throughout: an Oracle estate with a RAW schema of tables and a
+SILVER schema whose procedures build the curated layer. Landing the tables is
+half the migration; these tests are about the other half arriving.
+"""
+import json
+
+import pytest
+import yaml
+
+from metabridge.livecheck import _manifest_yaml
+from metabridge.procedures import (
+    ensure_create_header, merge_procedure_logic, normalize_procedures,
+    procedures_from_analysis, write_logic_pack,
+)
+from metabridge.scaffold import load_procedures, load_table_manifest, scaffold
+
+# Exactly what Oracle's ALL_SOURCE returns: no CREATE OR REPLACE — the server
+# does not store it.
+LOAD_CUSTOMER_DIM = """PROCEDURE load_customer_dim (p_batch_id IN NUMBER) IS
+  v_cnt NUMBER := 0;
+BEGIN
+  INSERT INTO etl_audit_log (proc_name, started_at)
+  VALUES ('load_customer_dim', SYSDATE);
+
+  INSERT INTO customer_dim (customer_id, full_name, email, status_desc)
+  SELECT customer_id,
+         INITCAP(first_name) || ' ' || UPPER(last_name),
+         LOWER(email),
+         CASE status WHEN 'A' THEN 'ACTIVE' ELSE 'INACTIVE' END
+  FROM customers
+  WHERE updated_at >= SYSDATE - 7;
+
+  IF v_cnt = 0 THEN
+    NULL;
+  END IF;
+
+  COMMIT;
+END load_customer_dim;
+"""
+
+# No declarations at all: the body starts straight at BEGIN
+LOAD_ORDER_FACT = """PROCEDURE load_order_fact IS
+BEGIN
+  MERGE INTO order_fact t
+  USING (SELECT o.order_id, o.customer_id, o.amount
+         FROM orders o
+         JOIN customers c ON c.customer_id = o.customer_id
+         WHERE c.status = 'A') s
+  ON (t.order_id = s.order_id)
+  WHEN MATCHED THEN UPDATE SET t.amount = s.amount
+  WHEN NOT MATCHED THEN INSERT (order_id, customer_id, amount)
+       VALUES (s.order_id, s.customer_id, s.amount);
+END load_order_fact;
+"""
+
+MANIFEST = """tables:
+  - name: CUSTOMERS
+    schema: RAW
+    unique_key: [CUSTOMER_ID]
+    columns:
+      - {name: CUSTOMER_ID, type: NUMBER(10)}
+      - {name: FIRST_NAME, type: VARCHAR2(50)}
+      - {name: LAST_NAME, type: VARCHAR2(50)}
+      - {name: EMAIL, type: VARCHAR2(120)}
+      - {name: STATUS, type: VARCHAR2(1)}
+      - {name: UPDATED_AT, type: DATE}
+  - name: ORDERS
+    schema: RAW
+    columns:
+      - {name: ORDER_ID, type: NUMBER(12)}
+      - {name: CUSTOMER_ID, type: NUMBER(10)}
+      - {name: AMOUNT, type: NUMBER(12,2)}
+
+procedures:
+  - name: LOAD_CUSTOMER_DIM
+    schema: SILVER
+    language: PL/SQL
+    definition: |
+%s
+  - name: LOAD_ORDER_FACT
+    schema: SILVER
+    language: PL/SQL
+    definition: |
+%s
+""" % ("\n".join("      " + l for l in LOAD_CUSTOMER_DIM.splitlines()),
+       "\n".join("      " + l for l in LOAD_ORDER_FACT.splitlines()))
+
+
+def _procs():
+    return [{"name": "LOAD_CUSTOMER_DIM", "schema": "SILVER",
+             "language": "PL/SQL", "definition": LOAD_CUSTOMER_DIM},
+            {"name": "LOAD_ORDER_FACT", "schema": "SILVER",
+             "language": "PL/SQL", "definition": LOAD_ORDER_FACT}]
+
+
+def _pipeline():
+    from metabridge.connectors.base import get_registry
+    from metabridge.scaffold import build_pipeline
+    tables = [
+        {"name": "CUSTOMERS", "schema": "RAW",
+         "columns": [{"name": "CUSTOMER_ID", "type": "NUMBER(10)"},
+                     {"name": "FIRST_NAME", "type": "VARCHAR2(50)"},
+                     {"name": "LAST_NAME", "type": "VARCHAR2(50)"},
+                     {"name": "EMAIL", "type": "VARCHAR2(120)"},
+                     {"name": "STATUS", "type": "VARCHAR2(1)"},
+                     {"name": "UPDATED_AT", "type": "DATE"}]},
+        {"name": "ORDERS", "schema": "RAW",
+         "columns": [{"name": "ORDER_ID", "type": "NUMBER(12)"},
+                     {"name": "CUSTOMER_ID", "type": "NUMBER(10)"},
+                     {"name": "AMOUNT", "type": "NUMBER(12,2)"}]},
+    ]
+    return build_pipeline("raw_to_silver", get_registry().get("oracle"),
+                          tables)
+
+
+# ---------------------------------------------------------------------------
+# Catalog-shaped bodies
+# ---------------------------------------------------------------------------
+
+def test_catalog_body_without_create_is_repaired():
+    """ALL_SOURCE starts at `PROCEDURE x IS`. Without the CREATE the block
+    splitter does not see a procedure at all and NOTHING converts."""
+    (proc,), _ = normalize_procedures(
+        [{"name": "LOAD_CUSTOMER_DIM", "schema": "SILVER",
+          "language": "PL/SQL", "definition": LOAD_CUSTOMER_DIM}])
+    assert ensure_create_header(proc).startswith(
+        "CREATE OR REPLACE PROCEDURE load_customer_dim")
+
+
+def test_bare_body_gets_a_synthesized_header():
+    """INFORMATION_SCHEMA.routine_definition returns the body ALONE."""
+    (proc,), _ = normalize_procedures(
+        [{"name": "refresh", "schema": "silver",
+          "definition": "BEGIN\n  INSERT INTO a SELECT * FROM b;\nEND;"}])
+    header = ensure_create_header(proc)
+    assert header.startswith("CREATE OR REPLACE PROCEDURE silver.refresh AS")
+    assert "INSERT INTO a SELECT * FROM b;" in header
+
+
+def test_non_sql_and_unreadable_bodies_are_declared_not_dropped():
+    procs, skipped = normalize_procedures([
+        {"name": "PURGE", "schema": "S", "language": "JAVASCRIPT",
+         "definition": "var x = snowflake.createStatement();"},
+        {"name": "HIDDEN", "schema": "S", "language": "PL/SQL",
+         "definition": ""},
+    ])
+    assert procs == []
+    reasons = {s["name"]: s["reason"] for s in skipped}
+    assert "not SQL" in reasons["PURGE"]
+    assert "not readable" in reasons["HIDDEN"]
+
+
+# ---------------------------------------------------------------------------
+# Conversion
+# ---------------------------------------------------------------------------
+
+def test_set_based_statements_become_mappings_with_provenance():
+    pipeline = _pipeline()
+    summary = merge_procedure_logic(pipeline, _procs(), dialect="oracle")
+
+    assert summary["analyzed"] == 2
+    assert summary["with_models"] == 2
+    names = {m.name for m in pipeline.mappings}
+    assert {"customer_dim", "order_fact"} <= names
+
+    dim = pipeline.mapping("customer_dim")
+    assert dim.properties["source_procedure"] == "load_customer_dim"
+    assert dim.properties["source_file"] == "SILVER.LOAD_CUSTOMER_DIM"
+    # the MERGE's ON clause is the business key
+    assert pipeline.mapping("order_fact").unique_key == ["order_id"]
+    assert pipeline.mapping("order_fact").load_strategy.value == "MERGE"
+
+
+def test_a_body_that_starts_at_begin_keeps_its_first_statement():
+    """`... IS BEGIN MERGE ...` — no declarations. The IS used to stay glued
+    to the first statement, which then matched no classifier and was filed as
+    MANUAL_REVIEW: the whole transformation, silently unconverted."""
+    pipeline = _pipeline()
+    summary = merge_procedure_logic(
+        pipeline, [{"name": "LOAD_ORDER_FACT", "schema": "SILVER",
+                    "language": "PL/SQL", "definition": LOAD_ORDER_FACT}],
+        dialect="oracle")
+    (proc,) = summary["procedures"]
+    assert proc["statement_counts"].get("DATA_TRANSFORMATION") == 1
+    assert proc["statement_counts"].get("MANUAL_REVIEW", 0) == 0
+    assert proc["models"] == ["order_fact"]
+
+
+def test_declarations_are_not_counted_as_unconvertible_statements():
+    pipeline = _pipeline()
+    summary = merge_procedure_logic(pipeline, _procs()[:1], dialect="oracle")
+    (proc,) = summary["procedures"]
+    assert proc["statement_counts"].get("DECLARATION") == 1   # v_cnt
+    assert proc["statement_counts"].get("MANUAL_REVIEW", 0) == 0
+
+
+def test_procedural_statements_are_reported_never_generated():
+    pipeline = _pipeline()
+    summary = merge_procedure_logic(pipeline, _procs()[:1], dialect="oracle")
+    (proc,) = summary["procedures"]
+    counts = proc["statement_counts"]
+    # the audit INSERT, the IF and the COMMIT are all real things the
+    # procedure did — none of them is a model, all of them are counted
+    assert counts.get("AUDIT_LOGGING") == 1
+    assert counts.get("CONTROL_FLOW") == 1
+    assert counts.get("TRANSACTION") == 1
+    assert summary["statements_not_converted"] == 3
+    assert proc["models"] == ["customer_dim"]
+
+
+def test_a_comment_in_front_of_a_statement_does_not_hide_it():
+    """Every classifier anchors on `^\\s*`, so a leading `--` line made an
+    INSERT..SELECT match nothing and become MANUAL_REVIEW. Commented PL/SQL is
+    the norm, so this dropped whole procedures' worth of logic."""
+    body = """PROCEDURE load_dim IS
+BEGIN
+  -- Optional: clear existing data
+  DELETE FROM customer_dim;
+
+  /* Load transformed data */
+  INSERT INTO customer_dim (customer_id, full_name)
+  SELECT customer_id, INITCAP(first_name) FROM customers;
+END;"""
+    pipeline = _pipeline()
+    summary = merge_procedure_logic(
+        pipeline, [{"name": "LOAD_DIM", "schema": "SILVER",
+                    "language": "PL/SQL", "definition": body}],
+        dialect="oracle")
+    (proc,) = summary["procedures"]
+    assert proc["statement_counts"].get("MANUAL_REVIEW", 0) == 0
+    assert proc["models"] == ["customer_dim"]
+    logic = pipeline.mapping("customer_dim")
+    assert "INITCAP" in (logic.origin or "")
+
+
+def test_a_cleared_target_makes_the_model_a_full_refresh():
+    """TRUNCATE (or an unfiltered DELETE) before an INSERT is a full refresh.
+    Read on its own the INSERT is an append — and an append model duplicates
+    every row of the table the procedure was REPLACING, on run two."""
+    body = """PROCEDURE load_dim IS
+BEGIN
+  EXECUTE IMMEDIATE 'TRUNCATE TABLE silver.customer_dim';
+  INSERT INTO customer_dim (customer_id, full_name)
+  SELECT customer_id, INITCAP(first_name) FROM customers;
+END;"""
+    pipeline = _pipeline()
+    merge_procedure_logic(
+        pipeline, [{"name": "LOAD_DIM", "schema": "SILVER",
+                    "language": "PL/SQL", "definition": body}],
+        dialect="oracle")
+    m = pipeline.mapping("customer_dim")
+    assert m.load_strategy.value == "FULL"
+    assert m.properties["target_cleared_by"] == "TRUNCATE"
+    assert any(i.code == "PROCEDURE_FULL_REFRESH" for i in m.issues)
+
+
+def test_a_filtered_delete_is_not_a_clear():
+    body = """PROCEDURE load_dim IS
+BEGIN
+  DELETE FROM customer_dim WHERE batch_id = 7;
+  INSERT INTO customer_dim (customer_id) SELECT customer_id FROM customers;
+END;"""
+    pipeline = _pipeline()
+    merge_procedure_logic(
+        pipeline, [{"name": "LOAD_DIM", "schema": "SILVER",
+                    "language": "PL/SQL", "definition": body}],
+        dialect="oracle")
+    m = pipeline.mapping("customer_dim")
+    assert m.load_strategy.value == "APPEND"
+    assert "target_cleared_by" not in m.properties
+
+
+def test_a_statement_inside_an_if_branch_says_so():
+    """The model is unconditional; the branch condition is nowhere in it."""
+    body = """PROCEDURE load_dim (p_mode IN VARCHAR2) IS
+BEGIN
+  IF p_mode = 'FULL' THEN
+    INSERT INTO customer_dim (customer_id) SELECT customer_id FROM customers;
+  END IF;
+END;"""
+    pipeline = _pipeline()
+    merge_procedure_logic(
+        pipeline, [{"name": "LOAD_DIM", "schema": "SILVER",
+                    "language": "PL/SQL", "definition": body}],
+        dialect="oracle")
+    m = pipeline.mapping("customer_dim")
+    assert m.properties.get("conditional") is True
+    assert any(i.code == "PROCEDURE_STATEMENT_CONDITIONAL" for i in m.issues)
+
+
+def test_a_table_both_landed_and_rebuilt_is_reported():
+    """A scaffold mapping is `stg_<table>` and a procedure's is `<table>`, so
+    comparing MAPPING names could never match and this warning never fired for
+    the one case it exists for."""
+    pipeline = _pipeline()          # manifest carries CUSTOMERS and ORDERS
+    merge_procedure_logic(
+        pipeline, [{"name": "RELOAD", "schema": "SILVER",
+                    "language": "PL/SQL",
+                    "definition": "PROCEDURE reload IS BEGIN INSERT INTO "
+                                  "orders (order_id) SELECT order_id FROM "
+                                  "customers; END;"}],
+        dialect="oracle")
+    issues = [i for m in pipeline.mappings for i in m.issues
+              if i.code == "PROCEDURE_TARGET_IS_LANDED_TABLE"]
+    assert issues and "ORDERS" in issues[0].message
+
+
+def test_a_procedure_writing_a_column_the_table_lacks_is_caught():
+    """The manifest carries the target's real columns, so the procedure's own
+    column list can be checked rather than trusted. A procedure writing a
+    column its table does not have cannot run on the SOURCE either — carrying
+    it across silently would make someone debug it as a migration defect."""
+    pipeline = _pipeline()          # ORDERS has no LOAD_TS column
+    merge_procedure_logic(
+        pipeline, [{"name": "RELOAD", "schema": "SILVER",
+                    "language": "PL/SQL",
+                    "definition": "PROCEDURE reload IS BEGIN "
+                                  "INSERT INTO orders (order_id, load_ts) "
+                                  "SELECT customer_id, SYSTIMESTAMP FROM "
+                                  "customers; END;"}],
+        dialect="oracle")
+    issues = [i for m in pipeline.mappings for i in m.issues
+              if i.code == "PROCEDURE_TARGET_COLUMN_UNKNOWN"]
+    assert issues and "load_ts" in issues[0].message.lower()
+
+
+def test_a_procedure_whose_columns_all_exist_is_not_flagged():
+    pipeline = _pipeline()
+    merge_procedure_logic(
+        pipeline, [{"name": "RELOAD", "schema": "SILVER",
+                    "language": "PL/SQL",
+                    "definition": "PROCEDURE reload IS BEGIN "
+                                  "INSERT INTO orders (order_id, amount) "
+                                  "SELECT customer_id, 1 FROM customers; END;"}],
+        dialect="oracle")
+    assert not [i for m in pipeline.mappings for i in m.issues
+                if i.code == "PROCEDURE_TARGET_COLUMN_UNKNOWN"]
+
+
+def test_two_procedures_loading_one_table_each_keep_their_own_provenance():
+    """Provenance keyed by target name gave both mappings the same source, so
+    one procedure reported as having converted nothing."""
+    pipeline = _pipeline()
+    ins = ("PROCEDURE %s IS BEGIN INSERT INTO customer_dim (customer_id) "
+           "SELECT customer_id FROM customers; END;")
+    summary = merge_procedure_logic(
+        pipeline, [{"name": "OLD_LOAD", "schema": "SILVER",
+                    "language": "PL/SQL", "definition": ins % "old_load"},
+                   {"name": "NEW_LOAD", "schema": "SILVER",
+                    "language": "PL/SQL", "definition": ins % "new_load"}],
+        dialect="oracle")
+    assert summary["with_models"] == 2
+    assert all(p["models"] for p in summary["procedures"])
+    # two models cannot share a filename
+    names = {e["model"] for e in summary["models"]}
+    assert len(names) == 2
+
+
+def test_reads_that_the_manifest_cannot_satisfy_are_flagged():
+    from metabridge.connectors.base import get_registry
+    from metabridge.scaffold import build_pipeline
+    pipeline = build_pipeline("p", get_registry().get("oracle"),
+                              [{"name": "CUSTOMERS", "schema": "RAW",
+                                "columns": [{"name": "CUSTOMER_ID"}]}])
+    merge_procedure_logic(
+        pipeline, [{"name": "P", "schema": "S", "language": "PL/SQL",
+                    "definition": "PROCEDURE p IS BEGIN INSERT INTO d "
+                                  "SELECT x FROM nowhere_table; END;"}],
+        dialect="oracle")
+    codes = {i.code for m in pipeline.mappings for i in m.issues}
+    assert "PROCEDURE_SOURCE_NOT_IN_MANIFEST" in codes
+
+
+# ---------------------------------------------------------------------------
+# The manifest handoff
+# ---------------------------------------------------------------------------
+
+def test_manifest_carries_procedures_and_round_trips(tmp_path):
+    text = _manifest_yaml(
+        [{"name": "CUSTOMERS", "schema": "RAW",
+          "columns": [{"name": "ID", "type": "NUMBER"}]}],
+        "ORCL", {("RAW", "CUSTOMERS"): ["ID"]},
+        [{"schema": "SILVER", "name": "LOAD_CUSTOMER_DIM",
+          "language": "PL/SQL", "definition": LOAD_CUSTOMER_DIM}])
+    # readable in the file, not an escaped one-liner
+    assert "definition: |" in text
+    f = tmp_path / "m.yml"
+    f.write_text(text, encoding="utf-8")
+
+    tables, _ = load_table_manifest(str(f))
+    assert [t["name"] for t in tables] == ["CUSTOMERS"]
+    (proc,) = load_procedures(str(f))
+    assert proc["schema"] == "SILVER"
+    assert "INSERT INTO customer_dim" in proc["definition"]
+
+
+def test_manifest_without_procedures_is_unchanged(tmp_path):
+    text = _manifest_yaml([{"name": "T", "schema": "S", "columns": []}], "")
+    assert "procedures:" not in text
+    f = tmp_path / "m.yml"
+    f.write_text(text, encoding="utf-8")
+    assert load_procedures(str(f)) == []
+
+
+def test_watermark_suggestion_is_valid_yaml_once_uncommented(tmp_path):
+    """The header tells the reader to uncomment these lines. They landed
+    inside the `columns:` list, where uncommenting one is a syntax error."""
+    text = _manifest_yaml(
+        [{"name": "CUSTOMERS", "schema": "RAW",
+          "columns": [{"name": "ID", "type": "NUMBER"},
+                      {"name": "UPDATED_AT", "type": "DATE"}]},
+         {"name": "ORDERS", "schema": "RAW",
+          "columns": [{"name": "OID", "type": "NUMBER"}]}], "")
+    live = text.replace("# incremental_column:", "incremental_column:") \
+               .replace("# unique_key:", "unique_key:")
+    doc = yaml.safe_load(live)
+    by_name = {t["name"]: t for t in doc["tables"]}
+    assert by_name["CUSTOMERS"]["incremental_column"] == "UPDATED_AT"
+    assert by_name["ORDERS"]["unique_key"] == []
+
+
+def test_procedures_from_a_live_analysis_report():
+    procs = procedures_from_analysis({
+        "procedures": [{"schema": "SILVER", "name": "P", "language": "PL/SQL",
+                        "definition": "PROCEDURE p IS BEGIN NULL; END;",
+                        "definition_truncated": True}],
+        "packages": [{"schema": "SILVER", "name": "PKG", "language": "PL/SQL",
+                      "definition": "PACKAGE BODY pkg IS END;"}],
+        "functions": [{"schema": "SILVER", "name": "F"}],
+    })
+    assert [p["name"] for p in procs] == ["P", "PKG"]      # not functions
+    assert procs[0]["definition_truncated"] is True
+    assert procs[1]["kind"] == "package"
+
+
+# ---------------------------------------------------------------------------
+# End to end
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def scaffolded(tmp_path, monkeypatch):
+    monkeypatch.setenv("METABRIDGE_DATA_DIR", str(tmp_path / "iso"))
+    manifest = tmp_path / "manifest.yml"
+    manifest.write_text(MANIFEST, encoding="utf-8")
+    out = tmp_path / "out"
+    report = scaffold("oracle", "snowflake", str(manifest), str(out),
+                      project="raw_to_silver")
+    return report, out
+
+
+def test_scaffold_generates_models_that_carry_the_logic(scaffolded):
+    report, out = scaffolded
+    assert report["procedures"]["analyzed"] == 2
+    assert report["procedures"]["models"] == 2
+
+    # staging still reads the source
+    stg = (out / "dbt" / "models" / "staging" / "stg_customers.sql").read_text()
+    assert "{{ source('RAW', 'CUSTOMERS') }}" in stg
+
+    # the curated model carries the procedure's real SQL, and reads the
+    # STAGING model rather than naming the raw relation a second time
+    logic = (out / "dbt" / "models" / "intermediate"
+             / "int_customer.sql").read_text()
+    assert "{{ ref('stg_customers') }}" in logic
+    assert "UPPER(last_name)" in logic
+    assert "CASE status WHEN 'A' THEN 'ACTIVE'" in logic
+    # the INSERT's column list names the output — not col_1/col_2
+    assert "as full_name" in logic
+    assert "col_1" not in logic
+
+    # the MERGE keeps its load semantics
+    fct = (out / "dbt" / "models" / "marts" / "fct_order.sql").read_text()
+    assert "incremental_strategy='merge'" in fct
+    assert "unique_key='order_id'" in fct
+
+
+def test_scaffold_writes_the_review_pack(scaffolded):
+    _report, out = scaffolded
+    md = (out / "procedures" / "PROCEDURE_LOGIC.md").read_text()
+    assert "SILVER.LOAD_CUSTOMER_DIM" in md
+    assert "int" not in md.split("\n")[0]          # a heading, not a dump
+    assert "CONTROL_FLOW" in md                    # what did NOT convert
+    assert "INSERT INTO customer_dim" in md        # the original body
+
+    data = json.loads((out / "procedures"
+                       / "procedure_analysis.json").read_text())
+    assert {p["qualified"] for p in data["procedures"]} == {
+        "SILVER.LOAD_CUSTOMER_DIM", "SILVER.LOAD_ORDER_FACT"}
+
+
+def test_tables_only_manifest_produces_no_procedure_artifacts(tmp_path,
+                                                              monkeypatch):
+    monkeypatch.setenv("METABRIDGE_DATA_DIR", str(tmp_path / "iso"))
+    manifest = tmp_path / "m.yml"
+    manifest.write_text(MANIFEST.split("procedures:")[0], encoding="utf-8")
+    out = tmp_path / "out"
+    report = scaffold("oracle", "snowflake", str(manifest), str(out))
+    assert "procedures" not in report
+    assert not (out / "procedures").exists()
+
+
+def test_write_logic_pack_states_what_was_skipped(tmp_path):
+    pipeline = _pipeline()
+    procs = _procs() + [{"name": "PURGE", "schema": "SILVER",
+                         "language": "JAVASCRIPT", "definition": "var x=1;"}]
+    summary = merge_procedure_logic(pipeline, procs, dialect="oracle")
+    manifest = write_logic_pack(summary, str(tmp_path), procs)
+    assert manifest["skipped"] == 1
+    md = (tmp_path / "procedures" / "PROCEDURE_LOGIC.md").read_text()
+    assert "Not analyzed" in md
+    assert "SILVER.PURGE" in md
+    # and the pipeline itself carries the finding, so the conversion report
+    # cannot show a clean sheet
+    assert any(i.code == "PROCEDURE_NOT_CONVERTED" for i in pipeline.issues)

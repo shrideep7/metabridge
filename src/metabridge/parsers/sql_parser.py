@@ -61,7 +61,6 @@ def _shield_template_vars(text: str) -> Tuple[str, List[str]]:
 
 def parse_sql_scripts(path: str, format_name: str = "sql",
                       dialect: str = "") -> Pipeline:
-    dialect = dialect or SQL_DIALECT_FORMATS.get(format_name, "")
     p = Path(path)
     exts = (".sql", ".btq", ".bteq", ".pls", ".pks", ".pkb", ".prc",
             ".tsql", ".ddl")
@@ -70,34 +69,69 @@ def parse_sql_scripts(path: str, format_name: str = "sql",
     if not files:
         raise FileNotFoundError("No SQL script files found under %s" % path)
 
-    pipeline = Pipeline(name=p.stem, source_format=format_name)
-    pipeline.metadata["dialect"] = dialect
-
-    sources: Dict[str, SourceTable] = {}
-    pending: List[Tuple[str, exp.Expression, LoadStrategy, List[str], str]] = []
-
+    documents: List[Tuple[str, str]] = []
+    unreadable: List[Tuple[str, str]] = []
     for f in files:
         try:
-            text = f.read_text(errors="replace", encoding="utf-8")
+            documents.append((f.name, f.read_text(errors="replace",
+                                                  encoding="utf-8")))
         except OSError as e:
-            pipeline.issues.append(ConversionIssue(
-                severity=IssueSeverity.ERROR, code="FILE_UNREADABLE",
-                message="Could not read %s" % f.name, detail=str(e)[:200]))
-            continue
-        text, tpl_vars = _shield_template_vars(text)
+            unreadable.append((f.name, str(e)[:200]))
+    return parse_sql_documents(documents, p.stem, format_name, dialect,
+                               unreadable=unreadable)
+
+
+def parse_sql_documents(documents: List[Tuple[str, str]], project: str,
+                        format_name: str = "sql", dialect: str = "",
+                        sources: Optional[Dict[str, SourceTable]] = None,
+                        unreadable: Optional[List[Tuple[str, str]]] = None,
+                        procedural: bool = False) -> Pipeline:
+    """The same parse as `parse_sql_scripts`, over (label, SQL text) pairs
+    that are already in memory.
+
+    This is what lets a body read out of a LIVE catalog — a stored procedure
+    from Oracle's ALL_SOURCE, say — go through exactly the path a checked-in
+    .sql file takes, instead of growing a second, divergent implementation of
+    it. `sources` seeds the table dictionary with schemas known from
+    elsewhere (a scaffold manifest), so column references resolve against real
+    column lists instead of degrading to SELECT *.
+
+    `procedural` says these documents contain procedural blocks, so the block
+    splitter runs whatever the dialect. Only Oracle/Teradata/T-SQL scripts ask
+    for it by default (`is_legacy_dialect`), but a Snowflake or PostgreSQL
+    PROCEDURE is every bit as procedural — it simply never arrived as a legacy
+    .sql file, so nothing had reason to request the split.
+    """
+    dialect = dialect or SQL_DIALECT_FORMATS.get(format_name, "")
+    from .legacy_script import is_legacy_dialect
+    split_blocks = procedural or is_legacy_dialect(dialect)
+    pipeline = Pipeline(name=project, source_format=format_name)
+    pipeline.metadata["dialect"] = dialect
+    for label, reason in unreadable or []:
+        pipeline.issues.append(ConversionIssue(
+            severity=IssueSeverity.ERROR, code="FILE_UNREADABLE",
+            message="Could not read %s" % label, detail=reason))
+
+    sources = dict(sources or {})
+    # (target, SELECT body, load strategy, unique key, origin SQL, the column
+    # list the statement DECLARED for its target — see _rename_output_columns)
+    pending: List[Tuple[str, exp.Expression, LoadStrategy, List[str], str,
+                        List[str]]] = []
+
+    for label, raw in documents:
+        text, tpl_vars = _shield_template_vars(raw)
         if tpl_vars:
             pipeline.issues.append(ConversionIssue(
                 severity=IssueSeverity.WARNING, code="TEMPLATE_VARIABLES",
                 message="%s uses deployment template variables — carried "
-                        "through as identifiers" % f.name,
+                        "through as identifiers" % label,
                 detail=", ".join("&{%s}" % v for v in tpl_vars),
                 suggestion="Bind these (MBVAR_*) via your deployment tooling "
                            "or dbt vars after conversion."))
-        from .legacy_script import is_legacy_dialect
-        if is_legacy_dialect(dialect):
+        if split_blocks:
             # phase 3: BTEQ commands / GO batches / procedural blocks are
             # split out BEFORE AST parsing, all line-tracked
-            _ingest_legacy_file(text, f.name, dialect, pipeline, sources,
+            _ingest_legacy_file(text, label, dialect, pipeline, sources,
                                 pending)
             continue
         try:
@@ -105,17 +139,17 @@ def parse_sql_scripts(path: str, format_name: str = "sql",
         except Exception as e:  # noqa: BLE001
             pipeline.issues.append(ConversionIssue(
                 severity=IssueSeverity.ERROR, code="SQL_PARSE_ERROR",
-                message="Could not parse %s" % f.name, detail=str(e)[:300]))
+                message="Could not parse %s" % label, detail=str(e)[:300]))
             continue
         for stmt in statements:
             if stmt is None:
                 continue
             try:
-                _classify_statement(stmt, f.name, pipeline, sources, pending)
+                _classify_statement(stmt, label, pipeline, sources, pending)
             except Exception as e:  # noqa: BLE001 — one statement must never kill the run
                 pipeline.issues.append(ConversionIssue(
                     severity=IssueSeverity.MANUAL, code="STATEMENT_PARSE_FAILED",
-                    message="A statement in %s could not be interpreted" % f.name,
+                    message="A statement in %s could not be interpreted" % label,
                     detail="%s: %s" % (type(e).__name__, str(e)[:200]),
                     suggestion="Review this statement manually; the rest of "
                                "the project converted normally."))
@@ -127,7 +161,7 @@ def parse_sql_scripts(path: str, format_name: str = "sql",
     # Derived tables (views/CTAS/MERGE targets) are readable by later
     # statements — register their output schemas so every consumer resolves
     # the same column set (otherwise shared source definitions diverge).
-    for name, body, _strategy, _keys, _origin in pending:
+    for name, body, _strategy, _keys, _origin, _cols in pending:
         cols = _output_columns(body)
         if cols and name and name.lower() not in sources:
             sources[name.lower()] = SourceTable(
@@ -138,10 +172,11 @@ def parse_sql_scripts(path: str, format_name: str = "sql",
 
     # build mappings (decomposer needs the source dict for column resolution)
     target_names = {name.lower() for name, *_ in pending}
-    from .legacy_script import is_legacy_dialect as _is_legacy
-    for name, select, strategy, keys, origin in pending:
+    provenance = pipeline.metadata.pop("mapping_provenance", None) or {}
+    for idx, (name, select, strategy, keys, origin,
+              target_cols) in enumerate(pending):
         local_sources = dict(sources)
-        if _is_legacy(dialect):
+        if split_blocks:
             # legacy bodies were normalized on the dialect-parsed AST —
             # canonicalize ONCE here so no downstream step re-renders
             # TOP/ISNULL/&co in the source dialect
@@ -154,6 +189,11 @@ def parse_sql_scripts(path: str, format_name: str = "sql",
         mapping.load_strategy = strategy
         mapping.unique_key = keys
         mapping.origin = origin
+        # A statement lifted out of a procedure keeps the name of the object it
+        # came from. `origin` holds the statement TEXT, so without this a
+        # generated model cannot say which procedure it implements.
+        mapping.properties.update(provenance.get(str(idx), {}))
+        _rename_output_columns(mapping, target_cols)
         _attach_target(mapping, name)
         # dependencies: reads from tables that other statements produce
         for t in mapping.by_type(TransformationType.SOURCE):
@@ -169,14 +209,13 @@ def parse_sql_scripts(path: str, format_name: str = "sql",
         pipeline.mappings.append(mapping)
 
     # phase 3: temp-table chain analysis over the assembled dependency graph
-    from .legacy_script import is_legacy_dialect
-    if is_legacy_dialect(dialect):
+    if split_blocks:
         from .legacy_semantics import analyze_temp_chains
         analyze_temp_chains(pipeline)
+    if is_legacy_dialect(dialect):
         from ..detection.sql_dialect import detect_sql_dialect
         pipeline.metadata["dialect_detection"] = detect_sql_dialect(
-            "\n".join((f.read_text(errors="replace", encoding="utf-8")[:100_000]
-                       for f in files))[:400_000])
+            "\n".join(raw[:100_000] for _label, raw in documents)[:400_000])
     return pipeline
 
 
@@ -263,8 +302,8 @@ def _ingest_legacy_file(text: str, filename: str, dialect: str,
                     tname.startswith("#")
                 tname = tname.lstrip("#")
                 stmt.set("into", None)
-                pending.append((tname, stmt, LoadStrategy.FULL,
-                                [], "SELECT INTO %s (%s)" % (tname, where)))
+                pending.append((tname, stmt, LoadStrategy.FULL, [],
+                                "SELECT INTO %s (%s)" % (tname, where), []))
                 if temp:
                     pipeline.metadata.setdefault(
                         "temp_objects", []).append(tname)
@@ -316,6 +355,8 @@ def _ingest_procedural_unit(unit, filename: str, dialect: str,
 
     # set-based DML inside the body becomes candidate mappings — the
     # provenance keeps every model linked to its procedure
+    from .legacy_procedures import tables_cleared
+    cleared = tables_cleared(deco["statements"])
     extracted = 0
     for st in deco["statements"]:
         if st["classification"] not in ("DATA_TRANSFORMATION",):
@@ -339,6 +380,28 @@ def _ingest_procedural_unit(unit, filename: str, dialect: str,
                 extracted += len(pending) - before
             except Exception:  # noqa: BLE001
                 pass
+            # Keyed by the pending INDEX, never by target name: two procedures
+            # loading the same table (an old one and its replacement, say) both
+            # produce a mapping called after that table, and a name key gave
+            # them one shared provenance — so one procedure looked as though it
+            # had converted nothing.
+            prov = pipeline.metadata.setdefault("mapping_provenance", {})
+            for i in range(before, len(pending)):
+                target, body, strategy, keys, origin, cols = pending[i]
+                entry = {
+                    "source_procedure": deco["object_name"],
+                    "source_object_type": unit.object_type or "PROCEDURE",
+                    "source_file": filename, "source_line": unit.line}
+                # the procedure EMPTIED this table first: an append model
+                # would duplicate every row of it on the second run
+                how = cleared.get(target.lower())
+                if how and strategy == LoadStrategy.APPEND:
+                    pending[i] = (target, body, LoadStrategy.FULL, keys,
+                                  origin, cols)
+                    entry["target_cleared_by"] = how
+                if st.get("in_branch"):
+                    entry["conditional"] = True
+                prov[str(i)] = entry
 
     counts = deco["statement_counts"]
     risky = deco["detections"]["dynamic_sql"] or \
@@ -385,6 +448,68 @@ def _output_columns(body: exp.Expression) -> List[str]:
     return cols
 
 
+def _column_names(schema: Optional[exp.Expression]) -> List[str]:
+    """The bare column names in a `(a, b, c)` clause."""
+    if not isinstance(schema, exp.Schema):
+        return []
+    out: List[str] = []
+    for e in schema.expressions:
+        if isinstance(e, exp.ColumnDef):        # a real DDL definition
+            return []
+        name = getattr(e, "name", "") or getattr(e, "alias_or_name", "")
+        if not name:
+            return []
+        out.append(str(name))
+    return out
+
+
+def _insert_columns(stmt: exp.Insert) -> List[str]:
+    """`INSERT INTO t (a, b, c) SELECT ...` -> [a, b, c]."""
+    return _column_names(stmt.this)
+
+
+def _create_columns(stmt: exp.Create) -> List[str]:
+    """`CREATE TABLE t (a, b) AS SELECT ...` -> [a, b] (empty for plain DDL)."""
+    return _column_names(stmt.this)
+
+
+def _rename_output_columns(mapping, columns: List[str]) -> None:
+    """Name the mapping's output after the column list its statement declared.
+
+    `INSERT INTO customer_dim (customer_id, full_name, email)
+     SELECT id, INITCAP(fn) || ' ' || ln, LOWER(email) ...`
+
+    names its outputs on the INSERT side — the SELECT has no aliases at all.
+    Reading only the SELECT produced a model whose transformation was right and
+    whose columns were called col_1, col_2: correct data under names no
+    consumer of the original table would recognize.
+
+    Only a node that renders `<expr> as <name>` can be renamed safely. A
+    SOURCE_QUALIFIER projects the source's own columns by name, so renaming its
+    ports would rewrite the SELECT to read columns that do not exist; there the
+    output ports are named (the TARGET definition and schema.yml follow) and
+    the projection is left alone.
+    """
+    out = mapping.transformation("__OUTPUT__")
+    if out is None or not columns or len(out.ports) != len(columns):
+        return
+    nodes = [out]
+    terminal = mapping.transformation(str(out.properties.get("upstream", "")))
+    if terminal is not None and terminal.type in (
+            TransformationType.EXPRESSION, TransformationType.AGGREGATOR) \
+            and len(terminal.ports) == len(columns):
+        nodes.append(terminal)
+    for node in nodes:
+        for port, new in zip(node.ports, columns):
+            if port.name == new:
+                continue
+            if not port.expression:
+                # a pass-through must keep projecting its own column, under
+                # the new name: `old as new`, never a bare `new`
+                port.expression = port.name
+            port.name = new
+
+
 def _table_name(t: Optional[exp.Expression]) -> str:
     if isinstance(t, exp.Schema):
         t = t.this
@@ -423,7 +548,8 @@ def _classify_statement(stmt: exp.Expression, filename: str, pipeline: Pipeline,
                             % (kind or "?", filename, name),
                     detail=stmt.sql()[:200]))
             strategy = LoadStrategy.VIEW if kind == "VIEW" else LoadStrategy.FULL
-            pending.append((name, body, strategy, [], stmt.sql()[:400]))
+            pending.append((name, body, strategy, [], stmt.sql()[:400],
+                            _create_columns(stmt)))
             return
         if kind == "TABLE" and isinstance(stmt.this, exp.Schema):
             cols = []
@@ -448,7 +574,8 @@ def _classify_statement(stmt: exp.Expression, filename: str, pipeline: Pipeline,
         if body is not None and name:
             strategy = LoadStrategy.FULL if stmt.args.get("overwrite") \
                 else LoadStrategy.APPEND
-            pending.append((name, body, strategy, [], stmt.sql()[:400]))
+            pending.append((name, body, strategy, [], stmt.sql()[:400],
+                            _insert_columns(stmt)))
         return
 
     if isinstance(stmt, exp.Merge):
@@ -501,7 +628,8 @@ def _classify_merge(stmt: exp.Merge, filename: str, pipeline: Pipeline,
                     if side.name not in keys:
                         keys.append(side.name)
             break  # first equality pair is the business key heuristic
-    pending.append((target, body, LoadStrategy.MERGE, keys, stmt.sql()[:400]))
+    pending.append((target, body, LoadStrategy.MERGE, keys,
+                    stmt.sql()[:400], []))
 
 
 def _attach_target(mapping, name: str) -> None:

@@ -13,6 +13,7 @@ routed through the LLM assist callback first.
 from __future__ import annotations
 
 import datetime
+import re
 import xml.etree.ElementTree as ET
 from typing import Callable, Dict, List, Optional
 from xml.dom import minidom
@@ -112,11 +113,34 @@ def generate_powercenter(pipeline: Pipeline, folder_name: str = "",
         _emit_mapping(folder, mapping, dialect, assist)
     _emit_workflow(folder, pipeline)
 
+    _scrub_control_chars(root)
     raw = ET.tostring(root, encoding="unicode")
     pretty = minidom.parseString(raw).toprettyxml(indent="  ")
     body = "\n".join(l for l in pretty.split("\n") if l.strip() and not l.startswith("<?xml"))
     return ('<?xml version="1.0" encoding="UTF-8"?>\n'
             '<!DOCTYPE POWERMART SYSTEM "powrmart.dtd">\n' + body + "\n")
+
+
+# Characters XML 1.0 cannot represent AT ALL — not even as an entity. Tab,
+# newline and carriage return are legal and are left alone.
+_XML_ILLEGAL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+
+
+def _scrub_control_chars(root: ET.Element) -> None:
+    """Strip characters that would make the document unparseable.
+
+    Expressions really do carry them: Oracle's INITCAP transpiles to an
+    explicit delimiter set containing FORM FEED and VERTICAL TAB, and one such
+    character anywhere makes the WHOLE workflow XML invalid — which used to
+    take the rest of the scaffold's artifacts down with it. Replaced with a
+    space rather than dropped, so a delimiter list keeps its arity.
+    """
+    for el in root.iter():
+        for key, value in list(el.attrib.items()):
+            if _XML_ILLEGAL.search(value):
+                el.set(key, _XML_ILLEGAL.sub(" ", value))
+        if el.text and _XML_ILLEGAL.search(el.text):
+            el.text = _XML_ILLEGAL.sub(" ", el.text)
 
 
 # ---------------------------------------------------------------------------

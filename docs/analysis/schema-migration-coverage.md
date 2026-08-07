@@ -21,11 +21,16 @@ gap there hurts every source→target pair at once.
 | 1. **Structure** | tables, columns, types, order | universal |
 | 2. **Integrity** | nullability, defaults, PK/UK/FK/CHECK, generated | universal |
 | 3. **Derivation** | views, materialized views, computed columns | universal |
-| 4. Logic | procedures, functions, packages, triggers | common, shaped differently |
+| 4. Logic | procedures, functions, packages, triggers | common, shaped differently ³ |
 | 5. Orchestration | jobs, tasks, streams, pipes, queues, chains | platform-specific |
 | 6. Access | roles, grants, policies, masking | common |
 | 7. Physical | partitioning, clustering, indexes, storage | mostly dropped, but drives target design |
 | 8. Semantics | comments, tags | universal, cheap |
+
+³ Routines are inventoried by every connector below, and their set-based
+statements now CONVERT into transformation models rather than only being scored —
+see [stored-procedure-logic.md](stored-procedure-logic.md). Cursors, dynamic SQL
+and control flow stay declared for review.
 
 ---
 

@@ -112,12 +112,27 @@ def plan_names(pipeline: Pipeline) -> Tuple[Dict[str, dict], Dict[str, str]]:
         entry["mart"] = claim(mart_name(m)) if layer == "marts" else ""
         plan[m.name] = entry
 
-    # staging models per raw source table; a kept stg_ mapping with the
-    # same name already covers that source — skip, keep source() there
+    # staging models per raw source table — but only for a source no staging
+    # MAPPING already covers. Matching on the generated name alone was not
+    # enough: a mapping keeps its own spelling (`stg_vector_index_build_`,
+    # from a table called VECTOR$INDEX$BUILD$) while the source's name goes
+    # through base_name (`stg_vector_index_build`), so the two disagreed and
+    # BOTH were emitted — a staging model whose only job was to select from
+    # the other staging model. The source table itself is the identity that
+    # settles it.
+    staged: set = set()
+    for m in pipeline.mappings:
+        if plan[m.name]["layer"] != "staging":
+            continue
+        for t in m.by_type(TransformationType.SOURCE):
+            table = str(t.properties.get("table", "") or "").lower()
+            if table:
+                staged.add(table)
+
     stg: Dict[str, str] = {}
     for s in sorted(pipeline.sources, key=lambda s: s.name.lower()):
         name = stg_name(s.name)
-        if name in taken:
+        if name in taken or s.name.lower() in staged:
             continue
         stg[s.name.lower()] = claim(name)
     return plan, stg

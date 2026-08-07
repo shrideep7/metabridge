@@ -5254,6 +5254,9 @@ async def api_scaffold(
            "artifacts": artifacts,
            "manifest_notes": report.get("manifest_notes", []),
            "ddl": report.get("ddl", {}),
+           # present only when the manifest carried `procedures:` — what
+           # converted into models and what still needs a human
+           "procedures": report.get("procedures"),
            "governance_enabled": bool(governance),
            "report_url": "/api/jobs/%s/report" % meta["id"],
            "download_url": "/api/jobs/%s/download" % meta["id"]}

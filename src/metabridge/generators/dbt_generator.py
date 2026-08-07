@@ -130,6 +130,20 @@ def generate_dbt_project(pipeline: Pipeline, out_dir: str,
         if tgts and tgts[0].properties.get("table"):
             names[str(tgts[0].properties["table"]).lower()] = final
 
+    # A mapping in the STAGING layer is the one place its source table is read
+    # from source(). Anything downstream that reads the same table — logic
+    # lifted out of a stored procedure, typically — refs that staging model
+    # instead, so the raw relation is named once and whatever the staging layer
+    # does to it is not quietly bypassed. setdefault: an explicit mapping or
+    # target-table entry above always wins.
+    for m in pipeline.mappings:
+        if plan[m.name]["layer"] != "staging":
+            continue
+        for t in m.by_type(TransformationType.SOURCE):
+            table = str(t.properties.get("table", "") or "").lower()
+            if table:
+                names.setdefault(table, plan[m.name]["int"])
+
     # staging models: one per source table (skipped when a kept stg_
     # mapping already covers the source — see plan_names)
     for s in pipeline.sources:
@@ -567,21 +581,34 @@ def _render_graph(m: Mapping, pipeline: Pipeline, mapping_names: set,
                   plain: bool = False):
     tx_by_name = {t.name: t for t in m.transformations}
     source_ref_cache: Dict[str, str] = {}
+    # The model THIS mapping renders as. A model may not ref() itself: a
+    # staging model reads its own source table, and a table read by the same
+    # statement that rebuilds it is a dbt cycle, not a dependency.
+    self_model = ""
+    if isinstance(mapping_names, dict):
+        self_model = mapping_names.get(m.name) or \
+            mapping_names.get(m.name.lower()) or ""
+
+    def model_for(table: str) -> str:
+        if isinstance(mapping_names, dict):
+            return mapping_names.get(table) or \
+                mapping_names.get(table.lower()) or ""
+        if table in mapping_names or \
+                table.lower() in {n.lower() for n in mapping_names}:
+            return _safe(table)
+        return ""
 
     def source_relation(src: Transformation) -> str:
         table = str(src.properties.get("table", src.name))
         if table in source_ref_cache:
             return source_ref_cache[table]
+        model = "" if plain else model_for(table)
         if plain:
             schema = str(src.properties.get("schema", "") or "")
             rel = "%s.%s" % (schema, table) if schema else table
-        elif isinstance(mapping_names, dict) and (
-                table in mapping_names or table.lower() in mapping_names):
+        elif model and model != self_model:
             # deterministic-name plan (module 27): stg_/int_/dim_/fct_
-            rel = "{{ ref('%s') }}" % mapping_names.get(
-                table, mapping_names.get(table.lower()))
-        elif table in mapping_names or table.lower() in {n.lower() for n in mapping_names}:
-            rel = "{{ ref('%s') }}" % _safe(table)
+            rel = "{{ ref('%s') }}" % model
         elif any(s.name.lower() == table.lower() for s in pipeline.sources):
             s = next(s for s in pipeline.sources if s.name.lower() == table.lower())
             rel = "{{ source('%s', '%s') }}" % (_source_name(s), s.name)

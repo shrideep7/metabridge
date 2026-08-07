@@ -1404,6 +1404,29 @@ def test_oracle_plsql_bodies_are_assembled_and_redacted(ora_driver,
     assert "PACKAGE BODY pkg_etl IS" in pkg["definition"]
 
 
+def test_oracle_procedure_logic_reaches_the_scaffold_manifest(
+        ora_driver, monkeypatch, tmp_path):
+    """Analysis -> Pipeline Studio is a ONE-file handoff. A procedure that is
+    not in that file is transformation logic the migration leaves behind: the
+    tables land and every generated model is a pass-through."""
+    monkeypatch.setenv("MB_ORACLE_PASSWORD", "x")
+    r = livecheck.introspect("oracle", dict(ORA_PARAMS))
+    f = tmp_path / "m.yml"
+    f.write_text(r["manifest_yaml"], encoding="utf-8")
+
+    from metabridge.scaffold import load_procedures, load_table_manifest
+    assert {t["name"] for t in load_table_manifest(str(f))[0]} == \
+        {"CUSTOMERS", "ORDERS"}
+    procs = {p["name"]: p for p in load_procedures(str(f))}
+    # packages hold as much Oracle ETL as standalone procedures do
+    assert set(procs) == {"SP_LOAD", "PKG_ETL"}
+    assert procs["SP_LOAD"]["schema"] == "SALES"
+    assert "BEGIN" in procs["SP_LOAD"]["definition"]
+    # a manifest is a file people mail around: the redaction has to hold here
+    # too, not only in the API response
+    assert "hunter2secret" not in f.read_text(encoding="utf-8")
+
+
 def test_oracle_system_schemas_are_never_inventoried(ora_driver,
                                                      monkeypatch):
     """An unscoped Oracle inventory that included SYS would bury the estate
@@ -1414,6 +1437,39 @@ def test_oracle_system_schemas_are_never_inventoried(ora_driver,
                       if "FROM ALL_TABLES" in s)
     assert "'SYS'" in tables_sql and "'SYSTEM'" in tables_sql
     assert "NOT LIKE 'APEX%'" in tables_sql
+
+
+def test_oracle_feature_schemas_are_not_the_users_estate(ora_driver,
+                                                         monkeypatch):
+    """A stock 23ai database keeps 13 AI Vector Search tables in VECSYS. Read
+    as estate they outnumbered a real five-table schema three to one, and every
+    number computed from the inventory — object count, conversion rate,
+    governance — was reported against Oracle's own index metadata."""
+    monkeypatch.setenv("MB_ORACLE_PASSWORD", "x")
+    livecheck.introspect("oracle", dict(ORA_PARAMS, schema=""))
+    tables_sql = next(s for s in ora_driver["conn"].seen
+                      if "FROM ALL_TABLES" in s)
+    for schema in ("VECSYS", "SYSMAN", "ORDS_METADATA", "OWBSYS"):
+        assert "'%s'" % schema in tables_sql, schema
+
+
+def test_oracle_generated_table_names_are_excluded_in_any_schema(ora_driver,
+                                                                 monkeypatch):
+    """`$` is Oracle's own marker for a generated name. Filtering on it holds
+    when the scan is SCOPED to a schema, where the system-schema list cannot
+    help — and it catches the next release's feature tables without a code
+    change."""
+    monkeypatch.setenv("MB_ORACLE_PASSWORD", "x")
+    livecheck.introspect("oracle", dict(ORA_PARAMS))       # scoped scan
+    tables_sql = next(s for s in ora_driver["conn"].seen
+                      if "FROM ALL_TABLES" in s)
+    # VECTOR$INDEX, HNSW_IND_STATS$ and DV_HITCOUNTS$ all carry it
+    assert "NOT LIKE '%$%'" in tables_sql
+    # and the columns query filters identically, or it drags their columns
+    # across the wire only to discard them on lookup
+    cols_sql = next(s for s in ora_driver["conn"].seen
+                    if "ALL_TAB_COLS" in s.upper())
+    assert "NOT LIKE '%$%'" in cols_sql
 
 
 def test_oracle_long_columns_are_never_put_in_an_inline_view(ora_driver,

@@ -1037,14 +1037,24 @@ def scaffold(
     project: str = typer.Option("", "--project", help="Project name"),
     source_region: str = typer.Option("", "--source-region"),
     target_region: str = typer.Option("", "--target-region"),
+    procedures: str = typer.Option(
+        "", "--procedures",
+        help="File or directory of stored-procedure sources (.sql/.pls/.pkb). "
+             "Their set-based statements become transformation models. "
+             "Overrides any `procedures:` section in the manifest."),
 ):
     """Source system + table manifest -> dbt + IDMC + PowerCenter pipelines,
     connections, conversion report, and governance report in one shot."""
     from .scaffold import scaffold as run_scaffold
     try:
+        procs = None
+        if procedures:
+            from .procedures import load_procedure_files
+            procs = load_procedure_files(procedures)
         report = run_scaffold(source, target, tables_file, output, project,
                               source_region=source_region,
-                              target_region=target_region)
+                              target_region=target_region,
+                              procedures=procs)
     except (ValueError, FileNotFoundError) as e:
         typer.secho("error: %s" % e, fg=typer.colors.RED, err=True)
         raise typer.Exit(1)
@@ -1054,6 +1064,18 @@ def scaffold(
                 fg=typer.colors.GREEN, bold=True)
     typer.echo("  pipelines:  %d (dbt + IDMC + PowerCenter emitted)"
                % s["objects_total"])
+    p = report.get("procedures")
+    if p:
+        # what converted AND what did not — a procedure count alone would read
+        # as "all of it came across"
+        typer.echo("  procedures: %d analyzed, %d produced %d model(s); "
+                   "%d statement(s) need manual work%s"
+                   % (p["analyzed"], p["with_models"], p["models"],
+                      p["statements_not_converted"],
+                      ", %d not analyzed" % p["skipped"] if p["skipped"]
+                      else ""))
+        typer.echo("              review: %s/procedures/PROCEDURE_LOGIC.md"
+                   % output)
     typer.echo("  governance: %d classified columns, %d violations"
                % (g.get("classified_columns", 0), g.get("violations", 0)))
     typer.echo("  output:     %s" % output)

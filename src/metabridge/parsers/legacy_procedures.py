@@ -8,6 +8,10 @@ decomposed into:
 
     DATA_TRANSFORMATION  INSERT/UPDATE/DELETE/MERGE/CTAS with real logic
     DATA_LOAD            plain INSERT ... VALUES / COPY-style loads
+    DECLARATION          variable/cursor declarations (the zone before the
+                         body's first BEGIN) — already reported as
+                         `variables`, so counting them as unrecognized
+                         statements only made every procedure look riskier
     CONTROL_FLOW         IF/LOOP/WHILE/FOR/RETURN/GOTO/CASE blocks
     AUDIT_LOGGING        writes to *audit*/*log* tables, PRINT,
                          DBMS_OUTPUT
@@ -79,6 +83,27 @@ _TEMP_REF = re.compile(r"(?<![\w@])#(\w+)|\bVOLATILE\s+TABLE\s+(\w+)|"
                        r"\bGLOBAL\s+TEMPORARY\s+TABLE\s+(\w+)",
                        re.IGNORECASE)
 
+# IF blocks, counted per statement so a converted statement can say whether it
+# ran conditionally. `END IF` has to be removed before the opens are counted or
+# it counts as one of them; ELSE/ELSIF continue a block rather than opening or
+# closing one, and `\bIF\b` does not match inside ELSIF.
+_IF_OPEN = re.compile(r"\bIF\b", re.IGNORECASE)
+_IF_CLOSE = re.compile(r"\bEND\s+IF\b", re.IGNORECASE)
+
+# A load that CLEARS its target before inserting is a full refresh, whatever
+# the INSERT alone looks like. Oracle writes the clear as TRUNCATE (often via
+# EXECUTE IMMEDIATE, since TRUNCATE is DDL) or as an unfiltered DELETE.
+_CLEARS_TARGET = re.compile(
+    r"\b(?:TRUNCATE\s+TABLE|DELETE\s+FROM)\s+"
+    r"([A-Za-z_][\w$#]*(?:\s*\.\s*[A-Za-z_][\w$#]*)*)", re.IGNORECASE)
+
+# Per-statement cap. This is not a display limit: a DATA_TRANSFORMATION
+# statement is re-parsed from this text to become a mapping, so anything cut
+# here fails to parse and the transformation is lost. The unit body is already
+# capped at the same figure by the caller, so this costs no extra memory — at
+# 1500 a real ETL statement (long column list + joins) fell off the end.
+_MAX_STATEMENT = 20000
+
 
 def _split_statements(body: str) -> List[str]:
     """Split a procedure body on top-level semicolons (strings shielded)."""
@@ -94,15 +119,79 @@ def _split_statements(body: str) -> List[str]:
     return [s.strip() for s in parts if s.strip()]
 
 
-def _classify(stmt: str) -> str:
-    # a block's bare BEGIN prefixes its first statement — strip it so the
-    # statement classifies as itself (BEGIN TRY/TRAN are kept)
+_BEGIN_PREFIX = re.compile(r"^\s*BEGIN\b(?!\s+(TRY|CATCH|TRAN))\s*",
+                           re.IGNORECASE)
+# A leading comment is not a statement, but every classifier here anchors on
+# `^\s*` — so `-- Load transformed data\nINSERT INTO dim SELECT ...` matched
+# nothing and became MANUAL_REVIEW. Commented PL/SQL is the norm, not the
+# exception, so this silently dropped whole procedures' worth of logic.
+_LEADING_COMMENT = re.compile(r"^\s*(?:--[^\n]*\n|/\*.*?\*/\s*)+",
+                              re.DOTALL)
+
+
+def strip_block_prefix(stmt: str) -> str:
+    """Drop the bare BEGIN that opens a block and therefore prefixes its first
+    statement (BEGIN TRY/CATCH/TRAN are statements in their own right and are
+    kept).
+
+    The text is stripped for the RECORD, not just for classification: a
+    DATA_TRANSFORMATION statement is re-parsed from what is stored here to
+    become a mapping, and `BEGIN MERGE INTO ...` parses as neither.
+    """
     while True:
-        m = re.match(r"^\s*BEGIN\b(?!\s+(TRY|CATCH|TRAN))\s*",
-                     stmt, re.IGNORECASE)
+        m = _BEGIN_PREFIX.match(stmt)
         if not m or not stmt[m.end():].strip():
-            break
+            return stmt
         stmt = stmt[m.end():]
+
+
+_BRANCH_PREFIX = re.compile(
+    r"^\s*(?:ELSIF\b.*?\bTHEN\b|ELSE\s+IF\b.*?\bTHEN\b|IF\b.*?\bTHEN\b|ELSE\b)"
+    r"\s*", re.IGNORECASE | re.DOTALL)
+
+
+def strip_branch_prefix(stmt: str) -> Tuple[str, bool]:
+    """-> (the statement without its IF/ELSE prefix, whether one was there).
+
+    `IF p_mode = 'FULL' THEN INSERT INTO t SELECT ...;` is ONE statement to a
+    semicolon split, and it starts with IF — so the INSERT that is the whole
+    point of it classified as CONTROL_FLOW and was never converted. Same for
+    the `ELSE ... MERGE INTO t ...` on the other side of the branch.
+
+    The flag matters as much as the text: the statement ran CONDITIONALLY, and
+    a model built from it does not. The caller records that so the condition
+    is declared rather than quietly dropped.
+    """
+    m = _BRANCH_PREFIX.match(stmt)
+    if not m:
+        return stmt, False
+    rest = stmt[m.end():]
+    # Strip ONLY when a data statement is hiding behind the keyword. Otherwise
+    # the prefix IS the substance — `IF v_cnt = 0 THEN NULL;` is control flow
+    # and reducing it to `NULL;` would trade a classified statement for an
+    # unrecognized one.
+    if not _DML.match(strip_leading_comments(rest)):
+        return stmt, False
+    return rest, True
+
+
+def strip_leading_comments(stmt: str) -> str:
+    """The statement with any comment block in front of it removed.
+
+    Used for CLASSIFICATION only — the comment stays in the recorded text,
+    because "-- Optional: clear existing data" is exactly the context a
+    reviewer needs, and sqlglot parses a leading comment without help.
+    """
+    while True:
+        m = _LEADING_COMMENT.match(stmt)
+        if not m or not stmt[m.end():].strip():
+            return stmt.strip()
+        stmt = stmt[m.end():]
+
+
+def _classify(stmt: str) -> str:
+    stmt = strip_leading_comments(strip_block_prefix(
+        strip_leading_comments(stmt)))
     if _DML.match(stmt) and _AUDIT.search(stmt.split("\n")[0]) or \
             re.match(r"^\s*(PRINT|DBMS_OUTPUT)", stmt, re.IGNORECASE):
         return "AUDIT_LOGGING"
@@ -121,6 +210,36 @@ def _classify(stmt: str) -> str:
             return "DATA_LOAD"
         return "DATA_TRANSFORMATION"
     return "MANUAL_REVIEW"
+
+
+def tables_cleared(statements: List[dict]) -> Dict[str, str]:
+    """{table (lower, unqualified): how it was cleared} for every table the
+    body empties outright.
+
+    A procedure that TRUNCATEs (or DELETEs unfiltered) and then INSERTs is a
+    FULL REFRESH. Read the INSERT on its own and it is an append — which is
+    what the generated model became, so a second run duplicated every row of
+    the table the procedure had been REPLACING. The clear is usually not even
+    adjacent to the INSERT: Oracle writes it as EXECUTE IMMEDIATE (TRUNCATE is
+    DDL), so it lands in a different statement, and often in a different
+    branch of an IF.
+    """
+    out: Dict[str, str] = {}
+    for st in statements:
+        sql = str(st.get("sql", ""))
+        # EXECUTE IMMEDIATE 'TRUNCATE TABLE x' hides the clear in a literal
+        for quoted in re.findall(r"'([^']*)'", sql):
+            sql += "\n" + quoted
+        for m in _CLEARS_TARGET.finditer(sql):
+            kind = m.group(0).split()[0].upper()
+            if kind == "DELETE":
+                # a filtered delete removes rows, it does not clear the table
+                tail = sql[m.end():m.end() + 400]
+                if re.search(r"\bWHERE\b", tail, re.IGNORECASE):
+                    continue
+            table = re.sub(r"\s+", "", m.group(1)).split(".")[-1].lower()
+            out.setdefault(table, kind)
+    return out
 
 
 def _parameters(header: str, dialect: str) -> List[dict]:
@@ -187,30 +306,67 @@ def decompose_procedure(unit: dict) -> dict:
     sql = unit["sql"]
     dialect = unit["dialect"]
     header_end = re.search(r"\b(IS|AS|BEGIN)\b", sql, re.IGNORECASE)
-    header = sql[:header_end.start()] if header_end else sql[:200]
-    body = sql[header_end.start():] if header_end else sql
+    if header_end is None:
+        header, body = sql[:200], sql
+    else:
+        header = sql[:header_end.start()]
+        # IS/AS ENDS the header; BEGIN opens the body and belongs to it.
+        # Leaving the IS glued to what follows is what made a procedure with
+        # no declarations (`... IS BEGIN INSERT INTO ...`) classify its FIRST
+        # statement — frequently the whole transformation — as MANUAL_REVIEW,
+        # because "IS BEGIN INSERT ..." matches no classifier.
+        body = sql[header_end.start():] \
+            if header_end.group(1).upper() == "BEGIN" else sql[header_end.end():]
 
+    mo_begin = re.search(r"\bBEGIN\b", body, re.IGNORECASE)
     variables: List[dict] = []
     if dialect == "tsql":
+        # T-SQL declares inside the executable body, so it has no declaration
+        # zone to separate out
+        decl_end = 0
         variables = [{"name": m.group(1), "datatype": m.group(2)}
                      for m in _VAR_TSQL.finditer(body)]
     else:
-        mo_begin = re.search(r"\bBEGIN\b", body, re.IGNORECASE)
-        decl_zone = body[:mo_begin.start()] if mo_begin else ""
+        decl_end = mo_begin.start() if mo_begin else 0
         variables = [{"name": m.group(1), "datatype": m.group(2)}
-                     for m in _VAR_ORACLE.finditer(decl_zone)
+                     for m in _VAR_ORACLE.finditer(body[:decl_end])
                      if m.group(1).upper() not in ("BEGIN", "END")]
 
-    statements = []
+    statements: List[dict] = []
     counts: Dict[str, int] = {}
-    for stmt in _split_statements(body):
-        # skip pure block tokens
-        if re.fullmatch(r"(BEGIN|END\s*\w*|IS|AS)\s*;?", stmt.strip(),
-                        re.IGNORECASE):
-            continue
-        cls = _classify(stmt)
-        counts[cls] = counts.get(cls, 0) + 1
-        statements.append({"classification": cls, "sql": stmt[:1500]})
+
+    branch_depth = [0]           # open IF/CASE blocks, in statement order
+
+    def collect(text: str, forced: str = "") -> None:
+        for raw in _split_statements(text):
+            # Depth is tracked on the ORIGINAL text and BEFORE the block-token
+            # skip below: `END IF;` is filtered out as a pure token, and
+            # letting it be skipped before it was counted left the block open
+            # forever — every statement after the first IF then reported as
+            # conditional, including the ones past END IF.
+            depth_here = branch_depth[0]
+            closes = len(_IF_CLOSE.findall(raw))
+            opens = len(_IF_OPEN.findall(_IF_CLOSE.sub(" ", raw)))
+            branch_depth[0] = max(0, depth_here + opens - closes)
+            # skip pure block tokens
+            if re.fullmatch(r"(BEGIN|END\s*\w*|IS|AS)\s*;?", raw.strip(),
+                            re.IGNORECASE):
+                continue
+            stmt, branched = strip_branch_prefix(strip_block_prefix(raw))
+            cls = forced or _classify(stmt)
+            counts[cls] = counts.get(cls, 0) + 1
+            entry = {"classification": cls, "sql": stmt[:_MAX_STATEMENT]}
+            if len(stmt) > _MAX_STATEMENT:
+                entry["truncated"] = True
+            # A statement inside IF/ELSE ran CONDITIONALLY. Converting it to a
+            # model makes it unconditional, and the condition is nowhere in the
+            # output — so the fact has to travel with the statement.
+            if branched or depth_here > 0:
+                entry["in_branch"] = True
+            statements.append(entry)
+
+    collect(body[:decl_end], "DECLARATION")
+    collect(body[decl_end:])
 
     detections = {
         "cursor_loops": bool(_CURSOR.search(body)),

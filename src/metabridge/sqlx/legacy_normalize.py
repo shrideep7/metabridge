@@ -109,6 +109,16 @@ def _rewrite_functions(stmt: exp.Expression, dialect: str,
         for col in list(stmt.find_all(exp.Column)):
             if col.name.upper() in ("SYSDATE", "SYSTIMESTAMP"):
                 col.replace(exp.CurrentTimestamp())
+        # ...but SYSTIMESTAMP gets its OWN node type, so it is neither an
+        # Anonymous function nor a Column and both passes above walk straight
+        # past it. It then renders as `SYSTIMESTAMP()` in every dialect —
+        # a function Snowflake and BigQuery do not have, so the generated
+        # model failed to compile while looking perfectly converted.
+        systimestamp = getattr(exp, "Systimestamp", None)
+        if systimestamp is not None:
+            for node in list(stmt.find_all(systimestamp)):
+                if node.parent is not None:
+                    node.replace(exp.CurrentTimestamp())
 
 
 # --------------------------------------------------------------------------- #

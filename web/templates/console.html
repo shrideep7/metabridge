@@ -7552,6 +7552,19 @@ $('#scafForm').onsubmit = async ev => {
          + esc($('#scafSource').selectedOptions[0].text)
          + ', so the tables must land there first. See <code>ddl/README.md'
          + '</code>.</div>' : '')
+      // Stored-procedure logic: say what became a model AND what did not, so
+      // "procedures: 12" is never read as "all the logic came across".
+      + (d.procedures ? '<div style="margin-top:6px;font-size:13px">'
+         + '<strong>Stored-procedure logic:</strong> ' + d.procedures.analyzed
+         + ' analyzed, ' + d.procedures.with_models + ' produced '
+         + d.procedures.models + ' transformation model(s)'
+         + (d.procedures.statements_not_converted
+            ? ' — ' + d.procedures.statements_not_converted
+              + ' statement(s) (cursors, dynamic SQL, control flow) need a '
+              + 'human' : '')
+         + (d.procedures.skipped ? '; ' + d.procedures.skipped
+            + ' not analyzed' : '')
+         + '. See <code>procedures/PROCEDURE_LOGIC.md</code>.</div>' : '')
       + (d.governance_enabled === false ? '<div style="font-size:13px;color:var(--ink3)">Governance report skipped — pipelines only.</div>' : '')
       + '<div style="font-size:13px;color:var(--ink3)">Also listed under Dashboard &rarr; recent jobs. Use the links below to open the reports or download everything.</div>';
     banner.style.display = 'block';
@@ -7810,7 +7823,11 @@ function estateRoleBanner(ctx) {
     bits.push('<b>' + esc(ctx.edition) + '</b> edition');
   if (ctx.warehouse) bits.push('warehouse <b>' + esc(ctx.warehouse) + '</b>');
   if (ctx.account) bits.push('account ' + esc(ctx.account));
-  if (ctx.database) bits.push('database <b>' + esc(ctx.database) + '</b>');
+  // A platform that calls this level something else says so (Oracle: the
+  // pluggable database, which is the SERVICE you dial — not the namespace
+  // holding your tables, which is a schema there).
+  if (ctx.database) bits.push(esc(ctx.database_label || 'database')
+    + ' <b>' + esc(ctx.database) + '</b>');
   return '<div style="background:var(--accent-soft);border:1px solid var(--accent-line);'
     + 'border-radius:var(--radius);padding:9px 13px;margin-bottom:10px;font-size:13px;color:var(--ink2)">'
     + 'Connected as <b>' + esc(ctx.current_role) + '</b>'
