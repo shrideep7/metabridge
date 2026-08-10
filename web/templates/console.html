@@ -251,8 +251,15 @@
   .seg button:hover { background:#fff; color:var(--ink); }
   .seg button[aria-selected="true"] { background:#fff; color:var(--accent); box-shadow:inset 0 -2px 0 var(--accent); }
   .seg button:focus-visible { outline:2px solid var(--accent); outline-offset:-2px; }
-  .jacts { display:flex; gap:6px; justify-content:flex-end; flex-wrap:wrap; }
-  .jact { display:inline-flex; align-items:center; height:26px; padding:0 10px;
+  /* A wide table scrolls inside its own box rather than pushing the page
+     sideways — the row actions must never be the thing that wraps. */
+  .tbl-scroll { overflow-x:auto; }
+  /* Actions stay on ONE line: wrapping made every row double-height and left
+     the third button orphaned under the other two. */
+  .jacts { display:flex; gap:8px; justify-content:flex-end; flex-wrap:nowrap; }
+  /* The actions column is sized by its content, never squeezed by the others. */
+  .jacts-cell { width:1%; white-space:nowrap; text-align:right; }
+  .jact { display:inline-flex; align-items:center; height:28px; padding:0 10px;
           border:1px solid var(--border); border-radius:var(--radius-sm);
           background:#fff; color:var(--accent); font-size:12px; font-weight:600;
           white-space:nowrap; cursor:pointer; text-decoration:none;
@@ -273,6 +280,12 @@
            font-family:inherit; font-size:13px; background:#fff; color:var(--ink); }
   textarea { font-family:var(--mono); font-size:12px; border:1px solid var(--border); border-radius:var(--radius-sm); padding:8px 10px; color:var(--ink); }
   select:focus, input:focus, textarea:focus { outline:none; border-color:var(--accent); box-shadow:var(--ring); }
+  /* A value the server environment pins: still readable and focusable (so it can
+     be read by keyboard and screen reader), but visibly not editable here. */
+  input[readonly] { background:var(--bg2, #F5F7FA); color:var(--ink2); cursor:not-allowed; }
+  input[readonly]:focus { border-color:var(--border); box-shadow:var(--ring); }
+  input[aria-invalid="true"] { border-color:var(--red); }
+  input[aria-invalid="true"]:focus { border-color:var(--red); }
   /* ---- password field with reveal toggle ----
      The button sits inside the field's box; the input reserves room for it on the
      right so a long secret never runs underneath the icon. */
@@ -504,6 +517,47 @@
   .fld label { margin-top:0; }
   .ro { font-size:13px; color:var(--ink); padding:4px 0; }
   .fhint { font-size:12px; color:var(--muted); margin-top:6px; line-height:1.55; max-width:560px; }
+
+  /* ---- ⓘ info disclosure ------------------------------------------------
+     "What this does / which files" copy is onboarding: read once, then pure
+     noise on every later visit. Previously every tool panel rendered 4-7 lines
+     of it permanently, at body weight, above the first control — so the page
+     read as a wall of prose. It now lives behind this button, in flow (not a
+     floating popover: an absolutely-positioned layer inside .workarea's scroll
+     container would need collision handling this page has nowhere else). */
+  .ihead { display:flex; align-items:center; gap:7px; flex-wrap:wrap; }
+  .ihead h3 { margin:0 !important; }
+  .ibtn { margin:0; width:17px; height:17px; padding:0; flex:none;
+          display:inline-flex; align-items:center; justify-content:center;
+          border-radius:50%; border:1px solid var(--border); background:#fff;
+          color:var(--muted); font:italic 700 11px/1 Georgia,'Times New Roman',serif;
+          cursor:pointer; transition:background .12s,color .12s,border-color .12s; }
+  .ibtn:hover { background:var(--accent-soft); border-color:var(--accent-line); color:var(--accent); }
+  .ibtn[aria-expanded="true"] { background:var(--accent); border-color:var(--accent); color:#fff; }
+  .ibtn:focus-visible { outline:none; box-shadow:var(--ring); }
+  .infobox { display:none; font-size:12.5px; line-height:1.65; color:var(--ink3);
+             background:var(--header-bg); border:1px solid var(--line);
+             border-left:2px solid var(--accent-line); border-radius:var(--radius-sm);
+             padding:10px 12px; margin:9px 0 0; max-width:780px; }
+  .infobox.on { display:block; }
+  .infobox > * + * { margin-top:7px; }
+  .infobox code { font-family:var(--mono); font-size:11.5px; background:#fff;
+                  border:1px solid var(--line); border-radius:3px; padding:0 4px; white-space:nowrap; }
+  .infobox .cav { display:block; color:var(--muted); font-size:12px; }
+  .infobox b { color:var(--ink2); }
+
+  /* ---- tool picker (Reports) --------------------------------------------
+     Seven upload-and-run tools were stacked expanded on one page; nobody uses
+     more than one at a time. Same switching idea as #dashViewSeg, but wrapping
+     rather than an inline-flex .seg — seven labels overflow a narrow workarea. */
+  .toolseg { display:flex; flex-wrap:wrap; gap:6px; margin:0 0 16px; }
+  .toolseg button { margin:0; height:30px; padding:0 12px; font-size:12.5px; font-weight:500;
+                    background:#fff; color:var(--ink3); border:1px solid var(--border);
+                    border-radius:var(--radius-sm); cursor:pointer; }
+  .toolseg button:hover { background:var(--header-bg); color:var(--ink); border-color:#C7D0DA; }
+  .toolseg button[aria-selected="true"] { background:var(--accent-soft); color:var(--accent);
+                    border-color:var(--accent-line); font-weight:600; }
+  .toolseg button:focus-visible { outline:none; box-shadow:var(--ring); }
   .facts { display:flex; gap:8px; align-items:center; margin-top:20px; flex-wrap:wrap; }
   .facts button { margin-top:0; }
   .dirty { font-size:12px; color:var(--amber); font-weight:600; background:var(--amber-bg); border:1px solid var(--amber-line);
@@ -545,6 +599,31 @@
   .ai-status .st-meta { color:var(--ink3); font-size:12px; margin-top:6px; line-height:1.6; }
   .ai-status .st-err { color:var(--red); font-size:12px; margin-top:8px; background:var(--red-bg);
                        border:1px solid var(--red-line); border-radius:var(--radius-sm); padding:8px 10px; line-height:1.5; }
+  /* ---- outbound-email status card ----
+     Five short facts, not a data grid: the label column sizes to its content so
+     a value like "none" sits beside its label instead of across an empty span. */
+  .nf-status { max-width:520px; }
+  .nf-status .nf-head { display:flex; align-items:center; gap:10px; flex-wrap:wrap;
+                        padding-bottom:12px; border-bottom:1px solid var(--line); }
+  .nf-status .nf-head b { font-size:13px; font-weight:600; }
+  .nf-status dl { display:grid; grid-template-columns:auto 1fr; gap:7px 18px;
+                  margin:12px 0 0; align-items:baseline; }
+  .nf-status dt { color:var(--ink3); font-size:12px; font-weight:600; white-space:nowrap; }
+  .nf-status dd { margin:0; font-size:12.5px; color:var(--ink);
+                  overflow-wrap:anywhere; }
+  .nf-status dd.empty { color:var(--ink3); font-style:italic; }
+  .nf-status .nf-notes { margin:12px 0 0; padding:10px 12px; list-style:none;
+                         background:var(--amber-bg); border:1px solid var(--amber-line);
+                         border-radius:var(--radius-sm); color:var(--ink2);
+                         font-size:12px; line-height:1.55; }
+  .nf-status .nf-notes li + li { margin-top:6px; }
+  .nf-status .nf-notes li { position:relative; padding-left:16px; }
+  .nf-status .nf-notes li::before { content:''; position:absolute; left:4px; top:6px;
+                         width:4px; height:4px; border-radius:50%; background:var(--amber); }
+  @media (max-width:640px) {
+    .nf-status dl { grid-template-columns:1fr; gap:2px 0; }
+    .nf-status dd { margin-bottom:8px; }
+  }
   .set-table-wrap { overflow-x:auto; border:1px solid var(--border); border-radius:var(--radius); }
   .set-table-wrap table { font-size:13px; }
   .rowmenu { position:relative; display:inline-block; }
@@ -1089,7 +1168,7 @@
     </div>
 
     <div id="dashViewJob" role="tabpanel" aria-labelledby="dashTabJob">
-      <table id="jobTable"><tr><th>Project</th><th>Type</th><th>Status</th><th>Key figures</th><th>When</th><th>Actions</th></tr></table>
+      <div class="tbl-scroll"><table id="jobTable"><tr><th>Project</th><th>Type</th><th>Status</th><th>Key figures</th><th>When</th><th>Actions</th></tr></table></div>
       <div id="jobTablePager" style="display:none;align-items:center;gap:12px;margin-top:12px;flex-wrap:wrap">
         <button type="button" class="secondary" id="jobTablePrev" style="margin:0;padding:5px 12px">&larr; Previous</button>
         <span id="jobTablePageInfo" style="font-size:12.5px;color:var(--ink3)" role="status" aria-live="polite"></span>
@@ -1098,7 +1177,7 @@
     </div>
 
     <div id="dashViewMod" role="tabpanel" aria-labelledby="dashTabMod" style="display:none">
-      <table id="modTable"></table>
+      <div class="tbl-scroll"><table id="modTable"></table></div>
       <div id="modTablePager" style="display:none;align-items:center;gap:12px;margin-top:12px;flex-wrap:wrap">
         <button type="button" class="secondary" id="modTablePrev" style="margin:0;padding:5px 12px">&larr; Previous</button>
         <span id="modTablePageInfo" style="font-size:12.5px;color:var(--ink3)" role="status" aria-live="polite"></span>
@@ -1133,19 +1212,24 @@
   </div>
 
   <div class="panel" id="twinPanel">
-    <h3 style="margin-bottom:4px">Digital Twin</h3>
-    <div style="color:var(--ink3);font-size:13px;margin-bottom:10px">
-      One living graph of your complete estate — applications, databases, pipelines, streaming,
-      APIs, dashboards, domains, data products and owners — discovered from uploaded metadata,
-      saved connections and prior analyses. Add an <code>estate.yml</code> to declare the facts
-      no parser can see (dashboards, APIs, domains, ownership).</div>
+    <div class="ihead">
+      <h3>Digital Twin</h3>
+      <button type="button" class="ibtn" data-info="twinInfo" aria-expanded="false"
+              aria-controls="twinInfo" aria-label="About the digital twin"
+              title="What this does &amp; which files">i</button>
+    </div>
+    <div class="sub" style="margin:5px 0 12px">One living graph of your complete estate. Upload is optional.</div>
+    <div class="infobox" id="twinInfo">
+      <div>Applications, databases, pipelines, streaming, APIs, dashboards, domains, data products
+        and owners — discovered from uploaded metadata, saved connections and prior analyses.</div>
+      <div><b>Optional upload.</b> You can build with no files at all, straight from saved
+        connections &amp; prior analyses. To add facts, drop metadata/code exports —
+        <span data-exts=".sql,.xml,.dtsx,.dsx,.item,.mp/.dml/.xfr,.json,.py,.properties,.jil"></span>.</div>
+      <div>Add an <code>estate.yml</code> to declare the facts no parser can see — dashboards,
+        APIs, domains and ownership.</div>
+    </div>
     <input type="file" id="twinFiles" multiple
            accept=".xml,.sql,.yml,.yaml,.dtsx,.dsx,.item,.mp,.dml,.xfr,.json,.py,.properties,.jil,.txt">
-    <div class="fhint"><b>Optional upload.</b> You can build with no files, straight from saved connections
-      &amp; prior analyses. To add facts, drop metadata/code exports —
-      <code>.sql</code> · <code>.xml</code> · <code>.dtsx</code> · <code>.dsx</code> · <code>.item</code> ·
-      <code>.mp</code>/<code>.dml</code>/<code>.xfr</code> · <code>.json</code> · <code>.py</code> ·
-      <code>.properties</code> · <code>.jil</code> — plus an <code>estate.yml</code> for dashboards, APIs, domains &amp; ownership.</div>
     <div style="display:flex;gap:14px;align-items:center;margin-top:10px;flex-wrap:wrap">
       <button type="button" id="twinBuild" style="margin-top:0">Build digital twin</button>
       <label style="margin:0;font-weight:400;display:flex;gap:6px;align-items:center">
@@ -1223,18 +1307,49 @@
   <h1>Reports</h1>
   <div class="sub">Migration, analysis, validation, lineage, audit and pipeline generation reports.</div>
 
-  <div class="panel" id="assessPanel">
-    <h3 style="margin-bottom:4px">Migration assessment</h3>
-    <div style="color:var(--ink3);font-size:13px;margin-bottom:10px">
-      Board-grade assessment WITHOUT conversion — inventory, automation potential, complexity,
-      technical debt, resources, timeline, cost and risks, generated deterministically from the
-      uploaded metadata. Exports: PDF report, board PowerPoint, Excel inventory, Word summary, JSON.</div>
+  <!-- Seven upload-and-run tools used to sit stacked and expanded on this page,
+       each opening with a 4-7 line paragraph, so ~40 lines of prose came before
+       the first control. Nobody runs more than one at a time. They are switched
+       here instead, same idea as #dashViewSeg on Overview. "Report history"
+       leads and is the default: the most common visit is to find a report that
+       already exists, and it lands on a compact table rather than a big form. -->
+  <div class="toolseg" id="reportToolSeg" role="tablist" aria-label="Report tool">
+    <button type="button" role="tab" data-tool="hist"   id="rtHist"   aria-controls="histPanel"   aria-selected="true">Report history</button>
+    <button type="button" role="tab" data-tool="assess" id="rtAssess" aria-controls="assessPanel" aria-selected="false">Migration assessment</button>
+    <button type="button" role="tab" data-tool="air"    id="rtAir"    aria-controls="airPanel"    aria-selected="false">AI readiness</button>
+    <button type="button" role="tab" data-tool="debt"   id="rtDebt"   aria-controls="debtPanel"   aria-selected="false">Technical debt</button>
+    <button type="button" role="tab" data-tool="fin"    id="rtFin"    aria-controls="finPanel"    aria-selected="false">FinOps</button>
+    <button type="button" role="tab" data-tool="sec"    id="rtSec"    aria-controls="secPanel"    aria-selected="false">Security &amp; compliance</button>
+    <button type="button" role="tab" data-tool="docs"   id="rtDocs"   aria-controls="docsPanel"   aria-selected="false">Documentation</button>
+    <button type="button" role="tab" data-tool="ag"     id="rtAg"     aria-controls="agPanel"     aria-selected="false">Agentic AI</button>
+  </div>
+
+  <div class="panel" id="histPanel" role="tabpanel" aria-labelledby="rtHist"><table id="reportsTable"></table>
+    <div id="reportsTablePager" style="display:none;align-items:center;gap:12px;margin-top:12px;flex-wrap:wrap">
+      <button type="button" class="secondary" id="reportsTablePrev" style="margin:0;padding:5px 12px">&larr; Previous</button>
+      <span id="reportsTablePageInfo" style="font-size:12.5px;color:var(--ink3)" role="status" aria-live="polite"></span>
+      <button type="button" class="secondary" id="reportsTableNext" style="margin:0;padding:5px 12px">Next &rarr;</button>
+    </div>
+  </div>
+
+  <div class="panel" id="assessPanel" role="tabpanel" aria-labelledby="rtAssess" style="display:none">
+    <div class="ihead">
+      <h3>Migration assessment</h3>
+      <button type="button" class="ibtn" data-info="assessInfo" aria-expanded="false"
+              aria-controls="assessInfo" aria-label="About migration assessment"
+              title="What this does &amp; which files">i</button>
+    </div>
+    <div class="sub" style="margin:5px 0 12px">Board-grade assessment of your estate, without running a conversion.</div>
+    <div class="infobox" id="assessInfo">
+      <div>Inventory, automation potential, complexity, technical debt, resources, timeline, cost
+        and risks — generated deterministically from the uploaded metadata.</div>
+      <div><b>Which files?</b> A project <code>.zip</code>, or individual metadata files —
+        <span data-exts></span>.</div>
+      <div><b>Exports.</b> PDF report, board PowerPoint, Excel inventory, Word summary, JSON.</div>
+      <span class="cav">No conversion is run.</span>
+    </div>
     <input type="file" id="assessFiles" multiple
            accept=".zip,.xml,.sql,.yml,.yaml,.dtsx,.dsx,.item,.mp,.dml,.xfr,.ddls,.cds,.abap,.hdbcalculationview,.json,.properties">
-    <div class="fhint"><b>Which files?</b> A project <code>.zip</code>, or individual metadata files —
-      <code>.sql</code> · <code>.xml</code> · <code>.dtsx</code> · <code>.dsx</code> · <code>.item</code> ·
-      <code>.mp</code>/<code>.dml</code>/<code>.xfr</code> · <code>.ddls</code> · <code>.cds</code> · <code>.abap</code> ·
-      <code>.hdbcalculationview</code> · <code>.yml</code> · <code>.json</code> · <code>.properties</code>. No conversion is run.</div>
     <div style="display:flex;gap:10px;align-items:center;margin-top:12px;flex-wrap:wrap">
       <button type="button" id="assessRun" style="margin-top:0">Run assessment</button>
       <span id="assessStatus" style="font-size:13px;color:var(--ink3)"></span>
@@ -1248,22 +1363,28 @@
     </div>
   </div>
 
-  <div class="panel" id="airPanel">
-    <h3 style="margin-bottom:4px">Enterprise AI readiness assessment</h3>
-    <div style="color:var(--ink3);font-size:13px;margin-bottom:10px">
-      Scores 15 dimensions — metadata, glossary, lineage, data quality, master data, security,
-      access, PII, freshness, vectorization, document quality, knowledge-graph, RAG, LLM and agent
-      readiness — then prescribes a vector database, embedding &amp; chunking strategy, knowledge-graph
-      &amp; LLM architecture, cost and an executive roadmap. Deterministic from your metadata; if a
-      Digital Twin is built it enriches domain, ownership and platform signals. Exports: PDF, Excel, JSON.
-      <br><b>Select your project folder</b> (dbt/PowerCenter/SAP etc.) so its structure is preserved.</div>
+  <div class="panel" id="airPanel" role="tabpanel" aria-labelledby="rtAir" style="display:none">
+    <div class="ihead">
+      <h3>Enterprise AI readiness assessment</h3>
+      <button type="button" class="ibtn" data-info="airInfo" aria-expanded="false"
+              aria-controls="airInfo" aria-label="About the AI readiness assessment"
+              title="What this does &amp; which files">i</button>
+    </div>
+    <div class="sub" style="margin:5px 0 12px">Scores 15 readiness dimensions and prescribes an AI architecture, cost and roadmap.</div>
+    <div class="infobox" id="airInfo">
+      <div>Scores metadata, glossary, lineage, data quality, master data, security, access, PII,
+        freshness, vectorization, document quality, knowledge-graph, RAG, LLM and agent readiness —
+        then prescribes a vector database, embedding &amp; chunking strategy, knowledge-graph &amp;
+        LLM architecture, cost and an executive roadmap.</div>
+      <div><b>Pick a folder, not a file.</b> Choose your project directory (dbt / PowerCenter / SSIS /
+        DataStage / Talend / SAP…) so its structure is preserved. It reads the metadata inside —
+        <span data-exts></span>.</div>
+      <div><b>Exports.</b> PDF, Excel, JSON.</div>
+      <span class="cav">Deterministic from your metadata; a built Digital Twin enriches domain,
+        ownership and platform signals.</span>
+    </div>
     <input type="file" id="airFiles" multiple webkitdirectory
            accept=".xml,.sql,.yml,.yaml,.dtsx,.dsx,.item,.mp,.dml,.xfr,.ddls,.cds,.abap,.hdbcalculationview,.json,.properties">
-    <div class="fhint"><b>Pick a folder, not a file.</b> Choose your project directory (dbt / PowerCenter / SSIS /
-      DataStage / Talend / SAP…). It reads the metadata inside —
-      <code>.sql</code> · <code>.xml</code> · <code>.dtsx</code> · <code>.dsx</code> · <code>.item</code> ·
-      <code>.mp</code>/<code>.dml</code>/<code>.xfr</code> · <code>.ddls</code> · <code>.cds</code> · <code>.abap</code> ·
-      <code>.hdbcalculationview</code> · <code>.yml</code> · <code>.json</code> · <code>.properties</code>.</div>
     <div style="display:flex;gap:10px;align-items:center;margin-top:12px;flex-wrap:wrap">
       <button type="button" id="airRun" style="margin-top:0">Run AI readiness assessment</button>
       <span id="airStatus" style="font-size:13px;color:var(--ink3)"></span>
@@ -1292,21 +1413,27 @@
     </div>
   </div>
 
-  <div class="panel" id="debtPanel">
-    <h3 style="margin-bottom:4px">Technical debt intelligence</h3>
-    <div style="color:var(--ink3);font-size:13px;margin-bottom:10px">
-      Finds unused tables, columns, dead ETL, duplicate mappings/SQL/logic, unused dashboards,
-      APIs, Kafka topics and process chains, orphan datasets and broken lineage — then costs and
-      prioritizes the cleanup. Reachability runs over your Digital Twin (build one first for full
-      dashboard/API/topic coverage); uploaded projects add column/SQL/mapping detail.
-      <b>Select a project folder</b> or run against the current twin. Exports: PDF, Excel, JSON.
-      <br><span style="color:var(--muted)">Topology, not telemetry — confirm "unused" against access logs before deleting.</span></div>
+  <div class="panel" id="debtPanel" role="tabpanel" aria-labelledby="rtDebt" style="display:none">
+    <div class="ihead">
+      <h3>Technical debt intelligence</h3>
+      <button type="button" class="ibtn" data-info="debtInfo" aria-expanded="false"
+              aria-controls="debtInfo" aria-label="About technical debt intelligence"
+              title="What this does &amp; which files">i</button>
+    </div>
+    <div class="sub" style="margin:5px 0 12px">Finds dead and duplicated assets across the estate, then costs the cleanup.</div>
+    <div class="infobox" id="debtInfo">
+      <div>Finds unused tables, columns, dead ETL, duplicate mappings/SQL/logic, unused dashboards,
+        APIs, Kafka topics and process chains, orphan datasets and broken lineage — then costs and
+        prioritizes the cleanup.</div>
+      <div>Reachability runs over your Digital Twin (build one first for full dashboard/API/topic
+        coverage); uploaded projects add column/SQL/mapping detail.</div>
+      <div><b>Pick a folder, not a file</b> — or run against the current twin. It reads the metadata
+        inside: <span data-exts></span>.</div>
+      <div><b>Exports.</b> PDF, Excel, JSON.</div>
+      <span class="cav">Topology, not telemetry — confirm "unused" against access logs before deleting.</span>
+    </div>
     <input type="file" id="debtFiles" multiple webkitdirectory
            accept=".xml,.sql,.yml,.yaml,.dtsx,.dsx,.item,.mp,.dml,.xfr,.ddls,.cds,.abap,.hdbcalculationview,.json,.properties">
-    <div class="fhint"><b>Pick a folder, not a file.</b> Choose your project directory — it reads the metadata inside:
-      <code>.sql</code> · <code>.xml</code> · <code>.dtsx</code> · <code>.dsx</code> · <code>.item</code> ·
-      <code>.mp</code>/<code>.dml</code>/<code>.xfr</code> · <code>.ddls</code> · <code>.cds</code> · <code>.abap</code> ·
-      <code>.hdbcalculationview</code> · <code>.yml</code> · <code>.json</code> · <code>.properties</code>.</div>
     <div style="display:flex;gap:10px;align-items:center;margin-top:12px;flex-wrap:wrap">
       <button type="button" id="debtRun" style="margin-top:0">Analyze technical debt</button>
       <span id="debtStatus" style="font-size:13px;color:var(--ink3)"></span>
@@ -1335,22 +1462,27 @@
     </div>
   </div>
 
-  <div class="panel" id="finPanel">
-    <h3 style="margin-bottom:4px">Enterprise FinOps</h3>
-    <div style="color:var(--ink3);font-size:13px;margin-bottom:10px">
-      Models estate run-cost (warehouse utilization, storage, streaming, compute, data movement,
-      idle resources, query, ETL runtime, pipeline efficiency) and the economics of optimizing it:
-      current vs future cost, migration cost, ROI, payback, reserved capacity, warehouse sizing,
-      cluster recommendations and Snowflake/Databricks/BigQuery/Fabric optimization playbooks.
-      Reachability/inventory come from your Digital Twin; uploaded projects add compute detail.
-      Exports: PDF, Excel, JSON.
-      <br><span style="color:var(--muted)">Figures are MODELED from metadata, not bills — paste telemetry below to replace modeled components with measured ones.</span></div>
+  <div class="panel" id="finPanel" role="tabpanel" aria-labelledby="rtFin" style="display:none">
+    <div class="ihead">
+      <h3>Enterprise FinOps</h3>
+      <button type="button" class="ibtn" data-info="finInfo" aria-expanded="false"
+              aria-controls="finInfo" aria-label="About enterprise FinOps"
+              title="What this does &amp; which files">i</button>
+    </div>
+    <div class="sub" style="margin:5px 0 12px">Models estate run-cost and the economics of optimizing it.</div>
+    <div class="infobox" id="finInfo">
+      <div>Models warehouse utilization, storage, streaming, compute, data movement, idle resources,
+        query, ETL runtime and pipeline efficiency — then current vs future cost, migration cost,
+        ROI, payback, reserved capacity, warehouse sizing, cluster recommendations and
+        Snowflake / Databricks / BigQuery / Fabric optimization playbooks.</div>
+      <div>Reachability and inventory come from your Digital Twin; uploaded projects add compute detail.</div>
+      <div><b>Pick a folder, not a file.</b> It reads the metadata inside: <span data-exts></span>.</div>
+      <div><b>Exports.</b> PDF, Excel, JSON.</div>
+      <span class="cav">Figures are MODELED from metadata, not bills — paste telemetry to replace
+        modeled components with measured ones.</span>
+    </div>
     <input type="file" id="finFiles" multiple webkitdirectory
            accept=".xml,.sql,.yml,.yaml,.dtsx,.dsx,.item,.mp,.dml,.xfr,.ddls,.cds,.abap,.hdbcalculationview,.json,.properties">
-    <div class="fhint"><b>Pick a folder, not a file.</b> Choose your project directory — it reads the metadata inside:
-      <code>.sql</code> · <code>.xml</code> · <code>.dtsx</code> · <code>.dsx</code> · <code>.item</code> ·
-      <code>.mp</code>/<code>.dml</code>/<code>.xfr</code> · <code>.ddls</code> · <code>.cds</code> · <code>.abap</code> ·
-      <code>.hdbcalculationview</code> · <code>.yml</code> · <code>.json</code> · <code>.properties</code>.</div>
     <div style="margin-top:10px">
       <label style="font-size:12.5px;color:var(--ink3);margin:0">Optional telemetry (JSON) — measured figures override modeled ones</label>
       <textarea id="finTelemetry" rows="2" placeholder='{"storage_gb": 42000, "monthly_compute_credits": 3200, "credit_price_usd": 3.0, "monthly_query_usd": 4100, "warehouse_utilization_pct": 38}'
@@ -1382,21 +1514,27 @@
     </div>
   </div>
 
-  <div class="panel" id="secPanel">
-    <h3 style="margin-bottom:4px">Security &amp; compliance intelligence</h3>
-    <div style="color:var(--ink3);font-size:13px;margin-bottom:10px">
-      Assesses IAM, RBAC, secrets, encryption, key management, data classification, PII/PCI/PHI, and
-      maps the estate onto GDPR, HIPAA, PCI-DSS, SOX, ISO&nbsp;27001 and NIST. Generates a risk matrix,
-      recommended controls, data-masking &amp; tokenization plans, encryption recommendations and an
-      audit-evidence pack. Classification comes from the governance engine + a plaintext-secret scan.
-      Exports: PDF, Excel, JSON.
-      <br><span style="color:var(--muted)">Control-gap analysis &amp; audit-prep evidence from metadata — NOT a certified attestation. Confirm every control against the live environment.</span></div>
+  <div class="panel" id="secPanel" role="tabpanel" aria-labelledby="rtSec" style="display:none">
+    <div class="ihead">
+      <h3>Security &amp; compliance intelligence</h3>
+      <button type="button" class="ibtn" data-info="secInfo" aria-expanded="false"
+              aria-controls="secInfo" aria-label="About security &amp; compliance intelligence"
+              title="What this does &amp; which files">i</button>
+    </div>
+    <div class="sub" style="margin:5px 0 12px">Control-gap analysis across the estate, mapped onto the major compliance frameworks.</div>
+    <div class="infobox" id="secInfo">
+      <div>Assesses IAM, RBAC, secrets, encryption, key management, data classification and
+        PII/PCI/PHI, and maps the estate onto GDPR, HIPAA, PCI-DSS, SOX, ISO&nbsp;27001 and NIST.</div>
+      <div>Generates a risk matrix, recommended controls, data-masking &amp; tokenization plans,
+        encryption recommendations and an audit-evidence pack. Classification comes from the
+        governance engine plus a plaintext-secret scan.</div>
+      <div><b>Pick a folder, not a file.</b> It reads the metadata inside: <span data-exts></span>.</div>
+      <div><b>Exports.</b> PDF, Excel, JSON.</div>
+      <span class="cav">Control-gap analysis &amp; audit-prep evidence from metadata — NOT a certified
+        attestation. Confirm every control against the live environment.</span>
+    </div>
     <input type="file" id="secFiles" multiple webkitdirectory
            accept=".xml,.sql,.yml,.yaml,.dtsx,.dsx,.item,.mp,.dml,.xfr,.ddls,.cds,.abap,.hdbcalculationview,.json,.properties">
-    <div class="fhint"><b>Pick a folder, not a file.</b> Choose your project directory — it reads the metadata inside:
-      <code>.sql</code> · <code>.xml</code> · <code>.dtsx</code> · <code>.dsx</code> · <code>.item</code> ·
-      <code>.mp</code>/<code>.dml</code>/<code>.xfr</code> · <code>.ddls</code> · <code>.cds</code> · <code>.abap</code> ·
-      <code>.hdbcalculationview</code> · <code>.yml</code> · <code>.json</code> · <code>.properties</code>.</div>
     <div style="display:flex;gap:10px;align-items:center;margin-top:12px;flex-wrap:wrap">
       <button type="button" id="secRun" style="margin-top:0">Analyze security &amp; compliance</button>
       <span id="secStatus" style="font-size:13px;color:var(--ink3)"></span>
@@ -1429,20 +1567,25 @@
     </div>
   </div>
 
-  <div class="panel" id="docsPanel">
-    <h3 style="margin-bottom:4px">Documentation generator</h3>
-    <div style="color:var(--ink3);font-size:13px;margin-bottom:10px">
-      Auto-generates project documentation from your metadata — architecture, source-to-target
-      mapping, technical &amp; solution design, migration runbook, deployment &amp; operations guides,
-      business glossary, data dictionary, API &amp; pipeline docs, and validation / lineage / governance
-      reports. Every document exports to PDF, Word, Markdown and HTML.
-      <br><span style="color:var(--muted)">Upload your project folder — every document is generated from that project's metadata. Documentation is never produced from empty or previously-cached data.</span></div>
+  <div class="panel" id="docsPanel" role="tabpanel" aria-labelledby="rtDocs" style="display:none">
+    <div class="ihead">
+      <h3>Documentation generator</h3>
+      <button type="button" class="ibtn" data-info="docsInfo" aria-expanded="false"
+              aria-controls="docsInfo" aria-label="About the documentation generator"
+              title="What this does &amp; which files">i</button>
+    </div>
+    <div class="sub" style="margin:5px 0 12px">Auto-generates project documentation from your metadata.</div>
+    <div class="infobox" id="docsInfo">
+      <div>Architecture, source-to-target mapping, technical &amp; solution design, migration runbook,
+        deployment &amp; operations guides, business glossary, data dictionary, API &amp; pipeline
+        docs, and validation / lineage / governance reports.</div>
+      <div><b>Pick a folder, not a file.</b> It reads the metadata inside: <span data-exts></span>.</div>
+      <div><b>Exports.</b> Every document exports to PDF, Word, Markdown and HTML.</div>
+      <span class="cav">Every document is generated from that project's metadata — never from empty
+        or previously-cached data.</span>
+    </div>
     <input type="file" id="docsFiles" multiple webkitdirectory
            accept=".xml,.sql,.yml,.yaml,.dtsx,.dsx,.item,.mp,.dml,.xfr,.ddls,.cds,.abap,.hdbcalculationview,.json,.properties">
-    <div class="fhint"><b>Pick a folder, not a file.</b> Choose your project directory — it reads the metadata inside:
-      <code>.sql</code> · <code>.xml</code> · <code>.dtsx</code> · <code>.dsx</code> · <code>.item</code> ·
-      <code>.mp</code>/<code>.dml</code>/<code>.xfr</code> · <code>.ddls</code> · <code>.cds</code> · <code>.abap</code> ·
-      <code>.hdbcalculationview</code> · <code>.yml</code> · <code>.json</code> · <code>.properties</code>.</div>
     <div style="margin-top:10px">
       <div style="font-size:12.5px;color:var(--ink3);margin-bottom:4px">Documents (all selected by default):</div>
       <div id="docsChecklist" style="columns:2;font-size:13px;max-width:640px"></div>
@@ -1459,26 +1602,32 @@
     </div>
   </div>
 
-  <div class="panel" id="agPanel">
-    <h3 style="margin-bottom:4px">Agentic AI Architecture</h3>
-    <div style="color:var(--ink3);font-size:13px;margin-bottom:10px">
-      Twelve deterministic agents — Discovery, Metadata, Parser, Semantic, Migration, Validation,
-      Testing, Governance, Security, Optimization, Documentation and Executive Reporting — collaborate
-      over a <b>shared CIR</b> and blackboard memory, scheduled by a task orchestrator. Every action is
-      <b>confidence-scored from measurable evidence</b> and passes a <b>governance gate</b>: read-only /
-      advisory analysis commits (low-confidence work is flagged for review); anything that generates
-      artifacts or changes a system is held for <b>approval</b>. Every action is recorded in a
-      <b>tamper-evident audit trail</b>.
-      <br><span style="color:var(--muted)">Agents wrap MetaBridge's deterministic engines — no numbers are invented; confidence reflects real evidence.</span></div>
+  <div class="panel" id="agPanel" role="tabpanel" aria-labelledby="rtAg" style="display:none">
+    <div class="ihead">
+      <h3>Agentic AI Architecture</h3>
+      <button type="button" class="ibtn" data-info="agInfo" aria-expanded="false"
+              aria-controls="agInfo" aria-label="About the agentic AI architecture"
+              title="What this does &amp; which files">i</button>
+    </div>
+    <div class="sub" style="margin:5px 0 12px">Twelve deterministic agents collaborate over a shared CIR, behind a governance gate.</div>
+    <div class="infobox" id="agInfo">
+      <div>Discovery, Metadata, Parser, Semantic, Migration, Validation, Testing, Governance,
+        Security, Optimization, Documentation and Executive Reporting agents collaborate over a
+        <b>shared CIR</b> and blackboard memory, scheduled by a task orchestrator.</div>
+      <div>Every action is <b>confidence-scored from measurable evidence</b> and passes a
+        <b>governance gate</b>: read-only / advisory analysis commits (low-confidence work is flagged
+        for review); anything that generates artifacts or changes a system is held for
+        <b>approval</b>. Every action is recorded in a <b>tamper-evident audit trail</b>.</div>
+      <div><b>Pick a folder, not a file.</b> The agents read the metadata inside:
+        <span data-exts></span>.</div>
+      <span class="cav">Agents wrap MetaBridge's deterministic engines — no numbers are invented;
+        confidence reflects real evidence.</span>
+    </div>
     <div id="agRoster" style="margin-bottom:12px"></div>
     <div style="border-top:1px solid var(--line);padding-top:12px">
       <div style="font-size:13px;color:var(--ink2);font-weight:600;margin-bottom:6px">Run the agent swarm</div>
       <input type="file" id="agFiles" multiple webkitdirectory
              accept=".xml,.sql,.yml,.yaml,.dtsx,.dsx,.item,.mp,.dml,.xfr,.ddls,.cds,.abap,.hdbcalculationview,.json,.properties">
-      <div class="fhint"><b>Pick a folder, not a file.</b> Choose your project directory — the agents read the metadata inside:
-        <code>.sql</code> · <code>.xml</code> · <code>.dtsx</code> · <code>.dsx</code> · <code>.item</code> ·
-        <code>.mp</code>/<code>.dml</code>/<code>.xfr</code> · <code>.ddls</code> · <code>.cds</code> · <code>.abap</code> ·
-        <code>.hdbcalculationview</code> · <code>.yml</code> · <code>.json</code> · <code>.properties</code>.</div>
       <div style="display:flex;gap:16px;align-items:center;margin-top:10px;flex-wrap:wrap">
         <label style="margin:0;font-size:12.5px;color:var(--ink3)">Target region</label>
         <select id="agRegion" style="margin:0"><option value="us">US</option><option value="eu">EU</option><option value="apac">APAC</option></select>
@@ -1501,14 +1650,6 @@
       </div>
       <h4 style="margin:8px 0 6px">Audit trail <span id="agAuditState" style="font-size:12px"></span></h4>
       <div id="agAudit" style="font-size:12px;max-height:280px;overflow-y:auto;border:1px solid var(--line);border-radius:6px"></div>
-    </div>
-  </div>
-
-  <div class="panel"><table id="reportsTable"></table>
-    <div id="reportsTablePager" style="display:none;align-items:center;gap:12px;margin-top:12px;flex-wrap:wrap">
-      <button type="button" class="secondary" id="reportsTablePrev" style="margin:0;padding:5px 12px">&larr; Previous</button>
-      <span id="reportsTablePageInfo" style="font-size:12.5px;color:var(--ink3)" role="status" aria-live="polite"></span>
-      <button type="button" class="secondary" id="reportsTableNext" style="margin:0;padding:5px 12px">Next &rarr;</button>
     </div>
   </div>
 </div>
@@ -1735,7 +1876,14 @@
         </div>
       </div>
 
-      <!-- ── Target Platform ─────────────────────────────────────────── -->
+      <!-- ── Target Platform ─────────────────────────────────────────────
+           Upload-path only. A live connection never runs through these: the
+           picker builds a manifest and hands off to Pipeline Studio, which
+           asks for its own target. Leaving them on screen offered a choice
+           that nothing downstream would read, and "Analyze workload" below
+           requires an uploaded file — in connection mode it can only ever
+           answer "no file uploaded yet". -->
+      <div id="convTargetBlock">
       <label style="margin-top:20px">Target platform <span style="font-weight:400;text-transform:none;color:var(--muted);font-size:12px">(where you want the modernized code to run)</span></label>
       <div class="tsel" id="targetSel" role="radiogroup" aria-label="Target platform"></div>
       <label>Target mode</label>
@@ -1801,6 +1949,7 @@
         <button type="button" id="analyzeBtn">Analyze workload</button>
         <button type="submit" class="secondary" id="generateAllBtn" disabled title="Analyze the workload first">Generate target (all assets)</button>
       </div>
+      </div><!-- /convTargetBlock -->
     </form>
     <div class="err" id="convErr"></div>
 
@@ -2153,19 +2302,29 @@
   </div>
 
   <div class="panel" id="orchPanel">
-    <h3 style="margin-bottom:4px">Orchestration modernization</h3>
-    <div style="color:var(--ink3);font-size:13px;margin-bottom:10px">
-      Import Airflow DAGs, ADF/Fabric pipelines, Step Functions, Control-M, AutoSys JIL,
-      IDMC taskflows, dbt Cloud jobs or crontabs — visualize the execution graph, adjust
-      dependencies, audit runtime resilience, and generate target-native orchestration.
-      Platform auto-detected. Airflow DAGs are read in both classic and TaskFlow
-      (<code>@dag</code>&nbsp;/&nbsp;<code>@task</code>) style.</div>
+    <div class="ihead">
+      <h3>Orchestration modernization</h3>
+      <button type="button" class="ibtn" data-info="orchInfo" aria-expanded="false"
+              aria-controls="orchInfo" aria-label="About orchestration modernization"
+              title="What this does &amp; which files">i</button>
+    </div>
+    <div class="sub" style="margin:5px 0 12px">Import a scheduler's export, audit the execution graph, generate target-native orchestration.</div>
+    <!-- This list keeps its per-file annotations rather than becoming a
+         data-exts span: which extension means which platform is the whole
+         point here, and a bare list of suffixes would drop it. -->
+    <div class="infobox" id="orchInfo">
+      <div>Import Airflow DAGs, ADF/Fabric pipelines, Step Functions, Control-M, AutoSys JIL,
+        IDMC taskflows, dbt Cloud jobs or crontabs — visualize the execution graph, adjust
+        dependencies, audit runtime resilience, and generate target-native orchestration.</div>
+      <div><b>Which files?</b> Orchestration exports —
+        <code>.py</code> (Airflow) · <code>.json</code> (ADF/Fabric, Step Functions, dbt&nbsp;Cloud, IDMC) ·
+        <code>.jil</code> (AutoSys) · <code>.xml</code> (Control-M) · <code>.cron</code>&nbsp;/&nbsp;<code>.txt</code> (crontab) ·
+        <code>.dtsx</code> · <code>.dsx</code> · <code>.item</code>. Platform auto-detected; pick one or many.</div>
+      <span class="cav">Airflow DAGs are read in both classic and TaskFlow
+        (<code>@dag</code>&nbsp;/&nbsp;<code>@task</code>) style.</span>
+    </div>
     <input type="file" id="orchFiles" multiple
            accept=".py,.json,.jil,.cron,.txt,.xml,.dtsx,.dsx,.item">
-    <div class="fhint"><b>Which files?</b> Orchestration exports —
-      <code>.py</code> (Airflow) · <code>.json</code> (ADF/Fabric, Step Functions, dbt&nbsp;Cloud, IDMC) ·
-      <code>.jil</code> (AutoSys) · <code>.xml</code> (Control-M) · <code>.cron</code>&nbsp;/&nbsp;<code>.txt</code> (crontab) ·
-      <code>.dtsx</code> · <code>.dsx</code> · <code>.item</code>. Platform auto-detected; pick one or many.</div>
     <div style="display:flex;gap:10px;align-items:center;margin-top:12px;flex-wrap:wrap">
       <button type="button" id="orchAnalyze" style="margin-top:0">Analyze orchestration</button>
       <span id="orchStatus" style="font-size:13px;color:var(--ink3)"></span>
@@ -2375,17 +2534,66 @@
     <section class="set-sec" id="sec-notifications">
       <h2>Notifications</h2>
       <div class="shint">Outbound email for account, approval and operational events. Delivered over SMTP — point it at Amazon SES (<code>email-smtp.&lt;region&gt;.amazonaws.com</code>) for production.</div>
-      <div id="notifStatus" class="set-table-wrap">Loading…</div>
-      <div class="facts" style="margin-top:14px">
+      <h3 style="margin-top:0">Delivery status</h3>
+      <div id="notifStatus" class="ai-status nf-status" role="status" aria-live="polite">Loading…</div>
+
+      <h3>SMTP relay</h3>
+      <div class="fhint">Where MetaBridge submits outbound mail. For Amazon SES use the SMTP
+      endpoint for your region and an SES SMTP credential — not your AWS access key.</div>
+      <div class="fld"><label for="nfHost">SMTP host</label>
+        <input type="text" id="nfHost" placeholder="email-smtp.ap-south-1.amazonaws.com" autocomplete="off">
+        <div class="fhint" id="nfHostHint" hidden></div></div>
+      <div class="fld"><label for="nfPort">Port</label>
+        <input type="number" id="nfPort" min="1" max="65535" placeholder="587" autocomplete="off" style="max-width:140px">
+        <div class="fhint">587 for STARTTLS (recommended), 465 for implicit TLS.</div></div>
+      <div class="fld"><label for="nfUser">SMTP username</label>
+        <input type="text" id="nfUser" autocomplete="off" placeholder="SES SMTP username"></div>
+      <div class="fld"><label for="nfPass">SMTP password</label>
+        <div class="pw-wrap"><input type="password" id="nfPass" autocomplete="new-password"
+               data-1p-ignore data-lpignore="true" data-form-type="other">
+          <button type="button" class="pw-eye" aria-pressed="false" aria-label="Show password" title="Show password"></button>
+        </div></div>
+
+      <h3>Sender identity</h3>
+      <div class="fld"><label for="nfFrom">From address</label>
+        <input type="email" id="nfFrom" placeholder="no-reply@your-domain.com" autocomplete="off"
+               aria-describedby="nfFromHint">
+        <div class="fhint" id="nfFromHint">Must be an address under a domain you have verified with your provider.</div>
+        <div class="fhint" id="nfFromErr" role="alert" hidden
+             style="color:var(--red);font-weight:600"></div></div>
+      <div class="fld"><label for="nfFromName">Display name</label>
+        <input type="text" id="nfFromName" placeholder="MetaBridge" autocomplete="off"></div>
+
+      <details class="adv" id="nfAdv"><summary>Advanced transport options</summary>
+        <div class="fld"><label>Transport security</label>
+          <div>
+            <label class="radio"><input type="radio" name="nftls" value="starttls" checked> STARTTLS (port 587)</label>
+            <label class="radio"><input type="radio" name="nftls" value="ssl"> Implicit TLS / SMTPS (port 465)</label>
+            <label class="radio"><input type="radio" name="nftls" value="none"> None — plaintext</label>
+          </div>
+          <div class="fhint" id="nfTlsHint">Use plaintext only for a local mail sink in development.</div></div>
+        <div class="fld"><label class="radio" for="nfEnabled"><input type="checkbox" id="nfEnabled" checked>
+          Send outbound email</label>
+          <div class="fhint">Turn off to silence all email while keeping this configuration.
+          Events still appear in the in-app notification feed.</div></div>
+      </details>
+
+      <div class="facts">
+        <button id="nfSave" disabled>Save configuration</button>
         <button type="button" class="secondary" id="notifTest">Send test email to me</button>
-        <span id="notifTestMsg" style="font-size:12.5px"></span>
+        <span class="dirty" id="nfDirty" hidden>Unsaved changes</span>
+        <span id="notifTestMsg" style="font-size:12.5px" role="status" aria-live="polite"></span>
       </div>
+      <div class="err" id="nfErr" role="alert" aria-live="assertive"></div>
       <div class="fhint" style="margin-top:14px">
-        Configure on the server: <code>METABRIDGE_SMTP_HOST</code>, <code>METABRIDGE_SMTP_PORT</code>,
+        The SMTP password is stored server-side and is never displayed again after saving.
+        These settings can also be set as server environment variables
+        (<code>METABRIDGE_SMTP_HOST</code>, <code>METABRIDGE_SMTP_PORT</code>,
         <code>METABRIDGE_SMTP_USER</code>, <code>METABRIDGE_SMTP_PASSWORD</code>,
-        <code>METABRIDGE_SMTP_FROM</code> (an address under your SES-verified domain), and
-        <code>METABRIDGE_PUBLIC_URL</code> so links in emails are absolute. If your SES account is
-        still in the sandbox, mail only reaches verified recipients.
+        <code>METABRIDGE_SMTP_FROM</code>) — <b>an environment variable always wins</b> and its
+        field is shown read-only here. Set <code>METABRIDGE_PUBLIC_URL</code> so links in emails
+        are absolute. If your SES account is still in the sandbox, mail only reaches verified
+        recipients.
       </div>
     </section>
 
@@ -2550,6 +2758,51 @@ function paintRevealIcons(root) {
   });
 }
 document.addEventListener('DOMContentLoaded', () => paintRevealIcons());
+
+/* ---------------- ⓘ info disclosures ----------------------------------
+   Every tool panel used to print its "what this does" paragraph and its
+   accepted-file list permanently, above the first control. Both are now
+   behind an ⓘ next to the heading. Delegated, so it covers boxes rendered
+   at any time. One box per button; several may be open at once (they are
+   independent tools, and forcing an accordion would close the one you were
+   reading when you opened its neighbour to compare). */
+document.addEventListener('click', ev => {
+  const btn = ev.target.closest && ev.target.closest('.ibtn');
+  if (!btn) return;
+  ev.preventDefault();
+  const box = document.getElementById(btn.dataset.info);
+  if (!box) return;
+  const open = !box.classList.contains('on');
+  box.classList.toggle('on', open);
+  btn.setAttribute('aria-expanded', String(open));
+});
+// Escape closes every open box, matching the modals' dismissal.
+document.addEventListener('keydown', ev => {
+  if (ev.key !== 'Escape') return;
+  document.querySelectorAll('.infobox.on').forEach(box => {
+    box.classList.remove('on');
+    const btn = document.querySelector('.ibtn[data-info="' + box.id + '"]');
+    if (btn) btn.setAttribute('aria-expanded', 'false');
+  });
+});
+
+/* The accepted-metadata extensions were written out verbatim in 7 places on
+   Reports alone (plus Estate and Pipeline Studio) — nine copies to keep in
+   step with the `accept=` attributes. Declared once here and painted into
+   any <span data-exts>; data-exts="a,b" narrows it to a subset. */
+const MB_EXT_LIST = ['.sql', '.xml', '.dtsx', '.dsx', '.item', '.mp/.dml/.xfr',
+                     '.ddls', '.cds', '.abap', '.hdbcalculationview',
+                     '.yml', '.json', '.properties'];
+function paintExtLists(root) {
+  (root || document).querySelectorAll('[data-exts]').forEach(el => {
+    if (el.firstElementChild) return;                       // already painted
+    const only = el.getAttribute('data-exts');
+    const list = only ? only.split(',') : MB_EXT_LIST;
+    el.innerHTML = list.map(e => '<code>' + e + '</code>').join(' · ');
+  });
+}
+document.addEventListener('DOMContentLoaded', () => paintExtLists());
+
 // Trim on blur rather than on input, so typing (and a deliberate interior space)
 // is never fought mid-keystroke. Fires `input` so dirty-tracking stays accurate.
 document.addEventListener('blur', ev => {
@@ -3127,7 +3380,7 @@ const SET_LOADERS = {workspace: loadWorkspace, profile: loadProfileSec, ai: load
                      roles: renderRolesMatrix};
 
 function settingsDirty() {
-  return ['#wsSave', '#aiSave', '#pnSave'].some(s => !$(s).disabled);
+  return ['#wsSave', '#aiSave', '#pnSave', '#nfSave'].some(s => !$(s).disabled);
 }
 function showSettings(sec, force) {
   if (!force && sec !== curSetSec && settingsDirty()) { confirmDiscard(sec); return; }
@@ -3151,9 +3404,9 @@ function confirmDiscard(nextSec) {
   $('#dcKeep').onclick = closeModal;
   $('#dcGo').onclick = () => {
     closeModal();
-    ['#wsSave', '#aiSave', '#pnSave'].forEach(s => { $(s).disabled = true; });
-    ['#wsDirty', '#aiDirty', '#pnDirty'].forEach(s => { $(s).hidden = true; });
-    $('#aiKey').value = ''; $('#aiToken').value = '';
+    ['#wsSave', '#aiSave', '#pnSave', '#nfSave'].forEach(s => { $(s).disabled = true; });
+    ['#wsDirty', '#aiDirty', '#pnDirty', '#nfDirty'].forEach(s => { $(s).hidden = true; });
+    $('#aiKey').value = ''; $('#aiToken').value = ''; $('#nfPass').value = '';
     showSettings(nextSec, true);
   };
 }
@@ -3465,46 +3718,181 @@ function classifyAiFailure(detail) {
   return 'ERROR';
 }
 // -- Notifications (outbound email) settings --------------------------------
+let nfSnapshot = null, nfCache = null;
+function nfTlsMode() {
+  const r = document.querySelector('input[name="nftls"]:checked');
+  return r ? r.value : 'starttls';
+}
+function nfState() {
+  return JSON.stringify([$('#nfHost').value.trim(), $('#nfPort').value.trim(),
+    $('#nfUser').value.trim(), $('#nfPass').value, $('#nfFrom').value.trim(),
+    $('#nfFromName').value.trim(), nfTlsMode(), $('#nfEnabled').checked]);
+}
+function nfDirtyCheck() {
+  if ($('#nfSave').dataset.saving) return;   // mid-save: leave button as-is
+  const dirty = canManageSettings() && nfSnapshot !== null
+    && nfState() !== nfSnapshot;
+  $('#nfSave').disabled = !dirty; $('#nfDirty').hidden = !dirty;
+}
+function nfRenderStatus(d) {
+  const box = $('#notifStatus');
+  // Headline: one badge that states the situation, using the shared component
+  // so it reads the same as every other status pill in the console.
+  const badge = d.ready
+    ? ['ok', 'Ready']
+    : (d.configured ? ['warn', 'Action needed'] : ['', 'Not configured']);
+  const head = '<div class="nf-head"><span class="'
+    + (badge[0] ? 'badge ' + badge[0] : 'badge') + '">'
+    + badge[1] + '</span><b>'
+    + (d.ready ? 'Sending via ' + esc(d.provider)
+       : (d.configured ? 'Configuration incomplete'
+          : 'Email events stay in the console'))
+    + '</b></div>';
+  // Detail rows: only what actually has a value — an unconfigured transport
+  // shows nothing rather than a column of em-dashes.
+  const rows = [];
+  if (d.host) rows.push(['Host', esc(d.host) + (d.port ? ':' + d.port : '')]);
+  if (d.from) rows.push(['From', esc(d.from_name ? d.from_name + ' <' + d.from + '>' : d.from)]);
+  if (d.user) rows.push(['Username', esc(d.user)]);
+  if (d.host) rows.push(['Encryption', {ssl: 'Implicit TLS (SMTPS)',
+    starttls: 'STARTTLS', none: 'None — plaintext'}[d.tls] || esc(d.tls)]);
+  if (d.host) rows.push(['Credential', d.password_set ? 'Stored' : 'None set']);
+  const dl = rows.length
+    ? '<dl>' + rows.map(r => '<dt>' + r[0] + '</dt><dd>' + r[1] + '</dd>').join('') + '</dl>'
+    : '<dl><dt>Transport</dt><dd class="empty">No SMTP relay configured yet</dd></dl>';
+  const notes = (d.notes || []).length
+    ? '<ul class="nf-notes">' + d.notes.map(n => '<li>' + esc(n) + '</li>').join('') + '</ul>'
+    : '';
+  box.innerHTML = head + dl + notes;
+}
 async function loadNotifSettings() {
   const box = $('#notifStatus'), msg = $('#notifTestMsg');
   if (msg) msg.textContent = '';
+  $('#nfErr').style.display = 'none';
+  $('#nfFromErr').hidden = true;             // clear stale field-level errors
+  $('#nfFrom').setAttribute('aria-invalid', 'false');
   box.textContent = 'Loading…';
   try {
     const d = await api('/api/settings/notifications/email');
-    const badge = d.ready
-      ? '<span style="color:#1e8449;font-weight:600">Ready</span>'
-      : (d.configured
-          ? '<span style="color:#c77d0a;font-weight:600">Configured — action needed</span>'
-          : '<span style="color:#8a90a0;font-weight:600">Not configured</span>');
-    const rows = [['Status', badge], ['Provider', esc(d.provider || 'none')],
-      ['From', esc(d.from || '—')],
-      ['Host', esc(d.host || '—') + (d.port ? (':' + d.port) : '')],
-      ['Transport security', esc(d.tls || '—')]];
-    let html = '<table>' + rows.map(r =>
-      '<tr><th style="text-align:left;padding:6px 16px 6px 0;color:#68738a;'
-      + 'font-weight:600;white-space:nowrap;vertical-align:top">' + r[0]
-      + '</th><td style="padding:6px 0">' + r[1] + '</td></tr>').join('')
-      + '</table>';
-    if ((d.notes || []).length)
-      html += '<ul style="margin:12px 0 0;padding-left:18px;color:#68738a;'
-        + 'font-size:12.5px;line-height:1.6">'
-        + d.notes.map(n => '<li>' + esc(n) + '</li>').join('') + '</ul>';
-    box.innerHTML = html;
+    nfCache = d;
+    nfRenderStatus(d);
+    // populate the form from the effective config
+    const lock = d.env_locked || {}, can = canManageSettings();
+    $('#nfHost').value = d.host || '';
+    $('#nfPort').value = d.port || 587;
+    $('#nfUser').value = d.user || '';
+    $('#nfPass').value = '';
+    $('#nfPass').placeholder = d.password_set ? 'Saved — leave blank to keep' : '';
+    $('#nfFrom').value = d.from || '';
+    $('#nfFromName').value = d.from_name || '';
+    const tls = d.ssl ? 'ssl' : (d.starttls ? 'starttls' : 'none');
+    document.querySelectorAll('input[name="nftls"]').forEach(r => {
+      r.checked = r.value === tls;
+      r.disabled = !can || !!(lock.ssl || lock.starttls);
+    });
+    $('#nfEnabled').checked = d.enabled !== false || !d.configured;
+    // fields pinned by the server environment are authoritative -> read-only
+    [['#nfHost', 'host'], ['#nfPort', 'port'], ['#nfUser', 'user'],
+     ['#nfPass', 'password'], ['#nfFrom', 'from'],
+     ['#nfFromName', 'from_name']].forEach(([sel, key]) => {
+      const el = $(sel), locked = !!lock[key];
+      el.readOnly = locked; el.disabled = !can;
+      // readOnly (not disabled) keeps the value reachable by keyboard and
+      // screen reader; the styling comes from input[readonly] in the sheet.
+      el.title = locked ? 'Set by a server environment variable' : '';
+      el.setAttribute('aria-readonly', locked ? 'true' : 'false');
+    });
+    $('#nfEnabled').disabled = !can || !!lock.enabled;
+    const anyLock = Object.keys(lock).some(k => lock[k]);
+    $('#nfHostHint').hidden = !anyLock;
+    if (anyLock) $('#nfHostHint').textContent =
+      'Some fields are set by server environment variables and are read-only here.';
+    if (d.ssl || d.starttls === false) $('#nfAdv').open = true;
+    nfSnapshot = nfState(); nfDirtyCheck();
     const t = $('#notifTest');
-    if (t) { t.disabled = !d.ready || !canManageSettings(); if (!d.ready) t.title = 'Configure email first'; }
+    if (t) {
+      t.disabled = !d.ready || !can;
+      t.title = d.ready ? '' : 'Configure and save email first';
+    }
   } catch (e) {
-    box.innerHTML = '<span style="color:#b03a2e">' + esc((e && e.message)
+    box.innerHTML = '<span style="color:var(--red)">' + esc((e && e.message)
       || 'Could not load email status.') + '</span>';
   }
 }
+// Inline validation: report a bad From address beside the field on blur,
+// rather than making the operator round-trip a save to discover it.
+function nfValidateFrom() {
+  const el = $('#nfFrom'), box = $('#nfFromErr');
+  const val = el.value.trim(), host = $('#nfHost').value.trim();
+  let err = '';
+  if (val && !/^[^@\s]+@[^@\s.]+\.[^@\s]+$/.test(val))
+    err = 'Enter a complete email address, e.g. no-reply@your-domain.com';
+  else if (host && !val)
+    err = 'A From address is required when an SMTP host is set.';
+  box.textContent = err; box.hidden = !err;
+  el.setAttribute('aria-invalid', err ? 'true' : 'false');
+  el.setAttribute('aria-describedby', err ? 'nfFromErr' : 'nfFromHint');
+  return !err;
+}
+['#nfHost', '#nfPort', '#nfUser', '#nfPass', '#nfFrom', '#nfFromName']
+  .forEach(s => { $(s).oninput = nfDirtyCheck; });
+$('#nfFrom').onblur = nfValidateFrom;
+$('#nfHost').onblur = () => { if ($('#nfFrom').value.trim() || $('#nfHost').value.trim()) nfValidateFrom(); };
+document.querySelectorAll('input[name="nftls"]').forEach(r => {
+  r.onchange = () => {
+    // keep the port in step with the chosen transport unless env-pinned
+    const p = $('#nfPort');
+    if (!p.readOnly) {
+      if (nfTlsMode() === 'ssl' && p.value === '587') p.value = '465';
+      else if (nfTlsMode() !== 'ssl' && p.value === '465') p.value = '587';
+    }
+    nfDirtyCheck();
+  };
+});
+$('#nfEnabled').onchange = nfDirtyCheck;
+$('#nfSave').onclick = async () => {
+  const err = $('#nfErr'); err.style.display = 'none'; err.style.color = '';
+  const btn = $('#nfSave');
+  if (btn.dataset.saving) return;            // guard against double-submit
+  if (!nfValidateFrom()) {                   // catch it before the round-trip
+    $('#nfFrom').focus();                    // move focus to the offending field
+    return;
+  }
+  const label = btn.textContent;
+  btn.dataset.saving = '1'; btn.disabled = true; btn.textContent = 'Saving…';
+  $('#notifTestMsg').textContent = '';
+  try {
+    const tls = nfTlsMode();
+    const d = await api('/api/settings/notifications/email', {method: 'PUT',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({host: $('#nfHost').value.trim(),
+                            port: $('#nfPort').value.trim() || '587',
+                            user: $('#nfUser').value.trim(),
+                            password: $('#nfPass').value,
+                            from: $('#nfFrom').value.trim(),
+                            from_name: $('#nfFromName').value.trim(),
+                            starttls: tls === 'starttls', ssl: tls === 'ssl',
+                            enabled: $('#nfEnabled').checked})});
+    delete btn.dataset.saving; btn.textContent = label;
+    await loadNotifSettings();               // re-read effective config
+    err.style.color = 'var(--green)'; err.dataset.ok = '1';
+    err.textContent = '✓ Configuration saved.'; err.style.display = 'block';
+  } catch (e) {
+    // validation (422) or API/network error — keep the edits, allow retry
+    delete btn.dataset.saving; btn.textContent = label;
+    err.style.color = ''; delete err.dataset.ok;
+    err.textContent = e.message; err.style.display = 'block';
+    nfDirtyCheck();                          // still dirty -> Save re-enabled
+  }
+};
 $('#notifTest').onclick = async () => {
   const btn = $('#notifTest'), msg = $('#notifTestMsg'), lbl = btn.textContent;
   btn.disabled = true; btn.textContent = 'Sending…'; msg.textContent = '';
   try {
     const d = await api('/api/settings/notifications/email/test', {method: 'POST'});
-    msg.style.color = '#1e8449'; msg.textContent = '✓ Sent to ' + d.sent_to;
+    msg.style.color = 'var(--green)'; msg.textContent = '✓ Sent to ' + d.sent_to;
   } catch (e) {
-    msg.style.color = '#b03a2e'; msg.textContent = (e && e.message) || 'Send failed';
+    msg.style.color = 'var(--red)'; msg.textContent = (e && e.message) || 'Send failed';
   } finally {
     btn.textContent = lbl; btn.disabled = false;
   }
@@ -4988,12 +5376,19 @@ async function loadDashboard() {
   renderModTable();
   bindPager('modTable', renderModTable);
 
-  const jobRow = j => {
+  // Only convert/govern/scaffold runs produce key figures. On a page of twin or
+  // orchestration rows the column is empty for every row, so it is dropped
+  // entirely rather than reserving ~120px of width for nothing.
+  const jobFigures = j => {
     const s = j.summary || {};
-    let figures = '';
-    if (j.kind === 'convert') figures = (s.automated_conversion_rate||0) + '% automated';
-    if (j.kind === 'govern') figures = (s.classified_columns||0) + ' classified, ' + (s.violations||0) + ' violations';
-    if (j.kind === 'scaffold') figures = (s.objects_total||0) + ' pipelines';
+    if (j.kind === 'convert') return (s.automated_conversion_rate||0) + '% automated';
+    if (j.kind === 'govern') return (s.classified_columns||0) + ' classified, ' + (s.violations||0) + ' violations';
+    if (j.kind === 'scaffold') return (s.objects_total||0) + ' pipelines';
+    return '';
+  };
+  let jobShowFigures = true;   // set per render from the rows actually shown
+  const jobRow = j => {
+    const figures = jobFigures(j);
     // runStatusChip, not a green `done` badge: this row and the Reports table
     // describe the same runs and used to disagree about them.
     const st = runStatusChip(j)
@@ -5013,8 +5408,9 @@ async function loadDashboard() {
                   : j.has_findings ? 'Open conversion findings'
                   : 'This job type does not produce a findings report',
             'data-act="f" data-id="' + esc(j.id) + '"')
-      + act('Detail', true, 'Job metadata, reports & artifacts',
-            'data-act="d" data-id="' + esc(j.id) + '"')
+      // No "Detail" chip: the Project cell below is already a link to the very
+      // same openJobDetail(), so it was a second control for an action the row
+      // always had — a third of the Actions column carrying no new capability.
       + act('Download', done && j.has_download !== false && j.has_download !== undefined,
             !done ? 'Available once the job finishes'
                   : j.has_download ? 'Download all artifacts (.zip)'
@@ -5026,34 +5422,39 @@ async function loadDashboard() {
       + ' style="color:var(--accent);cursor:pointer;font-weight:600">'
       + esc(jobLabel(j)) + '</a></td>'
       + '<td>' + esc(j.kind) + '</td><td>' + st + '</td>'
-      + '<td>' + figures + '</td>'
-      + '<td style="color:var(--muted);white-space:nowrap">' + esc((j.created||'').replace('T',' ')) + '</td>'
-      + '<td>' + acts + '</td></tr>';
+      + (jobShowFigures ? '<td>' + figures + '</td>' : '')
+      + '<td style="color:var(--ink3);white-space:nowrap">' + esc((j.created||'').replace('T',' ')) + '</td>'
+      + '<td class="jacts-cell">' + acts + '</td></tr>';
   };
-  const jobHeader = '<tr><th>Project</th><th>Type</th><th>Status</th><th>Key figures</th><th>When</th><th>Actions</th></tr>';
+  const jobHeader = () => '<tr><th>Project</th><th>Type</th><th>Status</th>'
+    + (jobShowFigures ? '<th>Key figures</th>' : '')
+    + '<th>When</th><th class="jacts-cell">Actions</th></tr>';
+  const jobCols = () => jobShowFigures ? 6 : 5;
   // Distinguish "nothing ran yet" from "the filter hides everything" —
   // the second needs a way back, not onboarding copy.
   const jobEmpty = () => (jobStatusFilter || jobKindFilter)
-    ? '<tr><td colspan=6 style="color:var(--muted)">No jobs match '
+    ? '<tr><td colspan=' + jobCols() + ' style="color:var(--ink3)">No jobs match '
       + [jobKindFilter && 'type <b>' + esc(jobKindFilter) + '</b>',
          jobStatusFilter && 'status <b>' + esc(jobStatusFilter) + '</b>']
         .filter(Boolean).join(' and ') + '. '
       + '<a id="jobStatusClear" style="color:var(--accent);cursor:pointer">Clear filters</a></td></tr>'
-    : '<tr><td colspan=6 style="color:var(--muted)">No jobs yet — run a conversion, scan, or scaffold.</td></tr>';
+    : '<tr><td colspan=' + jobCols() + ' style="color:var(--ink3)">No jobs yet — run a conversion, scan, or scaffold.</td></tr>';
   const renderJobTable = () => {
     // Same normalization the option list uses — a job with no status is
     // bucketed as "unknown" in both places or selecting it matches nothing.
     const shown = jobs.filter(j =>
       (!jobStatusFilter || (j.status || 'unknown') === jobStatusFilter) &&
       (!jobKindFilter || (j.kind || '') === jobKindFilter));
+    // Decide BEFORE mapping rows: header, cells and colspan must agree.
+    jobShowFigures = shown.some(j => jobFigures(j) !== '');
     const noun = (jobStatusFilter || jobKindFilter) ? 'matching jobs' : 'jobs';
-    renderPage('jobTable', shown.map(jobRow), jobHeader, jobEmpty(), noun, () => {
+    renderPage('jobTable', shown.map(jobRow), jobHeader(), jobEmpty(), noun, () => {
       // Only enabled actions are anchors; disabled ones render as <span> and
       // are never matched here, so they cannot be clicked or tab-focused.
       $('#jobTable').querySelectorAll('a.jact[data-act="f"]').forEach(a =>
         a.onclick = () => openJobFindings(a.dataset.id).catch(e => mbAlert(e.message)));
-      $('#jobTable').querySelectorAll('a.jact[data-act="d"]').forEach(a =>
-        a.onclick = () => openJobDetail(a.dataset.id));
+      // data-act="d" is gone with the Detail chip; .jd (the Project link) is
+      // now the sole route into the job-detail overlay from this table.
       $('#jobTable').querySelectorAll('.jd').forEach(a =>
         a.onclick = () => openJobDetail(a.dataset.id));
       const clear = $('#jobStatusClear');
@@ -5115,6 +5516,18 @@ function switchInputTab(tab) {
   $('#inputTabUpload').style.color      = isUpload ? '#fff' : 'var(--ink2)';
   $('#inputTabConn').style.background   = isUpload ? '#fff' : 'var(--accent)';
   $('#inputTabConn').style.color        = isUpload ? 'var(--ink2)' : '#fff';
+  // Target platform / mode / Analyze belong to the UPLOAD path only. The
+  // connection path picks its objects, previews the manifest and hands off to
+  // Pipeline Studio, which asks for the target itself — so showing them here
+  // offered a choice nothing downstream reads, next to an Analyze button that
+  // could only report a missing file.
+  $('#convTargetBlock').style.display = isUpload ? '' : 'none';
+  // a half-finished upload run must not leave its results under the picker
+  if (!isUpload) {
+    $('#planPanel').style.display = 'none';
+    $('#convResult').style.display = 'none';
+    $('#convErr').style.display = 'none';
+  }
 }
 
 $('#analyzeBtn').onclick = async () => {
@@ -5413,7 +5826,10 @@ async function fillModConnList() {
    blocks keeps every one of those intact for the tables that survive. */
 let modPick = null;
 
-function modObjKey(o) { return o.schema + '.' + o.name; }
+/* Keyed by KIND as well as name: a procedure very often shares its name with
+   the table it loads (LOAD_ORDERS / ORDERS is the common shape), and a bare
+   `schema.name` key would make ticking one silently tick the other. */
+function modObjKey(o) { return o.kind + ':' + o.schema + '.' + o.name; }
 
 function openModPicker(report, row) {
   // Split tables from views exactly the way the engine's `base_tables` does
@@ -5425,9 +5841,16 @@ function openModPicker(report, row) {
   const tables = (report.tables || [])
     .filter(t => !String(t.type || '').toUpperCase().includes('VIEW'));
   const views = report.views || [];
+  // Stored procedures carry the curated layer's LOGIC, and the manifest ships
+  // them alongside the tables. Listing them here is what makes that visible
+  // and controllable up front — otherwise the only sign they were converted
+  // is the "N analyzed" line in the results, long after the choice is gone.
+  const procedures = report.procedures || [];
   const objs = tables.map(t => ({schema: t.schema || '', name: t.name,
                                  kind: 'table', rows: t.rows}))
-    .concat(views.map(v => ({schema: v.schema || '', name: v.name, kind: 'view'})));
+    .concat(views.map(v => ({schema: v.schema || '', name: v.name, kind: 'view'})))
+    .concat(procedures.map(p => ({schema: p.schema || '', name: p.name,
+                                  kind: 'procedure'})));
   const schemas = [...new Set(objs.map(o => o.schema))].sort();
   modPick = {
     report: report, row: row, objs: objs, schemas: schemas,
@@ -5506,6 +5929,7 @@ function renderModPicker() {
           + '<span style="flex:1;overflow:hidden;text-overflow:ellipsis">' + esc(o.name) + '</span>'
           + '<span style="color:var(--muted);font-size:11px">'
           + (o.kind === 'view' ? 'view'
+             : o.kind === 'procedure' ? 'procedure'
              : (o.rows == null ? 'table' : Number(o.rows).toLocaleString() + ' rows'))
           + '</span></label>';
       }).join('')
@@ -5523,12 +5947,15 @@ function renderModPicker() {
 function updateModPickCount() {
   const sel = modSelectedObjs();
   const t = sel.filter(o => o.kind === 'table').length;
-  const v = sel.length - t;
+  const v = sel.filter(o => o.kind === 'view').length;
+  const p = sel.filter(o => o.kind === 'procedure').length;
+  const nSchemas = new Set(sel.map(o => o.schema)).size;
   $('#modPickCount').textContent = sel.length
     ? t + ' table' + (t === 1 ? '' : 's')
       + (v ? ' + ' + v + ' view' + (v === 1 ? '' : 's') : '')
-      + ' across ' + new Set(sel.map(o => o.schema)).size + ' schema'
-      + (new Set(sel.map(o => o.schema)).size === 1 ? '' : 's') + ' selected'
+      + (p ? ' + ' + p + ' procedure' + (p === 1 ? '' : 's') : '')
+      + ' across ' + nSchemas + ' schema' + (nSchemas === 1 ? '' : 's')
+      + ' selected'
     : 'Nothing selected';
   $('#modPickNext').disabled = !sel.length;
 }
@@ -5546,11 +5973,18 @@ function updateModPickCount() {
    whose FOLLOWING line is a `schema:` at the matching depth. Everything up to
    the next such boundary — columns, unique_key list items, and the generated
    `# incremental_column:` / `# unique_key:` suggestion comments — stays with
-   the table it belongs to. Header comments before `tables:` pass through. */
-function filterManifestYaml(yml, keep) {
+   the table it belongs to. Header comments before `tables:` pass through.
+
+   `keepProc` is optional. Without it the trailing sections (`procedures:` and
+   anything after) pass through verbatim, which is the behaviour every other
+   caller depends on. With it, entries inside `procedures:` are filtered the
+   same way tables are — that is what lets the picker's procedure checkboxes
+   actually leave logic out instead of only appearing to. */
+function filterManifestYaml(yml, keep, keepProc) {
   const lines = String(yml || '').split('\n');
   const out = [];
   let block = null, blockName = '', blockSchema = '', tail = false;
+  const tailLines = [];
   const flush = () => {
     if (block && keep(blockSchema, blockName)) out.push(...block);
     block = null;
@@ -5572,9 +6006,12 @@ function filterManifestYaml(yml, keep) {
              /^(#|\s*$)/.test(block[block.length - 1])) lead.unshift(block.pop());
       flush();
       tail = true;
-      out.push(...lead);
+      // into the TAIL, not `out`: these comments introduce the section, and
+      // the procedure pass has to see them adjacent to their `procedures:`
+      // key to drop them with it when nothing in it survives
+      tailLines.push(...lead);
     }
-    if (tail) { out.push(line); continue; }
+    if (tail) { tailLines.push(line); continue; }
     const mo = line.match(/^(\s*)-\s+name:\s+(\S+)\s*$/);
     const nx = mo && (lines[i + 1] || '')
       .match(/^(\s*)schema:\s*(\S*)\s*$/);
@@ -5591,7 +6028,65 @@ function filterManifestYaml(yml, keep) {
     if (block) block.push(line); else out.push(line);
   }
   flush();
-  return out.join('\n');
+  return out.concat(keepProc ? filterProcedureSection(tailLines, keepProc)
+                             : tailLines).join('\n');
+}
+
+/* Drop unselected entries from the manifest's `procedures:` list.
+
+   A procedure entry cannot use the table trick of "the next key is `schema:`":
+   `schema` is optional here, and the `definition` is a multi-line block scalar
+   whose own text can contain anything, including lines that look like YAML
+   keys. What IS reliable is indentation — every line belonging to an entry is
+   indented deeper than the `- ` bullet that opens it, and the block scalar's
+   body must be deeper still to remain part of it. So a new entry starts at a
+   `- name:` at the SAME indent as the first bullet, and everything until the
+   next one travels with it, body and all.
+
+   If every procedure is deselected the section header and its comments go too,
+   leaving no empty `procedures:` key for the scaffold to trip over. */
+function filterProcedureSection(lines, keepProc) {
+  const out = [];
+  let i = 0;
+  while (i < lines.length) {
+    if (!/^procedures:\s*$/.test(lines[i])) { out.push(lines[i++]); continue; }
+    // the comment block introducing the section belongs to it: if nothing
+    // survives, these go as well rather than heading an absent list
+    const lead = [];
+    while (out.length && /^(#|\s*$)/.test(out[out.length - 1])) lead.unshift(out.pop());
+    const header = lines[i++];
+    const kept = [];
+    let bulletIndent = null;
+    while (i < lines.length) {
+      const m = lines[i].match(/^(\s*)-\s+name:\s+(\S+)\s*$/);
+      if (bulletIndent === null && m) bulletIndent = m[1].length;
+      // a top-level key at indent 0 ends the section
+      if (!m && /^[A-Za-z_][\w-]*:/.test(lines[i])) break;
+      if (m && m[1].length === bulletIndent) {
+        const entry = [lines[i++]];
+        let schema = '';
+        while (i < lines.length) {
+          const nm = lines[i].match(/^(\s*)-\s+name:\s+(\S+)\s*$/);
+          if (nm && nm[1].length === bulletIndent) break;
+          if (/^[A-Za-z_][\w-]*:/.test(lines[i])) break;
+          const sm = lines[i].match(/^\s*schema:\s*(\S*)\s*$/);
+          // only the entry's OWN schema key, not one inside a body
+          if (sm && !schema) schema = (sm[1] || '').replace(/^(['"])(.*)\1$/, '$2');
+          entry.push(lines[i++]);
+        }
+        // trailing blanks separate entries — hold them aside so they don't
+        // travel with a dropped entry, but keep them when it survives so a
+        // kept-everything filter reproduces the input byte for byte
+        const trail = [];
+        while (entry.length && /^\s*$/.test(entry[entry.length - 1])) trail.unshift(entry.pop());
+        if (keepProc(schema, m[2])) kept.push(...entry, ...trail);
+        continue;
+      }
+      out.push(lines[i++]);
+    }
+    if (kept.length) out.push(...lead, header, ...kept);
+  }
+  return out;
 }
 
 $('#modPickCancel').onclick = closeModPicker;
@@ -5620,12 +6115,19 @@ $('#modPickNext').onclick = () => {
   if (!modPick) return;
   const sel = modSelectedObjs();
   if (!sel.length) return;
-  const keepSet = new Set(sel.filter(o => o.kind === 'table').map(modObjKey));
+  const keepSet = new Set(sel.filter(o => o.kind === 'table')
+    .map(o => o.schema + '.' + o.name));
   // The manifest's `schema:` is only emitted when introspection knew one; fall
   // back to matching on the bare name so single-schema sources still filter.
   const byName = new Set(sel.filter(o => o.kind === 'table').map(o => o.name));
+  const procSet = new Set(sel.filter(o => o.kind === 'procedure')
+    .map(o => o.schema + '.' + o.name));
+  const procByName = new Set(sel.filter(o => o.kind === 'procedure')
+    .map(o => o.name));
   const yml = filterManifestYaml(modPick.report.manifest_yaml || '',
-    (schema, name) => schema ? keepSet.has(schema + '.' + name) : byName.has(name));
+    (schema, name) => schema ? keepSet.has(schema + '.' + name) : byName.has(name),
+    (schema, name) => schema ? procSet.has(schema + '.' + name)
+                             : procByName.has(name));
   modPick.yml = yml;
   $('#modManifestPreview').innerHTML = manifestPreviewHtml(
     yml, modPick.row.connector + '_manifest.yml');
@@ -5645,10 +6147,13 @@ $('#modManifestGo').onclick = async () => {
   const box = $('#modManifestPreview').querySelector('[id^="manifestBox_"]');
   const cached = box && (window._manifestRawCache || {})[box.id];
   const yml = (cached && cached.yml) || modPick.yml;
+  const nProcs = sel.filter(o => o.kind === 'procedure').length;
   await handoffToScaffold(
     new File([yml], row.connector + '_manifest.yml', {type:'text/yaml'}),
     '<b>' + row.connector + '_manifest.yml</b> (' + nTables
-      + ' selected table' + (nTables === 1 ? '' : 's') + ' from ' + esc(row.name) + ')',
+      + ' selected table' + (nTables === 1 ? '' : 's')
+      + (nProcs ? ' + ' + nProcs + ' procedure' + (nProcs === 1 ? '' : 's') : '')
+      + ' from ' + esc(row.name) + ')',
     row.connector);
   closeModPicker();
 };
@@ -9917,7 +10422,46 @@ document.addEventListener('click', async (ev) => {
   }
 });
 
+/* ---------------- Reports tool picker ----------------------------------
+   Seven upload-and-run tools plus the run history, switched instead of
+   stacked. Same shape as the Overview view toggle (`applyDashView`): only the
+   selected panel is in the DOM flow, and the choice persists per browser.
+   Default is the history — the common visit is "find the report I already
+   generated", which should not open behind seven forms. */
+const REPORT_TOOL_PANELS = {
+  hist: 'histPanel', assess: 'assessPanel', air: 'airPanel', debt: 'debtPanel',
+  fin: 'finPanel', sec: 'secPanel', docs: 'docsPanel', ag: 'agPanel',
+};
+let reportTool = localStorage.getItem('mb_report_tool') || 'hist';
+
+function applyReportTool() {
+  // A persisted key from an older build (or a removed tool) falls back to the
+  // history rather than hiding every panel and leaving the page blank.
+  if (!REPORT_TOOL_PANELS[reportTool]) reportTool = 'hist';
+  Object.keys(REPORT_TOOL_PANELS).forEach(k => {
+    const el = $('#' + REPORT_TOOL_PANELS[k]);
+    if (el) el.style.display = (k === reportTool) ? '' : 'none';
+  });
+  document.querySelectorAll('#reportToolSeg button').forEach(b =>
+    b.setAttribute('aria-selected', String(b.dataset.tool === reportTool)));
+}
+
+function bindReportToolSeg() {
+  document.querySelectorAll('#reportToolSeg button').forEach(b => {
+    b.onclick = () => {
+      if (reportTool === b.dataset.tool) return;
+      reportTool = b.dataset.tool;
+      localStorage.setItem('mb_report_tool', reportTool);
+      applyReportTool();
+    };
+  });
+}
+
 async function loadReports() {
+  // Before the await: switching tabs must not wait on /api/jobs.
+  bindReportToolSeg();
+  applyReportTool();
+  paintExtLists();
   loadDocsCatalog();
   loadAgents();
   const {jobs} = await api('/api/jobs');

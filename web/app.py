@@ -3718,6 +3718,41 @@ def get_email_notifications(request: Request):
     return notify.email_status()
 
 
+@app.put("/api/settings/notifications/email")
+async def put_email_notifications(request: Request):
+    """Save the outbound-email transport (owner/admin). The password is
+    write-only: send it to set it, omit it to keep the stored one. Fields the
+    server environment pins are ignored here — env always wins."""
+    _require_owner(request)
+    from metabridge import notify
+    body = await request.json()
+    host = str(body.get("host", "") or "").strip()
+    sender = str(body.get("from", "") or "").strip()
+    if host and not sender:
+        raise HTTPException(422, "A From address is required when a host is "
+                                 "set (use an address under your "
+                                 "SES-verified domain).")
+    if sender and "@" not in sender:
+        raise HTTPException(422, "From must be a valid email address.")
+    port_raw = str(body.get("port", "") or "587").strip()
+    try:
+        port_val = int(port_raw or 587)
+    except (TypeError, ValueError):
+        raise HTTPException(422, "Port must be a number between 1 and 65535.")
+    if not 1 <= port_val <= 65535:
+        raise HTTPException(422, "Port must be a number between 1 and 65535.")
+    return notify.save_settings(
+        host=host, port=str(port_val),
+        user=str(body.get("user", "") or ""),
+        password=str(body.get("password", "") or ""),
+        sender=sender,
+        from_name=str(body.get("from_name", "") or ""),
+        starttls=bool(body.get("starttls", True)),
+        use_ssl=bool(body.get("ssl", False)),
+        enabled=bool(body.get("enabled", True)),
+        clear_password=bool(body.get("clear_password")))
+
+
 @app.post("/api/settings/notifications/email/test")
 async def test_email_notifications(request: Request):
     """Send a test message to the signed-in operator's own address (never an

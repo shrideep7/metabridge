@@ -25,9 +25,9 @@ from here.
 
 | Project | Type | Status | Key figures | When | Actions |
 |---|---|---|---|---|---|
-| snowflake_to_databricks | scaffold | done | 69 pipelines | 2026-07-23 12:43:13 | Findings · Detail · Download |
-| — | scaffold | failed | 0 pipelines | 2026-07-22 15:42:59 | *Findings* · Detail · *Download* |
-| — | analyze | failed | | 2026-07-22 15:36:12 | *Findings* · Detail · *Download* |
+| snowflake_to_databricks | scaffold | done | 69 pipelines | 2026-07-23 12:43:13 | Findings · Download |
+| — | scaffold | failed | 0 pipelines | 2026-07-22 15:42:59 | *Findings* · *Download* |
+| — | analyze | failed | | 2026-07-22 15:36:12 | *Findings* · *Download* |
 
 *(italic = rendered disabled)*
 
@@ -47,12 +47,12 @@ browser (`mb_dash_view`) and defaults to *All activity*.
 
 | Column | Meaning |
 |---|---|
-| **Project** | Project name, linking to job detail. Falls back to `<kind> · <short id>` (e.g. `twin · a3f9c1`) for jobs recorded before every kind set a name |
+| **Project** | Project name, linking to job detail — **the only route into the detail overlay from this table**. Falls back to `<kind> · <short id>` (e.g. `twin · a3f9c1`) for jobs recorded before every kind set a name |
 | **Type** | What kind of job it was — `convert`, `scaffold`, `analyze`, `govern`, `twin`, `assessment`, `security`, and ~15 more |
 | **Status** | `done` (green) · `failed` (red) · anything else, e.g. `running` (amber). A `⚡ fixed` badge is added when autofix repaired the run |
 | **Key figures** | One headline number, chosen per job type |
 | **When** | Job start time |
-| **Actions** | `Findings` · `Detail` · `Download` — each enabled only when it can actually succeed |
+| **Actions** | `Findings` · `Download` — each enabled only when it can actually succeed |
 
 ### Action availability
 
@@ -63,12 +63,15 @@ not guessed from status.
 | Action | Enabled when | Tooltip when disabled |
 |---|---|---|
 | **Findings** | The job wrote a `conversion_report.json` or `governance_report.json` — in practice only `convert` and `govern` | "This job type does not produce a findings report" / "Available once the job finishes" |
-| **Detail** | Always — job metadata exists for every job, including failures | *(never disabled)* |
 | **Download** | The job's output directory contains at least one file | "This job produced no downloadable artifacts" / "Available once the job finishes" |
 
 Disabled chips render as `<span>`, so they are neither clickable nor tab-reachable, and carry a
-tooltip explaining *why*. **Detail stays enabled on failed jobs** — that is where the error message
-is, so it is exactly the row you most need to open.
+tooltip explaining *why*.
+
+**There is no `Detail` chip.** It was removed: the Project cell is already a link firing the same
+`openJobDetail()`, so the chip was a second control for an action the row always had — a third of
+the Actions column carrying no new capability. Job detail stays reachable on **every** row,
+including failures (that is where the error message is), via the project name.
 
 ### Key figures by type
 
@@ -116,7 +119,8 @@ the action states — the console never has to guess what a job produced.
 - **Filtered-empty is distinct from never-ran.** Hiding all 99 jobs behind a filter shows
   `No failed jobs.` with a *Show all statuses* link out, not the onboarding copy.
 - **Actions reflect what the job actually produced**, not just its status — see the availability
-  table above. A failed job keeps *Detail* enabled, since that is where its error is shown.
+  table above. A failed row still reaches its error: the project name opens job detail on every
+  row, whatever the status.
 - 10 rows per page. Refreshes on page visit and after any job completes.
 
 ## 7. Known gaps
