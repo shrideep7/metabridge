@@ -82,6 +82,15 @@ def generate_dbt_project(pipeline: Pipeline, out_dir: str,
     plus snapshots/, macros/, tests/, schema.yml, sources.yml under
     staging, and migration_manifest.json tracing PowerCenter object ->
     CIR object -> dbt object(s)."""
+    token = _TARGET_DIALECT.set(str(pipeline.metadata.get("dialect", "") or ""))
+    try:
+        return _generate_dbt_project(pipeline, out_dir, layout)
+    finally:
+        _TARGET_DIALECT.reset(token)
+
+
+def _generate_dbt_project(pipeline: Pipeline, out_dir: str,
+                          layout: str = "layered") -> None:
     from .dbt_naming import plan_names
     root = Path(out_dir)
     for layer in ("staging", "intermediate", "marts"):
@@ -530,7 +539,14 @@ def _config_block(m: Mapping) -> str:
 def _topo_order(m: Mapping) -> List[Transformation]:
     """Topological order over links; SOURCE and TARGET excluded."""
     skip = {TransformationType.SOURCE, TransformationType.TARGET}
-    nodes = [t for t in m.transformations if t.type not in skip and t.name != "__OUTPUT__"]
+    # __OUTPUT__ is normally just a marker naming where the mapping's output
+    # is. When it carries the TARGET's field map it is a real projection —
+    # `GENDER_STD as GENDER` — and skipping it leaves both the raw column and
+    # the cleaned one in the result, with the original name still holding the
+    # value the logic was written to replace.
+    nodes = [t for t in m.transformations
+             if t.type not in skip
+             and (t.name != "__OUTPUT__" or t.properties.get("projection"))]
     name_set = {t.name for t in nodes}
     incoming: Dict[str, set] = {t.name: set() for t in nodes}
     for l in m.links:
@@ -560,6 +576,30 @@ QUALIFY_DIALECTS = {"snowflake", "teradata", "bigquery"}
 import contextvars as _contextvars
 
 _QUALIFY_DIALECT = _contextvars.ContextVar("mb_qualify", default=False)
+
+# The warehouse-SQL generator transpiles its statements to the target dialect
+# (`sql_generator._transpile`); the dbt generator wrote model bodies verbatim,
+# so models came out in CANONICAL SQL. That is fine until a function's
+# SIGNATURE differs per dialect — `DATEDIFF(a, b, year)` is generic, Snowflake
+# wants `DATEDIFF(YEAR, b, a)` and reads the generic form as a column named
+# YEAR, failing with "invalid identifier 'YEAR'" at run time rather than at
+# generate time. Model bodies cannot be transpiled whole (they carry Jinja);
+# the EXPRESSIONS inside them are pure SQL and can.
+_TARGET_DIALECT = _contextvars.ContextVar("mb_dbt_dialect", default="")
+
+
+def _dialect_expr(sql: str) -> str:
+    """A bare SQL expression rendered for the target dialect."""
+    dialect = _TARGET_DIALECT.get()
+    if not dialect or not sql:
+        return sql
+    try:
+        import sqlglot
+        return sqlglot.parse_one(sql, read=None).sql(dialect=dialect)
+    except Exception:  # noqa: BLE001
+        # An expression sqlglot cannot parse is left exactly as it was: the
+        # canonical form is likelier to be right than a half-converted one.
+        return sql
 
 
 def render_plain_select(m: Mapping, pipeline: Pipeline, mapping_names: set,
@@ -690,7 +730,10 @@ def _render_graph(m: Mapping, pipeline: Pipeline, mapping_names: set,
         terminal = _cte_name(t)
 
     out = m.transformation("__OUTPUT__")
-    if out is not None and out.properties.get("upstream"):
+    # A projecting __OUTPUT__ was rendered as a CTE of its own and IS the
+    # terminal; redirecting to its upstream would discard the projection.
+    if out is not None and out.properties.get("upstream") \
+            and not out.properties.get("projection"):
         up = tx_by_name.get(str(out.properties["upstream"]))
         if up is not None:
             terminal = _cte_name(up)
@@ -703,6 +746,40 @@ def _cte_name(t: Transformation) -> str:
 
 def _indent(s: str, pad: str = "    ") -> str:
     return "\n".join(pad + l for l in s.split("\n"))
+
+
+def _dedup_order(t: Transformation, tx_by_name, upstream_names,
+                 group_by, hops: int = 4) -> str:
+    """ORDER BY for a keep-first-row dedup, taken from an upstream Sorter.
+
+    A Sorter renders as a pass-through CTE because ORDER BY is meaningless
+    inside a model — but its keys are the only record of which row the source
+    mapping intended to keep, so they have to be recovered here or the choice
+    becomes arbitrary. Group-by columns are dropped from the ordering: they
+    are constant within a partition and only add noise."""
+    seen: set = set()
+    frontier = list(upstream_names(t))
+    lowered = {g.lower() for g in group_by}
+    while frontier and hops > 0:
+        nxt: List[str] = []
+        for n in frontier:
+            if n in seen:
+                continue
+            seen.add(n)
+            up_t = tx_by_name.get(n)
+            if up_t is None:
+                continue
+            keys = up_t.properties.get("sort_keys") or []
+            if up_t.type == TransformationType.SORTER and keys:
+                parts = ["%s %s" % (k.get("port"),
+                                    str(k.get("order", "ASC")).lower())
+                         for k in keys
+                         if k.get("port") and k["port"].lower() not in lowered]
+                if parts:
+                    return ", ".join(parts)
+            nxt.extend(upstream_names(up_t))
+        frontier, hops = nxt, hops - 1
+    return ""
 
 
 def _render_node(t: Transformation, m: Mapping, tx_by_name, upstream_cte,
@@ -721,7 +798,7 @@ def _render_node(t: Transformation, m: Mapping, tx_by_name, upstream_cte,
         return "select %s\nfrom %s" % (cols, src)
 
     if t.type == TransformationType.FILTER:
-        cond = str(t.properties.get("condition", "TRUE"))
+        cond = _dialect_expr(str(t.properties.get("condition", "TRUE")))
         return "select *\nfrom %s\nwhere %s" % (up, cond)
 
     if t.type == TransformationType.EXPRESSION:
@@ -730,20 +807,74 @@ def _render_node(t: Transformation, m: Mapping, tx_by_name, upstream_cte,
             if p.direction == "VARIABLE":
                 continue
             if p.expression and p.expression.lower() != p.name.lower():
-                items.append("%s as %s" % (p.expression, p.name))
+                items.append("%s as %s" % (_dialect_expr(p.expression), p.name))
             else:
                 items.append(p.name)
+        # An IDMC Expression lists only the fields it ADDS; everything arriving
+        # passes through by field rule. Projecting the listed ports alone drops
+        # every inherited column — including ones the target maps and ones a
+        # downstream dedup needs to order by.
+        if t.properties.get("passthrough"):
+            if not items:
+                return "select *\nfrom %s" % up
+            return "select *,\n    %s\nfrom %s" % (",\n    ".join(items), up)
         return "select\n    %s\nfrom %s" % (",\n    ".join(items), up)
 
     if t.type == TransformationType.AGGREGATOR:
         group_by = [str(g) for g in t.properties.get("group_by", [])]
+        aggregates = [p for p in t.ports if p.expression]
+
+        # Group-by with NO aggregate expression is not an aggregation — it is
+        # Informatica's "keep one row per group" idiom, which relies on the
+        # upstream Sorter to decide WHICH row survives. Emitting `group by`
+        # here produced a select list with nothing in it: invalid SQL that
+        # never reached a warehouse to be found wrong.
+        if group_by and not aggregates:
+            order = _dedup_order(t, tx_by_name, upstream_names, group_by)
+            if order:
+                m.add_issue(IssueSeverity.INFO, "AGGREGATOR_KEEPS_FIRST_ROW",
+                            "Aggregator '%s' groups by %s with no aggregate "
+                            "function — converted to a deduplication keeping "
+                            "the first row per group, ordered by %s from the "
+                            "upstream sorter"
+                            % (t.name, ", ".join(group_by), order))
+                order_by = order
+            else:
+                m.add_issue(IssueSeverity.MANUAL,
+                            "AGGREGATOR_DEDUP_NONDETERMINISTIC",
+                            "Aggregator '%s' groups by %s with no aggregate "
+                            "function and nothing upstream sorts its input, so "
+                            "which row survives each group is arbitrary"
+                            % (t.name, ", ".join(group_by)),
+                            suggestion="Add the column that should decide the "
+                                       "surviving row to the generated "
+                                       "ORDER BY, or add a Sorter upstream in "
+                                       "the source mapping.")
+                order_by = group_by[0]
+            window = "row_number() over (partition by %s order by %s)" \
+                % (", ".join(group_by), order_by)
+            if _QUALIFY_DIALECT.get():
+                return "select *\nfrom %s\nqualify %s = 1" % (up, window)
+            return ("select * from (\n"
+                    "    select *, %s as _mb_row\n"
+                    "    from %s\n) deduped\nwhere _mb_row = 1"
+                    % (window, up))
+
         items = []
         for p in t.ports:
             if p.expression:
-                items.append("%s as %s" % (p.expression, p.name))
+                items.append("%s as %s" % (_dialect_expr(p.expression), p.name))
             else:
                 items.append(p.name)
-        sql = "select\n    %s\nfrom %s" % (",\n    ".join(items), up)
+        # Group-by columns must survive an aggregate projection: a port list
+        # that names only the aggregates loses the very keys the rows are
+        # grouped on.
+        if group_by:
+            named = {i.rsplit(" as ", 1)[-1].lower() for i in items}
+            for g in group_by:
+                if g.lower() not in named:
+                    items.insert(0, g)
+        sql = "select\n    %s\nfrom %s" % (",\n    ".join(items) or "*", up)
         if group_by:
             sql += "\ngroup by %s" % ", ".join(group_by)
         return sql
@@ -768,9 +899,32 @@ def _render_node(t: Transformation, m: Mapping, tx_by_name, upstream_cte,
         jt = {"INNER": "inner join", "LEFT": "left join", "RIGHT": "right join",
               "FULL": "full outer join"}.get(str(t.properties.get("join_type", "INNER")),
                                              "inner join")
-        cond = _qualify_join_condition(str(t.properties.get("condition", "")),
-                                       "l", "r")
+        # Bulk-rename field rules resolve a column-name clash between the two
+        # inputs, and the join condition is written against the RENAMED name.
+        # The rename has to be carried into the projection and undone in the
+        # condition, or the generated SQL references a column that exists on
+        # neither side.
+        lp = str(t.properties.get("left_prefix", "") or "")
+        rp = str(t.properties.get("right_prefix", "") or "")
+        cond_src = str(t.properties.get("condition", ""))
+        if lp or rp:
+            cond_src = _strip_join_prefixes(cond_src, lp, rp)
+        cond = _qualify_join_condition(cond_src, "l", "r")
+
         cols = ", ".join(p.name for p in t.ports) or "*"
+        if lp or rp:
+            proj = []
+            for alias, name, pfx in (("l", left_name, lp), ("r", right_name, rp)):
+                side = tx_by_name.get(name)
+                if pfx and side is not None and side.ports:
+                    proj.extend("%s.%s as %s%s" % (alias, p.name, pfx, p.name)
+                                for p in side.ports)
+                else:
+                    proj.append("%s.*" % alias)
+            cols = ",\n    ".join(proj)
+            return ("select\n    %s\nfrom %s as l\n%s %s as r\n    on %s"
+                    % (cols, rel(left_name), jt, rel(right_name),
+                       cond or "1 = 1"))
         return ("select %s\nfrom %s as l\n%s %s as r\n    on %s"
                 % (cols, rel(left_name), jt, rel(right_name), cond or "1 = 1"))
 
@@ -893,6 +1047,19 @@ def _render_node(t: Transformation, m: Mapping, tx_by_name, upstream_cte,
         return "select *\nfrom %s" % up
 
     return None
+
+
+def _strip_join_prefixes(cond: str, left_prefix: str, right_prefix: str) -> str:
+    """Undo bulk-rename prefixes inside a join condition.
+
+    The renamed name exists only downstream of the join; the relation being
+    joined still has the original column, so `BR_BRANCH_ID = BRANCH_ID` has to
+    become `BRANCH_ID = BRANCH_ID` before the sides are aliased."""
+    import re
+    for pfx in (left_prefix, right_prefix):
+        if pfx:
+            cond = re.sub(r"\b%s(\w+)" % re.escape(pfx), r"\1", cond)
+    return cond
 
 
 def _qualify_join_condition(cond: str, left_alias: str, right_alias: str) -> str:

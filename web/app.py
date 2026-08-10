@@ -3718,6 +3718,41 @@ def get_email_notifications(request: Request):
     return notify.email_status()
 
 
+@app.put("/api/settings/notifications/email")
+async def put_email_notifications(request: Request):
+    """Save the outbound-email transport (owner/admin). The password is
+    write-only: send it to set it, omit it to keep the stored one. Fields the
+    server environment pins are ignored here — env always wins."""
+    _require_owner(request)
+    from metabridge import notify
+    body = await request.json()
+    host = str(body.get("host", "") or "").strip()
+    sender = str(body.get("from", "") or "").strip()
+    if host and not sender:
+        raise HTTPException(422, "A From address is required when a host is "
+                                 "set (use an address under your "
+                                 "SES-verified domain).")
+    if sender and "@" not in sender:
+        raise HTTPException(422, "From must be a valid email address.")
+    port_raw = str(body.get("port", "") or "587").strip()
+    try:
+        port_val = int(port_raw or 587)
+    except (TypeError, ValueError):
+        raise HTTPException(422, "Port must be a number between 1 and 65535.")
+    if not 1 <= port_val <= 65535:
+        raise HTTPException(422, "Port must be a number between 1 and 65535.")
+    return notify.save_settings(
+        host=host, port=str(port_val),
+        user=str(body.get("user", "") or ""),
+        password=str(body.get("password", "") or ""),
+        sender=sender,
+        from_name=str(body.get("from_name", "") or ""),
+        starttls=bool(body.get("starttls", True)),
+        use_ssl=bool(body.get("ssl", False)),
+        enabled=bool(body.get("enabled", True)),
+        clear_password=bool(body.get("clear_password")))
+
+
 @app.post("/api/settings/notifications/email/test")
 async def test_email_notifications(request: Request):
     """Send a test message to the signed-in operator's own address (never an
@@ -5213,6 +5248,9 @@ async def api_scaffold(
     source_conn: str = Form(""),
     target_conn: str = Form(""),
     governance: bool = Form(True),
+    etl: Optional[UploadFile] = File(None),
+    etl_format: str = Form(""),
+    land_etl_targets: bool = Form(False),
 ):
     """Scaffold the target stacks from a table manifest.
 
@@ -5224,6 +5262,13 @@ async def api_scaffold(
     job_dir = _new_job("scaffold")
     manifest = job_dir / "input" / "tables.yml"
     manifest.write_bytes(await tables.read())
+
+    # Optional ETL project: its mappings become this project's curated layer,
+    # so one run yields landing DDL, staging and the transformation models
+    # together. Absent, nothing below sees any difference.
+    etl_dir = ""
+    if etl is not None and (etl.filename or "").strip():
+        etl_dir = str(await _extract_zip(etl, job_dir / "input" / "etl"))
     try:
         report = run_scaffold(source, target, str(manifest),
                               str(job_dir / "output"), project,
@@ -5235,7 +5280,9 @@ async def api_scaffold(
                               target_region=target_region,
                               governance=governance,
                               movement=_load_settings_doc().get(
-                                  "movement", {}) or {})
+                                  "movement", {}) or {},
+                              etl_bundle=etl_dir, etl_format=etl_format,
+                              land_etl_targets=land_etl_targets)
     except (ValueError, FileNotFoundError) as e:
         _finish_job(job_dir, status="failed", error=str(e))
         raise HTTPException(422, str(e))
@@ -5263,6 +5310,9 @@ async def api_scaffold(
            # present only when the manifest carried `procedures:` — what
            # converted into models and what still needs a human
            "procedures": report.get("procedures"),
+           # present only when an ETL bundle was supplied: what converted, and
+           # which tables were therefore NOT landed
+           "etl": report.get("etl"),
            "governance_enabled": bool(governance),
            "report_url": "/api/jobs/%s/report" % meta["id"],
            "download_url": "/api/jobs/%s/download" % meta["id"]}

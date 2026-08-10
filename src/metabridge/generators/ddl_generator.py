@@ -586,11 +586,35 @@ def _unload(spec: Optional[ConnectorSpec], dialect: str,
             body.append("SPOOL %s/%s/%s.csv\nSELECT * FROM %s;\nSPOOL OFF"
                         % (local, low, low,
                            _qualified("oracle", t.schema, t.name)))
-        head += ["-- Written locally first, then uploaded — SQLcl spools to a",
-                 "-- file, not to a bucket. Create the folders, run this, then:",
-                 "--   aws s3 cp %s %s/ --recursive --exclude '*' "
-                 "--include '*.csv'" % (local, uri),
+        # SPOOL is a CLIENT-side file write with no object-storage driver, so
+        # an Oracle export always lands locally first. Shelling out to the AWS
+        # CLI from the same script keeps it a single run — the same trade the
+        # Postgres branch makes with `\copy ... TO PROGRAM`.
+        upload = ("aws s3 cp %s %s/ --recursive --exclude '*' --include '*.csv'"
+                  % (local, uri))
+        head += ["-- Written locally first: SQLcl SPOOL writes a FILE, never to",
+                 "-- a bucket. The upload runs from this script at the end.",
+                 "--",
+                 "-- Create the per-table folders first — SPOOL does not make",
+                 "-- them, and a missing one fails that table silently:",
+                 "--   POSIX:   mkdir -p %s/{%s}" % (
+                     local, ",".join(t.name.lower() for t in tables)),
+                 "--   Windows: for %%d in (%s) do mkdir %s\\%%d" % (
+                     " ".join(t.name.lower() for t in tables),
+                     local.replace("./", ".\\").replace("/", "\\")),
                  ""]
+        # A placeholder URI would upload to a path that does not exist, so the
+        # step is only wired up once a real stage URI is known.
+        if "<" not in uri:
+            tail_upload = ["", "-- Upload to object storage. Needs the AWS CLI",
+                           "-- on this machine; without it, delete this line and",
+                           "-- run the same command by hand afterwards.",
+                           "HOST %s" % upload]
+        else:
+            tail_upload = ["", "-- Set a stage URI in Data movement settings and",
+                           "-- this becomes a runnable upload step:",
+                           "--   HOST %s" % upload]
+        body = body + ["\n".join(tail_upload)]
     elif dialect == "bigquery":
         body = ["EXPORT DATA OPTIONS(uri='%s/%s/*.parquet',\n"
                 "  format='PARQUET', overwrite=true) AS\n"
@@ -685,6 +709,40 @@ def _source_writes_csv(source: Optional[ConnectorSpec]) -> bool:
                                                  "oracle")
 
 
+def snowflake_stage_setup(stage: str, uri: str, configured: bool) -> List[str]:
+    """README section: the one-time CREATE STAGE the Snowflake load needs.
+
+    It lives in the README rather than in `03_load_into_snowflake.sql`
+    because that file must stay free of both a bucket URL and the word
+    CREDENTIALS — the named-stage form is the only load that writes neither,
+    and putting the stage's own DDL beside it would hand back exactly what
+    the setting removed. Creating a stage is also a one-time act; a statement
+    sitting in a per-load script gets re-run and silently repoints it."""
+    name = stage or "MB_LANDING_STAGE"
+    url = "%s/" % uri.rstrip("/")
+    out = ["## Create the load stage (one-time, on Snowflake)", "",
+           "`%s` is read by `03_load_into_snowflake.sql`. Naming a stage "
+           "does not create it — run this once per target:" % name, "",
+           "```sql",
+           "-- preferred: the credential lives inside Snowflake, so no key",
+           "-- is written into any file here",
+           "CREATE STAGE %s" % name,
+           "  URL = '%s'" % url,
+           "  STORAGE_INTEGRATION = <integration>;",
+           "",
+           "-- without an integration (key stored in Snowflake, still not "
+           "in these files)",
+           "CREATE STAGE %s" % name,
+           "  URL = '%s'" % url,
+           "  CREDENTIALS = (AWS_KEY_ID='<key>' AWS_SECRET_KEY='<secret>');",
+           "```", ""]
+    if not configured:
+        out += ["Then set **Named target stage** to `%s` in Data movement "
+                "settings and regenerate: every `CREDENTIALS` clause in the "
+                "load disappears and the file runs as generated." % name, ""]
+    return out
+
+
 def _load(spec: Optional[ConnectorSpec], dialect: str,
           tables: List[SourceTable],
           movement: Optional[dict] = None,
@@ -731,7 +789,13 @@ def _load(spec: Optional[ConnectorSpec], dialect: str,
             cred_line = ""
         else:
             src_ref = ["'%s/%s/'" % (uri, t.name.lower()) for t in tables]
-            cred_line = "  CREDENTIALS = (<credentials>)\n"
+            # Spell the clause out rather than hiding it behind one opaque
+            # token. `(<credentials>)` is not valid SQL and says nothing about
+            # what replaces it, so pasting the file gives a syntax error with
+            # no clue — Redshift's `IAM_ROLE '<iam-role-arn>'` right above has
+            # always been self-describing; this now matches.
+            cred_line = ("  CREDENTIALS = (AWS_KEY_ID='<aws-key-id>' "
+                         "AWS_SECRET_KEY='<aws-secret-key>')\n")
         body = ["COPY INTO %s\n  FROM %s\n%s%s"
                 % (_qualified("snowflake", t.schema, t.name), ref,
                    cred_line, fmt)
@@ -782,7 +846,8 @@ def _load(spec: Optional[ConnectorSpec], dialect: str,
 def _readme(pipeline: Pipeline, source: Optional[ConnectorSpec],
             target: Optional[ConnectorSpec], dialect: str,
             tables: List[SourceTable], files: List[str],
-            placeholders: List[str], prefilled: List[str]) -> str:
+            placeholders: List[str], prefilled: List[str],
+            movement: Optional[dict] = None) -> str:
     s_name = source.name if source is not None else "the source"
     t_name = target.name if target is not None else "the target"
     lines = [
@@ -832,6 +897,12 @@ def _readme(pipeline: Pipeline, source: Optional[ConnectorSpec],
                              "create a NAMED STAGE once and set it in Data "
                              "movement settings — then no credential "
                              "appears here at all",
+            "<aws-key-id>": "AWS access key ID with read access to the "
+                            "bucket. Setting a named target stage removes "
+                            "this clause entirely",
+            "<aws-secret-key>": "the matching AWS secret access key — "
+                                "substitute it in the file you run, never "
+                                "in the one you keep",
             "<database>": "source database to unload from",
             "<warehouse>": "source warehouse (an unload needs compute)",
             "<region>": "the bucket's AWS region, e.g. `ap-south-1`. SAP "
@@ -850,6 +921,14 @@ def _readme(pipeline: Pipeline, source: Optional[ConnectorSpec],
                   "Every location and role was filled from your Data "
                   "movement settings. No credential is written into these "
                   "files.", ""]
+    # The load reads from a stage the reader has to create first; without
+    # this the first run of any bundle stops at "Stage does not exist" with
+    # no statement anywhere in the package to fix it.
+    if target is not None and target.dialect == "snowflake":
+        mv_doc = _mv(movement)
+        lines += snowflake_stage_setup(mv_doc["target_stage"],
+                                       mv_doc["stage_uri"] or "<stage-uri>",
+                                       bool(mv_doc["target_stage"]))
     lines += [
         "## Types here vs. types in `sources.yml`", "",
         "`sources.yml` documents each column's logical type exactly as the "
@@ -971,7 +1050,8 @@ def generate_target_ddl(pipeline: Pipeline, out_dir: str,
     # as much a substitution as one in the unload.
     both = "\n".join(body) + un_text + ld_text
     placeholders = [t for t in ("<stage-uri>", "<iam-role-arn>",
-                                "<credentials>", "<database>",
+                                "<credentials>", "<aws-key-id>",
+                                "<aws-secret-key>", "<database>",
                                 "<warehouse>", "<region>") if t in both]
     prefilled = []
     if mv["stage_uri"]:
@@ -993,7 +1073,7 @@ def generate_target_ddl(pipeline: Pipeline, out_dir: str,
 
     (out / "README.md").write_text(
         _readme(pipeline, source, target, dialect, tables, files,
-                placeholders, prefilled),
+                placeholders, prefilled, movement),
         encoding="utf-8")
     files.append("README.md")
 

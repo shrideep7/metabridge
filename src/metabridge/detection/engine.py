@@ -334,6 +334,20 @@ def detect(path: str) -> DetectionResult:
             if rx.search(text):
                 score("idmc").add(weight, "%s in %s" % (reason, f.name), reason)
 
+    # A NATIVE IDMC export package is recognised by SHAPE, not content: its
+    # mappings live inside nested `.DTEMPLATE.zip` archives, so no readable
+    # JSON carries an `@type` and none of the content markers above can fire.
+    # A package that happens to include a connection or agent export scored
+    # by accident; one containing only mappings did not detect at all.
+    if p.is_dir():
+        if list(p.rglob("exportMetadata.v2.json"))[:1]:
+            score("idmc").add(8, "IDMC export manifest (exportMetadata.v2.json)",
+                              "IDMC export package")
+        assets = list(p.rglob("*.DTEMPLATE.zip"))[:MAX_FILES]
+        if assets:
+            score("idmc").add(6, "%d IDMC asset archive(s) (.DTEMPLATE.zip)"
+                              % len(assets), "IDMC asset archive")
+
     # ---- legacy ETL platforms (Command 5) -----------------------------------
     # extension + content signature; content must confirm before scoring big
     ETL_SIGNATURES = (
