@@ -64,3 +64,16 @@ Every feature file follows the same seven sections, so they stay comparable:
   stored values are frozen at run time.
 - **`--`** — the console's "no value" glyph. Several tiles also render `--` for a genuine zero;
   where that happens it is called out as a gap.
+- **ⓘ disclosure** — a panel states its purpose in one line and hides the rest ("what this does",
+  accepted file types, export formats, caveats) behind a small **ⓘ** beside the heading. That copy
+  is onboarding: read once, noise on every later visit. Clicking toggles an in-flow `.infobox`
+  (never a floating popover); Escape closes any that are open; several may be open at once, since
+  the panels are independent and comparing two should not close the first. Docs describe the
+  contents as part of the feature — the ⓘ is where a *user* finds it, not a separate feature.
+- **Switched panels** — when a page hosts several independent tools, they are *switched*, not
+  stacked: a tab strip with exactly one panel in the DOM flow at a time, the choice persisted per
+  browser. Used by Overview (`mb_dash_view`) and Reports (`mb_report_tool`). Where a doc says a
+  page "has" several tools, expect to reach them one at a time.
+- **No duplicate control for the same action** — if a row's identifier already links to a thing,
+  the row does not also get a chip for it. See the removed `Detail` chip in
+  [Recent activity](03-recent-activity.md).

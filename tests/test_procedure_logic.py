@@ -5,8 +5,10 @@ SILVER schema whose procedures build the curated layer. Landing the tables is
 half the migration; these tests are about the other half arriving.
 """
 import json
+import re
 import shutil
 import subprocess
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -432,13 +434,18 @@ REPO = Path(__file__).resolve().parent.parent
 CONSOLE = REPO / "web" / "templates" / "console.html"
 
 
-def _slice_manifest(yml: str, keep_js: str) -> str:
+def _slice_manifest(yml: str, keep_js: str, keep_proc_js: str = "") -> str:
     """Run the console's real filterManifestYaml over `yml`.
 
     The repo has no JS test runner, but it does already require node for
     tools/check_console_js.py — and a text assertion could not have caught this
     bug, because the slicer read as correct. Only running it showed that a
     `procedures:` entry looks exactly like a table entry to it.
+
+    `keep_proc_js` is the picker's procedure predicate. Omitted, the trailing
+    sections pass through verbatim — the behaviour every earlier caller relies
+    on. Supplied, `filterProcedureSection` has to come along too, since the
+    slicer delegates to it.
     """
     node = shutil.which("node")
     if not node:
@@ -446,9 +453,13 @@ def _slice_manifest(yml: str, keep_js: str) -> str:
     html = CONSOLE.read_text(encoding="utf-8")
     start = html.index("function filterManifestYaml")
     fn = html[start:html.index("\n}\n", start) + 3]
+    if keep_proc_js:
+        helper = html.index("function filterProcedureSection")
+        fn += html[helper:html.index("\n}\n", helper) + 3]
     harness = ("%s\nconst fs=require('fs');"
                "process.stdout.write(filterManifestYaml("
-               "fs.readFileSync(process.argv[2],'utf8'), %s));" % (fn, keep_js))
+               "fs.readFileSync(process.argv[2],'utf8'), %s%s));"
+               % (fn, keep_js, (", " + keep_proc_js) if keep_proc_js else ""))
     import tempfile
     with tempfile.TemporaryDirectory() as d:
         js, ym = Path(d) / "s.js", Path(d) / "m.yml"
@@ -458,6 +469,14 @@ def _slice_manifest(yml: str, keep_js: str) -> str:
                              text=True, timeout=60)
     assert out.returncode == 0, out.stderr
     return out.stdout
+
+
+def _loaded_procedures(yml: str):
+    """What the scaffold's real loader makes of a sliced manifest."""
+    with tempfile.TemporaryDirectory() as d:
+        f = Path(d) / "m.yml"
+        f.write_text(yml, encoding="utf-8")
+        return load_procedures(str(f))
 
 
 def _manifest_with_procedures() -> str:
@@ -503,6 +522,83 @@ def test_a_sliced_manifest_still_loads_both_sections():
         (proc,) = load_procedures(str(f))
         assert proc["name"] == "LOAD_SLV_ORDERS"
         assert "BEGIN" in proc["definition"]
+
+
+def test_deselecting_one_procedure_drops_only_that_body():
+    """The picker lists procedures as selectable objects. Unticking one has to
+    remove that entry and its body while leaving the other — and leaving the
+    tables, which are filtered by a separate predicate."""
+    yml = _manifest_yaml(
+        [{"name": "ORDERS", "schema": "RAW",
+          "columns": [{"name": "ID", "type": "NUMBER"}]}],
+        "DB", None,
+        [{"schema": "SILVER", "name": "LOAD_SLV_ORDERS", "language": "PL/SQL",
+          "definition": LOAD_CUSTOMER_DIM},
+         {"schema": "SILVER", "name": "REFRESH_DIM", "language": "PL/SQL",
+          "definition": "BEGIN\n  MERGE INTO dim USING src ON (1=1);\nEND;"}])
+    kept = _slice_manifest(yml, "() => true",
+                           "(s, n) => n === 'LOAD_SLV_ORDERS'")
+    assert "LOAD_SLV_ORDERS" in kept
+    assert "INSERT INTO customer_dim" in kept        # kept body intact
+    assert "REFRESH_DIM" not in kept                 # the entry went
+    assert "MERGE INTO dim" not in kept              # ...and so did its body
+    assert "- name: ORDERS" in kept                  # table untouched
+
+
+def test_deselecting_every_procedure_removes_the_whole_section():
+    """No empty `procedures:` key left behind for the loader to trip over, and
+    the comment block introducing it goes too rather than heading nothing."""
+    yml = _manifest_with_procedures()
+    kept = _slice_manifest(yml, "() => true", "() => false")
+    assert not re.search(r"^procedures:", kept, re.M)
+    assert "Stored-procedure logic read from" not in kept
+    assert "- name: ORDERS" in kept and "- name: SLV_ORDERS" in kept
+    assert _loaded_procedures(kept) == []
+
+
+def test_selecting_everything_is_byte_identical_with_both_predicates():
+    """Same guarantee as the single-predicate path: narrowing nothing must
+    reproduce the manifest exactly, blank lines and all."""
+    yml = _manifest_with_procedures()
+    assert _slice_manifest(yml, "() => true", "() => true") == yml
+
+
+def test_a_procedure_body_cannot_impersonate_an_entry_boundary():
+    """A body is a block scalar and can contain anything — including lines that
+    look like `- name:` or `schema:`. Boundaries are found by INDENT, so a
+    decoy inside a body must not split the entry or hijack its schema."""
+    body = ("BEGIN\n"
+            "  -- name: NOT_AN_ENTRY\n"
+            "  -- schema: NOT_A_SCHEMA\n"
+            "  INSERT INTO curated.t SELECT 1;\n"
+            "END;")
+    yml = _manifest_yaml(
+        [{"name": "T", "schema": "RAW", "columns": [{"name": "ID", "type": "NUMBER"}]}],
+        "DB", None,
+        [{"schema": "SILVER", "name": "REAL_PROC", "language": "PL/SQL",
+          "definition": body}])
+    # matched on its REAL schema, not the decoy line inside the body
+    kept = _slice_manifest(yml, "() => true",
+                           "(s, n) => s === 'SILVER' && n === 'REAL_PROC'")
+    assert "REAL_PROC" in kept
+    assert "NOT_AN_ENTRY" in kept          # body survived whole
+    assert "INSERT INTO curated.t" in kept
+    (proc,) = _loaded_procedures(kept)
+    assert proc["name"] == "REAL_PROC"
+
+
+def test_a_schemaless_procedure_is_matched_on_its_bare_name():
+    """When introspection knew no schema the entry has no `schema:` key at all,
+    so the predicate sees '' and the picker falls back to name matching."""
+    yml = _manifest_yaml(
+        [{"name": "T", "schema": "", "columns": [{"name": "ID", "type": "NUMBER"}]}],
+        "", None,
+        [{"name": "KEEP_ME", "definition": "BEGIN\n  INSERT INTO a SELECT 1;\nEND;"},
+         {"name": "DROP_ME", "definition": "BEGIN\n  INSERT INTO b SELECT 2;\nEND;"}])
+    kept = _slice_manifest(yml, "() => true",
+                           "(s, n) => s === '' && n === 'KEEP_ME'")
+    assert "KEEP_ME" in kept and "DROP_ME" not in kept
+    assert [p["name"] for p in _loaded_procedures(kept)] == ["KEEP_ME"]
 
 
 def test_procedures_from_a_live_analysis_report():
