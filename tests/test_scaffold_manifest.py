@@ -403,9 +403,9 @@ def test_target_credential_is_not_confused_with_the_source_one(tmp_path,
     report, unload, load = _hana_pkg(
         tmp_path, {"stage_uri": "s3://b/mb", "source_credential": "MB_S3"})
     assert "<credentials>" not in unload            # source: filled
-    assert "<credentials>" in load                  # target: still needed
+    assert "<aws-key-id>" in load                   # target: still needed
     assert "named source credential" in report["ddl"]["movement_prefilled"]
-    assert "<credentials>" in report["ddl"]["placeholders"]
+    assert "<aws-key-id>" in report["ddl"]["placeholders"]
 
 
 def test_named_target_stage_removes_the_credentials_clause(tmp_path,
@@ -428,9 +428,13 @@ def test_without_a_target_stage_the_credential_is_still_declared(
         tmp_path, monkeypatch):
     monkeypatch.setenv("METABRIDGE_DATA_DIR", str(tmp_path / "iso"))
     report, _, load = _hana_pkg(tmp_path, {"stage_uri": "s3://b/mb"})
-    assert "CREDENTIALS = (<credentials>)" in load
+    # spelled out, not one opaque token: `(<credentials>)` is not valid SQL
+    # and gives the reader nothing to act on
+    assert ("CREDENTIALS = (AWS_KEY_ID='<aws-key-id>' "
+            "AWS_SECRET_KEY='<aws-secret-key>')") in load
     assert "FROM 's3://b/mb/mara/'" in load
-    assert "<credentials>" in report["ddl"]["placeholders"]
+    assert "<aws-key-id>" in report["ddl"]["placeholders"]
+    assert "<aws-secret-key>" in report["ddl"]["placeholders"]
 
 
 def test_a_fully_configured_workspace_leaves_nothing_to_substitute(

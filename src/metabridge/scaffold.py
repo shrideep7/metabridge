@@ -373,7 +373,9 @@ def scaffold(source_key: str, target_key: str, tables_file: str, out_dir: str,
              source_region: str = "", target_region: str = "",
              governance: bool = True,
              movement: Optional[dict] = None,
-             procedures: Optional[List[dict]] = None) -> dict:
+             procedures: Optional[List[dict]] = None,
+             etl_bundle: str = "", etl_format: str = "",
+             land_etl_targets: bool = False) -> dict:
     """Generate the target stacks from a table manifest.
 
     ``governance`` is opt-out: with it False the residency/classification scan
@@ -383,7 +385,16 @@ def scaffold(source_key: str, target_key: str, tables_file: str, out_dir: str,
 
     ``procedures`` overrides the manifest's own `procedures:` section (the CLI
     passes a directory of PL/SQL sources this way). Pass an empty list to
-    convert the tables only."""
+    convert the tables only.
+
+    ``etl_bundle`` is an optional PowerCenter/IDMC/DataStage/SSIS/Talend
+    project whose mappings become the curated layer of THIS project, so one
+    run yields landing DDL, staging and the transformation models together.
+    Tables that bundle produces are then not landed — they would otherwise be
+    both copied and rebuilt — unless ``land_etl_targets`` says to keep them,
+    which is only useful while running the two sides in parallel to compare
+    them. Omit the bundle and every generator sees exactly the pipeline it
+    saw before this argument existed."""
     reg = get_registry()
     source = reg.get(source_key)
     target = reg.get(target_key)
@@ -419,11 +430,40 @@ def scaffold(source_key: str, target_key: str, tables_file: str, out_dir: str,
     # so every generator downstream — dbt, landing DDL, IDMC, PowerCenter, the
     # conversion and governance reports — sees the curated layer too, not just
     # the raw one. Tables alone would produce a project of pass-through models.
+    # The staging map has to be taken BEFORE any logic merges: afterwards it
+    # reports the incoming mappings' own sources as staged, and the unlanding
+    # below would then look for the wrong models to remove.
+    from .procedures import _staging_map
+    stage_of = _staging_map(pipeline)
+
     logic: dict = {}
     if procs:
         from .procedures import merge_procedure_logic
         logic = merge_procedure_logic(pipeline, procs,
                                       dialect=source.dialect or "")
+
+    # An ETL project carries the same curated layer a procedure estate does,
+    # just held in another tool. It merges AFTER procedures so that when both
+    # are supplied a name collision renames the ETL side deterministically,
+    # and — like them — before any generator runs.
+    etl: dict = {}
+    if etl_bundle:
+        from .etl_logic import merge_etl_logic
+        etl = merge_etl_logic(pipeline, etl_bundle, fmt=etl_format,
+                              land_targets=land_etl_targets,
+                              stage_of=stage_of)
+
+    # A table rebuilt by a PROCEDURE is duplicated exactly as one rebuilt by
+    # an ETL mapping — the source of the logic changes nothing. Procedures
+    # only warned about it, which left the landing layer still copying a
+    # table the generated models rebuild.
+    if procs and not land_etl_targets:
+        from .etl_logic import _target_tables, unland_built_tables
+        names = {m["model"] for m in (logic.get("models") or [])}
+        if names:
+            logic["not_landed"] = unland_built_tables(
+                pipeline, _target_tables(pipeline, only=names), stage_of,
+                origin="the converted stored-procedure logic")
 
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
@@ -475,7 +515,14 @@ def scaffold(source_key: str, target_key: str, tables_file: str, out_dir: str,
     report["ddl"] = ddl
     if procs:
         from .procedures import write_logic_pack
-        report["procedures"] = write_logic_pack(logic, str(out), procs)
+        pack = write_logic_pack(logic, str(out), procs)
+        # write_logic_pack builds its own summary, so what the merge decided
+        # about landing has to be carried across or it never reaches the UI
+        if logic.get("not_landed"):
+            pack["not_landed"] = logic["not_landed"]
+        report["procedures"] = pack
+    if etl:
+        report["etl"] = etl
     if governance:
         from .governance.engine import govern, write_governance_report
         gov = govern(pipeline, source_region=source_region,

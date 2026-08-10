@@ -45,10 +45,28 @@ def parse_idmc(path: str) -> Pipeline:
     docs: List[dict] = []
     name = p.stem
     taskflows: List[dict] = []
+
+    # A package downloaded from IDMC is not the shape this parser's own
+    # generator emits — the assets are nested zips holding a reference-encoded
+    # object graph. Decode it to the flat shape first; see idmc_export.
+    from .idmc_export import looks_like_export, read_export
+    native = looks_like_export(path)
+    if native:
+        docs.extend(read_export(path))
+        for f in (sorted(p.rglob("*.json")) if p.is_dir() else []):
+            if f.name == "exportMetadata.v2.json":
+                try:
+                    name = json.loads(f.read_text(encoding="utf-8")).get(
+                        "packageName", name) or name
+                except Exception:  # noqa: BLE001
+                    pass
+
     for f in sorted(p.rglob("*.json")) if p.is_dir() else [p]:
         try:
             doc = json.loads(f.read_text(encoding="utf-8"))
         except Exception:  # noqa: BLE001
+            continue
+        if not isinstance(doc, dict):
             continue
         if doc.get("@type") == "mapping" or "transformations" in doc:
             docs.append(doc)
@@ -57,6 +75,17 @@ def parse_idmc(path: str) -> Pipeline:
         elif doc.get("bundleType", "").startswith("metabridge"):
             name = doc.get("project", name)
     if not docs:
+        # Naming what WAS found beats reporting an absence: an export package
+        # that decoded to nothing is a different problem from a directory that
+        # never held mappings, and the old message sent people off to re-export
+        # assets that were present and correct all along.
+        if native:
+            raise FileNotFoundError(
+                "This is a native IDMC export package, but no mapping could be "
+                "decoded from it under %s. Check the export contains Mappings "
+                "(Explore/<project>/<name>.DTEMPLATE.zip) — a Data Transfer "
+                "Task or a connection-only export carries no mapping logic."
+                % path)
         raise FileNotFoundError("No IDMC mapping JSON documents found under %s" % path)
 
     pipeline = Pipeline(name=name, source_format="idmc")
@@ -131,8 +160,15 @@ def _parse_mapping(doc: dict, pipeline: Pipeline) -> Mapping:
 
         if ttype == TransformationType.TARGET:
             props.setdefault("table", spec.get("object", name))
+            # the target's schema was read for sources only, so a report
+            # naming what this project BUILDS could not qualify the table
+            conn = spec.get("connection", {}) or {}
+            if conn.get("schema"):
+                props.setdefault("schema", conn["schema"])
             if spec.get("updateColumns"):
                 m.unique_key = m.unique_key or list(spec["updateColumns"])
+            if spec.get("field_map"):
+                props["field_map"] = list(spec["field_map"])
 
         t = Transformation(name=tname, type=ttype, ports=ports, properties=props)
         m.transformations.append(t)
@@ -155,10 +191,29 @@ def _parse_mapping(doc: dict, pipeline: Pipeline) -> Mapping:
         ups = m.upstream_of(tgts[0].name)
         if ups:
             up = ups[0]
+            # The target's field mapping IS the mapping's output contract:
+            # `GENDER_STD -> GENDER` puts the curated value under the column
+            # everyone queries. Projecting the upstream ports instead leaves
+            # both the raw column and the cleaned one in the table, and the
+            # original name still holds the value the logic exists to replace
+            # — so the silver table reads as though nothing was transformed.
+            fmap = [r for r in (tgts[0].properties.get("field_map") or [])
+                    if r.get("to")]
+            if fmap:
+                out_ports = [Port(name=str(r["to"]),
+                                  expression=str(r.get("from", "") or r["to"]))
+                             for r in fmap]
+            else:
+                out_ports = [Port(name=p.name, datatype=p.datatype)
+                             for p in up.ports]
             m.transformations.append(Transformation(
                 name="__OUTPUT__", type=TransformationType.EXPRESSION,
-                ports=[Port(name=p.name, datatype=p.datatype) for p in up.ports],
-                properties={"virtual": True, "upstream": up.name}))
+                ports=out_ports,
+                properties={"virtual": True, "upstream": up.name,
+                            # only a field map makes this node worth
+                            # rendering; without one it stays the marker it
+                            # has always been and nothing downstream changes
+                            "projection": bool(fmap)}))
             m.links = [l for l in m.links
                        if not (l.from_transformation == up.name and
                                l.to_transformation == tgts[0].name)]

@@ -2076,11 +2076,34 @@
   from a connected source (Data Estate &rarr; Analyze), an analyzed modernization, or a YAML manifest.</div>
   <div class="panel">
     <form id="scafForm">
-      <div class="drop" data-drop="scafFile"><input type="file" accept=".yml,.yaml" hidden>
-        <span class="txt"><b>Drop a table manifest (.yml)</b> — see examples/sap_to_snowflake/tables.yml</span></div>
+      <!-- The two inputs are the two halves of one decision — raw tables and
+           the logic over them — so they sit side by side rather than stacked
+           with the manifest preview wedged between them. `.row` already gives
+           equal widths and wraps on a narrow window. -->
+      <div class="row">
+        <div class="drop" data-drop="scafFile"><input type="file" accept=".yml,.yaml" hidden>
+          <span class="txt"><b>Drop a table manifest (.yml)</b> — see examples/sap_to_snowflake/tables.yml</span></div>
+        <!-- Optional curated layer. A manifest describes the RAW tables only,
+             so on its own it scaffolds pass-through models; supplying the ETL
+             that builds the curated tables converts that logic in the SAME
+             run, and lets the landing layer skip tables it already produces. -->
+        <div class="drop" data-drop="scafEtlFile">
+          <input type="file" accept=".zip,.xml" hidden>
+          <span class="txt"><b>Transformation logic (optional)</b> — PowerCenter XML, IDMC export, DataStage, SSIS or Talend</span></div>
+      </div>
+      <div style="font-size:12px;color:var(--muted);margin:6px 0 10px 2px">
+        Without transformation logic you get the raw layer only. With it, the
+        mappings become this project's staging &rarr; intermediate &rarr;
+        marts, and any table the logic <em>builds</em> is not also copied
+        across as raw data.
+      </div>
       <!-- The manifest decides LOAD BEHAVIOUR (full reload vs merge), and this
            is the last point before pipelines are generated from it. -->
       <div id="scafManifestPreview"></div>
+      <label id="scafLandRow" style="display:none;align-items:center;gap:8px;margin:0 0 10px 2px;font-size:13.5px;cursor:pointer">
+        <input type="checkbox" id="scafLandEtl" name="land_etl_targets" value="true" style="width:auto;margin:0">
+        <span>Land those tables anyway <span style="color:var(--muted)">— only useful while running both sides in parallel to compare them</span></span>
+      </label>
       <div class="row">
         <div><label>Source system</label><select name="source" id="scafSource"></select></div>
         <div><label>Target platform</label><select name="target" id="scafTarget"></select></div>
@@ -3799,7 +3822,9 @@ document.querySelectorAll('.drop').forEach(drop => {
   function setFile(f) { if (!f) return; chosen[key] = f;
     drop.querySelector('.txt').innerHTML = '<b>' + esc(f.name) + '</b> (' + Math.round(f.size/1024) + ' KB)';
     // a dropped table manifest previews like a handed-off one
-    if (key === 'scafFile') renderScaffoldManifest(f); }
+    if (key === 'scafFile') renderScaffoldManifest(f);
+    // the land-anyway choice only exists once there is ETL logic to exclude
+    if (key === 'scafEtlFile') { const r = $('#scafLandRow'); if (r) r.style.display = 'inline-flex'; } }
 });
 
 function card(n, l, color, click) {
@@ -6677,22 +6702,81 @@ function renderManifestContainer(containerId) {
       + 'Every table has an active incremental_column — MERGE loads.</div>';
 
   const isEditing = cached.isEditing || false;
+  // Presentation only: the manifest runs to hundreds of lines and a 320px
+  // window makes it a keyhole. Kept in a map rather than on the element so
+  // the choice survives the re-render that Edit/Done triggers.
+  window._manifestExpanded = window._manifestExpanded || {};
+  window._manifestHidden = window._manifestHidden || {};
+  const isBig = !!window._manifestExpanded[containerId];
+  const isHidden = !!window._manifestHidden[containerId];
+  const boxH = isBig ? '75vh' : '320px';
 
   return '<div id="' + containerId + '" style="margin-top:10px">'
     + '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">'
     + '<div>' + chips + '</div>'
-    + '<button type="button" class="secondary" style="font-size:12px;padding:4px 10px;cursor:pointer" onclick="toggleManifestEdit(\'' + containerId + '\')">'
+    + '<div style="display:flex;gap:6px;align-items:center">'
+    + '<button type="button" class="secondary" data-mb-hide="1" title="' + (isHidden ? 'Show the manifest' : 'Hide the manifest') + '" style="font-size:12px;padding:4px 10px;cursor:pointer" onclick="toggleManifestBox(\'' + containerId + '\')">'
+    + (isHidden ? '▸ Show' : '▾ Hide') + '</button>'
+    + '<button type="button" class="secondary" data-mb-size="1" title="' + (isBig ? 'Shrink the preview' : 'Make the preview taller') + '" style="font-size:12px;padding:4px 10px;cursor:pointer;display:' + (isHidden ? 'none' : 'inline-block') + '" onclick="toggleManifestSize(\'' + containerId + '\')">'
+    + (isBig ? '⤡ Shrink' : '⤢ Expand') + '</button>'
+    + '<button type="button" class="secondary" data-mb-edit="1" style="font-size:12px;padding:4px 10px;cursor:pointer;display:' + (isHidden ? 'none' : 'inline-block') + '" onclick="toggleManifestEdit(\'' + containerId + '\')">'
     + (isEditing ? '✔ Done Editing' : '✎ Edit Manifest in UI') + '</button>'
     + '</div>'
+    + '</div>'
+    + '<div data-mb-body="1" style="display:' + (isHidden ? 'none' : 'block') + '">'
     + (isEditing
-        ? '<textarea id="txt_' + containerId + '" style="width:100%;height:320px;background:#FBFCFD;color:#16212E;border:1px solid var(--border);border-radius:6px;padding:12px;font-family:monospace;font-size:12px;line-height:1.55;box-sizing:border-box;resize:vertical;" oninput="onManifestInput(\'' + containerId + '\')">' + esc(yml) + '</textarea>'
-        : '<pre style="max-height:320px;overflow:auto;background:#FBFCFD;color:#16212E;border:1px solid var(--border);border-radius:6px;padding:12px;font-size:12px;line-height:1.55;margin-top:0;white-space:pre-wrap;overflow-wrap:anywhere">' + renderYamlBody(yml) + '</pre>'
+        ? '<textarea id="txt_' + containerId + '" style="width:100%;height:' + boxH + ';background:#FBFCFD;color:#16212E;border:1px solid var(--border);border-radius:6px;padding:12px;font-family:monospace;font-size:12px;line-height:1.55;box-sizing:border-box;resize:vertical;" oninput="onManifestInput(\'' + containerId + '\')">' + esc(yml) + '</textarea>'
+        : '<pre style="max-height:' + boxH + ';overflow:auto;background:#FBFCFD;color:#16212E;border:1px solid var(--border);border-radius:6px;padding:12px;font-size:12px;line-height:1.55;margin-top:0;white-space:pre-wrap;overflow-wrap:anywhere">' + renderYamlBody(yml) + '</pre>'
       )
     + warn
     + '<div style="margin-top:8px">'
     + '<a href="' + URL.createObjectURL(blob) + '" download="' + esc(filename) + '"><button type="button" class="secondary">Download table manifest</button></a>'
     + '</div>'
+    + '</div>'
     + '</div>';
+}
+
+function toggleManifestBox(containerId) {
+  // Collapses the whole preview — YAML, warning and download — leaving only
+  // the summary chips, which are the part worth keeping on screen. Presentation
+  // only: the manifest text is untouched, so an unsaved edit is still there
+  // when it is shown again.
+  window._manifestHidden = window._manifestHidden || {};
+  const hide = !window._manifestHidden[containerId];
+  window._manifestHidden[containerId] = hide;
+  const wrap = document.getElementById(containerId);
+  if (!wrap) return;
+  const body = wrap.querySelector('[data-mb-body]');
+  if (body) body.style.display = hide ? 'none' : 'block';
+  ['[data-mb-size]', '[data-mb-edit]'].forEach(function (sel) {
+    const el = wrap.querySelector(sel);
+    if (el) el.style.display = hide ? 'none' : 'inline-block';
+  });
+  const btn = wrap.querySelector('[data-mb-hide]');
+  if (btn) {
+    btn.textContent = hide ? '▸ Show' : '▾ Hide';
+    btn.title = hide ? 'Show the manifest' : 'Hide the manifest';
+  }
+}
+
+function toggleManifestSize(containerId) {
+  // Resizes the preview and nothing else — no re-render, so an in-progress
+  // edit keeps its cursor, its scroll position and its unsaved text.
+  window._manifestExpanded = window._manifestExpanded || {};
+  const big = !window._manifestExpanded[containerId];
+  window._manifestExpanded[containerId] = big;
+  const wrap = document.getElementById(containerId);
+  if (!wrap) return;
+  const box = wrap.querySelector('textarea, pre');
+  if (box) {
+    if (box.tagName === 'TEXTAREA') box.style.height = big ? '75vh' : '320px';
+    else box.style.maxHeight = big ? '75vh' : '320px';
+  }
+  const btn = wrap.querySelector('[data-mb-size]');
+  if (btn) {
+    btn.textContent = big ? '⤡ Shrink' : '⤢ Expand';
+    btn.title = big ? 'Shrink the preview' : 'Make the preview taller';
+  }
 }
 
 function toggleManifestEdit(containerId) {
@@ -7855,6 +7939,9 @@ $('#scafForm').onsubmit = async ev => {
   $('#scafBanner').style.display = 'none';
   if (!chosen.scafFile) { err.textContent = 'Choose a tables .yml first.'; err.style.display = 'block'; return; }
   const fd = new FormData(ev.target); fd.set('tables', chosen.scafFile);
+  // an empty file part still arrives as an upload with a blank filename, so
+  // only attach it when one was actually chosen
+  if (chosen.scafEtlFile) fd.set('etl', chosen.scafEtlFile); else fd.delete('etl');
   const govOn = $('#scafGovern').checked;
   fd.set('governance', govOn ? 'true' : 'false');
   if (!govOn) { fd.delete('source_region'); fd.delete('target_region'); }
@@ -7893,6 +7980,25 @@ $('#scafForm').onsubmit = async ev => {
       + '</div><div style="font-size:13px"><strong>Generated:</strong> '
       + (d.artifacts || []).map(esc).join(' · ') + '</div>'
       + ((d.manifest_notes && d.manifest_notes.length) ? '<div style="font-size:13px;color:var(--ink3)">' + d.manifest_notes.map(esc).join('; ') + '</div>' : '')
+      // What the supplied ETL contributed, and — the part worth seeing — which
+      // tables were therefore NOT landed. Silently dropping a table from the
+      // landing layer is the one thing here a user must be told about.
+      + (d.etl ? '<div style="margin-top:6px;font-size:13px"><strong>'
+         + esc(d.etl.label || 'ETL') + ' logic:</strong> '
+         + esc(String(d.etl.converted || 0)) + ' mapping(s) converted into the '
+         + 'curated layer'
+         + ((d.etl.not_landed && d.etl.not_landed.length)
+            ? '<div style="color:var(--ink3)">Not landed (built by this logic, '
+              + 'so not also copied as raw): '
+              + d.etl.not_landed.map(t => '<code>'
+                  + esc((t.schema ? t.schema + '.' : '') + t.table)
+                  + '</code>').join(', ') + '</div>'
+            : '')
+         + ((d.etl.unresolved_sources && d.etl.unresolved_sources.length)
+            ? '<div style="color:var(--warn,#b45309)">Reads tables the manifest '
+              + 'does not carry: ' + d.etl.unresolved_sources.map(esc).join(', ')
+              + '</div>' : '')
+         + '</div>' : '')
       // dbt transforms inside the target; it cannot read the source. Say so
       // here, because it is the step users skip and then hit "relation does
       // not exist" on the first model.

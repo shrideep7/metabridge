@@ -89,6 +89,37 @@ def build_report(pipeline: Pipeline, target_format: str) -> dict:
                                  "critical_risks",
                                  "manual_review_items")}
 
+    # Tables this project BUILDS. When these models are generated on their own
+    # — converting an ETL project without the table manifest beside it — the
+    # landing layer is scaffolded by a separate run that cannot see them, and
+    # a table that is both landed and rebuilt diverges the moment either side
+    # changes. Nothing here can detect that across two runs, so the list goes
+    # in front of the one person who can act on it.
+    # "Built" means built by LOGIC. A scaffold gives every landed table a
+    # pass-through staging mapping which declares a TARGET of its own, so an
+    # unfiltered scan lists `stg_accounts` here and tells the reader to stop
+    # landing ACCOUNTS — the opposite of what it should say. A pass-through
+    # carries nothing but source, qualifier, target and the virtual output
+    # marker; anything with real transformation nodes is genuinely building
+    # something.
+    _PLUMBING = {TransformationType.SOURCE, TransformationType.SOURCE_QUALIFIER,
+                 TransformationType.TARGET}
+    produced: List[dict] = []
+    seen: set = set()
+    for m in pipeline.mappings:
+        if not any(t.type not in _PLUMBING and t.name != "__OUTPUT__"
+                   for t in m.transformations):
+            continue
+        for t in m.by_type(TransformationType.TARGET):
+            table = str(t.properties.get("table", "") or "")
+            schema = str(t.properties.get("schema", "") or "")
+            key = ("%s.%s" % (schema, table)).lower()
+            if not table or key in seen:
+                continue
+            seen.add(key)
+            produced.append({"table": table, "schema": schema,
+                             "built_by": m.name})
+
     return {
         "tool": "MetaBridge AI",
         "generated_at": datetime.datetime.now().isoformat(timespec="seconds"),
@@ -97,6 +128,13 @@ def build_report(pipeline: Pipeline, target_format: str) -> dict:
         "source_snapshot": pipeline.metadata.get("source_snapshot", ""),
         "source_format": pipeline.source_format,
         "target_format": target_format,
+        "produced_tables": produced,
+        "produced_tables_note": (
+            "These tables are BUILT by this project. If you also scaffold the "
+            "source they come from, exclude them from the landing layer — "
+            "landing and rebuilding the same table produces two copies that "
+            "diverge. Supplying this project as the ETL bundle on a scaffold "
+            "run does that exclusion automatically." if produced else ""),
         "summary": {
             "objects_total": len(mappings),
             "automated_conversion_rate": round(100.0 * auto / total, 1),

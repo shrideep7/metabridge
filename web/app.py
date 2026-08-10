@@ -5213,6 +5213,9 @@ async def api_scaffold(
     source_conn: str = Form(""),
     target_conn: str = Form(""),
     governance: bool = Form(True),
+    etl: Optional[UploadFile] = File(None),
+    etl_format: str = Form(""),
+    land_etl_targets: bool = Form(False),
 ):
     """Scaffold the target stacks from a table manifest.
 
@@ -5224,6 +5227,13 @@ async def api_scaffold(
     job_dir = _new_job("scaffold")
     manifest = job_dir / "input" / "tables.yml"
     manifest.write_bytes(await tables.read())
+
+    # Optional ETL project: its mappings become this project's curated layer,
+    # so one run yields landing DDL, staging and the transformation models
+    # together. Absent, nothing below sees any difference.
+    etl_dir = ""
+    if etl is not None and (etl.filename or "").strip():
+        etl_dir = str(await _extract_zip(etl, job_dir / "input" / "etl"))
     try:
         report = run_scaffold(source, target, str(manifest),
                               str(job_dir / "output"), project,
@@ -5235,7 +5245,9 @@ async def api_scaffold(
                               target_region=target_region,
                               governance=governance,
                               movement=_load_settings_doc().get(
-                                  "movement", {}) or {})
+                                  "movement", {}) or {},
+                              etl_bundle=etl_dir, etl_format=etl_format,
+                              land_etl_targets=land_etl_targets)
     except (ValueError, FileNotFoundError) as e:
         _finish_job(job_dir, status="failed", error=str(e))
         raise HTTPException(422, str(e))
@@ -5263,6 +5275,9 @@ async def api_scaffold(
            # present only when the manifest carried `procedures:` — what
            # converted into models and what still needs a human
            "procedures": report.get("procedures"),
+           # present only when an ETL bundle was supplied: what converted, and
+           # which tables were therefore NOT landed
+           "etl": report.get("etl"),
            "governance_enabled": bool(governance),
            "report_url": "/api/jobs/%s/report" % meta["id"],
            "download_url": "/api/jobs/%s/download" % meta["id"]}
