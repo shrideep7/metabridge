@@ -327,6 +327,9 @@
   .jact.off { color:var(--muted); background:var(--header-bg); border-color:var(--line);
               cursor:not-allowed; opacity:.65; }
   .jact.off:hover { background:var(--header-bg); border-color:var(--line); }
+  /* The global `button` rule carries margin-top:16px for form buttons. A .jact
+     is a 28px inline chip, so on a <button> that margin is always wrong. */
+  button.jact { margin:0; }
   /* Trend chart (Observability › Performance trends).
      A stacked-outcome column chart with a success-rate overlay. Every day is
      hoverable AND keyboard-focusable, and the bar is split by outcome so a bad
@@ -334,14 +337,14 @@
   .ot { position:relative; }
   .ot-head { display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-bottom:12px; }
   .ot-head .grow { flex:1 1 auto; }
-  .ot-kpis { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:12px; }
-  .ot-kpi { flex:1 1 130px; min-width:120px; padding:8px 10px; border:1px solid var(--line);
+  .obs-kpis { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:12px; }
+  .obs-kpi { flex:1 1 130px; min-width:120px; padding:8px 10px; border:1px solid var(--line);
             border-radius:var(--radius-sm); background:var(--header-bg); }
-  .ot-kpi dt { font-size:10.5px; font-weight:600; color:var(--ink3);
+  .obs-kpi dt { font-size:10.5px; font-weight:600; color:var(--ink3);
                text-transform:uppercase; letter-spacing:.05em; }
-  .ot-kpi dd { font-size:17px; font-weight:600; color:var(--ink); margin-top:3px;
+  .obs-kpi dd { font-size:17px; font-weight:600; color:var(--ink); margin-top:3px;
                font-variant-numeric:tabular-nums; }
-  .ot-kpi dd small { font-size:11.5px; font-weight:500; color:var(--ink3); }
+  .obs-kpi dd small { font-size:11.5px; font-weight:500; color:var(--ink3); }
   .ot-plot { overflow-x:auto; }
   .ot-plot svg { display:block; }
   .ot-grid { stroke:var(--line); shape-rendering:crispEdges; }
@@ -384,9 +387,273 @@
   .ot-table th { color:var(--ink3); font-weight:600; font-size:10.5px;
                  text-transform:uppercase; letter-spacing:.04em; }
   .ot-table td { font-variant-numeric:tabular-nums; }
+  /* Historical analytics (Observability). The run history used to be one
+     run-on sentence plus a comma list of ~20 job kinds; it is now a status
+     mix bar plus a ranked, filterable breakdown. */
+  .ha-sec { margin-top:16px; }
+  .ha-sec h4 { font-size:11px; font-weight:600; color:var(--ink3); margin:0 0 8px;
+               text-transform:uppercase; letter-spacing:.05em; }
+  .ha-head { display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-bottom:10px; }
+  .ha-head .grow { flex:1 1 auto; }
+  .ha-mix { display:flex; height:16px; border-radius:4px; overflow:hidden;
+            background:var(--line); }
+  .ha-mix span { display:block; min-width:2px; transition:opacity .12s ease; }
+  .ha-mix:hover span { opacity:.55; }
+  .ha-mix span:hover { opacity:1; }
+  .ha-keys { display:flex; gap:16px; flex-wrap:wrap; margin-top:10px; }
+  .ha-key { display:flex; align-items:baseline; gap:6px; font-size:12px; color:var(--ink3); }
+  .ha-key i { width:9px; height:9px; border-radius:2px; flex:none; align-self:center; }
+  .ha-key b { color:var(--ink); font-variant-numeric:tabular-nums; }
+  .ha-rows { display:flex; flex-direction:column; gap:1px; }
+  .ha-row { display:grid; grid-template-columns:minmax(96px,148px) 1fr auto;
+            align-items:center; gap:10px; padding:4px 6px; border-radius:4px;
+            font-size:12.5px; }
+  .ha-row:hover { background:var(--header-bg); }
+  .ha-row > .k { color:var(--ink2); overflow:hidden; text-overflow:ellipsis;
+                 white-space:nowrap; }
+  .ha-row > .k code { font-family:var(--mono); font-size:11.5px; }
+  .ha-bar { height:9px; border-radius:3px; background:var(--line); overflow:hidden; }
+  .ha-bar i { display:block; height:100%; border-radius:3px; background:var(--accent);
+              min-width:2px; }
+  .ha-row > .v { color:var(--ink); font-weight:600; font-variant-numeric:tabular-nums;
+                 white-space:nowrap; }
+  .ha-row > .v small { color:var(--ink3); font-weight:500; margin-left:5px; }
+  .ha-dur { display:flex; gap:8px; flex-wrap:wrap; }
+  .ha-dur div { flex:1 1 150px; padding:8px 10px; border:1px solid var(--line);
+                border-radius:var(--radius-sm); }
+  .ha-dur dt { font-size:11px; color:var(--ink3); font-weight:600; }
+  .ha-dur dd { font-size:15px; font-weight:600; color:var(--ink); margin-top:2px;
+               font-variant-numeric:tabular-nums; }
+  .ha-dur p { font-size:11px; color:var(--ink3); margin-top:3px; }
+  /* ---- Observability: verdict / attention / monitors -------------------
+     Redesigned away from a wall of interchangeable progress bars. Three
+     zones: the verdict (score + the six signals behind it + a day-by-day
+     status ribbon), then what needs attention, then every monitor worst
+     first. Each form follows what its number actually is: big numerals for
+     independent named signals (a hex/polystat grid is for aggregated
+     composites, not six labelled metrics), a uniform status ribbon for
+     day-over-day state, and burn-rate multiples for objectives. */
+  .ozone { padding:18px; }
+  .ozone-row { display:flex; gap:16px; flex-wrap:wrap; margin-top:16px; }
+  .oh { display:flex; gap:26px; align-items:flex-start; flex-wrap:wrap; }
+  .oh-verdict { display:flex; gap:18px; align-items:center;
+                flex:1 1 320px; min-width:290px; }
+  .oh-said { min-width:0; }
+  .oh-head { font-size:15px; font-weight:600; color:var(--ink);
+             letter-spacing:-.01em; line-height:1.35; }
+  .oh-meta { font-size:12px; color:var(--ink3); margin-top:6px; line-height:1.6; }
+  .oh-meta b { color:var(--ink2); }
+  .oh-weak { margin-top:7px; font-size:12px; color:var(--ink3); }
+  .oh-weak b { color:var(--ink); font-weight:600; }
+  .oh-chips { display:flex; gap:6px; flex-wrap:wrap; margin-top:10px; }
+  .oh-chip { display:inline-flex; align-items:center; gap:6px; height:26px;
+             margin:0; padding:0 11px; border:1px solid transparent;
+             border-radius:6px;
+             font-size:12px; font-weight:600; font-family:inherit; cursor:pointer;
+             background:var(--line); color:var(--ink3);
+             transition:border-color .15s ease, background .15s ease; }
+  .oh-chip[disabled] { cursor:default; opacity:.6; }
+  .oh-chip.crit { background:var(--red-bg); color:var(--red); }
+  .oh-chip.warn { background:var(--amber-bg); color:var(--amber); }
+  .oh-chip[aria-pressed="true"] { border-color:currentColor; }
+  .oh-chip:not([disabled]):hover { border-color:currentColor; }
+  .oh-chip:focus-visible { outline:2px solid var(--accent); outline-offset:1px; }
+
+  /* Signal matrix — big numerals, not bars. The number is the visual; hue
+     and the named band reinforce it, so neither carries meaning alone. */
+  .oh-sig { flex:1 1 330px; min-width:300px; }
+  .oh-lbl { font-size:10.5px; font-weight:600; color:var(--ink3); margin:0 0 9px;
+            text-transform:uppercase; letter-spacing:.06em; }
+  .oh-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:7px; }
+  .oh-cell { position:relative; padding:8px 10px 9px 12px;
+             border-radius:var(--radius-sm); background:var(--header-bg);
+             border:1px solid var(--line); overflow:hidden; }
+  /* A tinted left edge, so the band survives greyscale printing. */
+  .oh-cell::before { content:""; position:absolute; left:0; top:0; bottom:0;
+                     width:3px; background:var(--sig,var(--line)); }
+  .oh-cell b { display:block; font-size:21px; font-weight:600; line-height:1.1;
+               color:var(--ink); font-variant-numeric:tabular-nums;
+               letter-spacing:-.02em; }
+  .oh-cell span { display:block; font-size:11px; color:var(--ink3); margin-top:2px; }
+  .oh-cell em { display:block; font-style:normal; font-size:10px; margin-top:3px;
+                color:var(--sig); font-weight:600; }
+  .oh-cell.worst { background:#fff; border-color:var(--sig); }
+
+  /* Status ribbon — one uniform cell per day, state by colour AND by a hatch
+     on bad days, because a green/red-only strip fails ~8% of male readers.
+     Deliberately not height-encoded: the trends chart below is the bar view. */
+  .orib { margin-top:18px; padding-top:16px; border-top:1px solid var(--line); }
+  .orib-top { display:flex; align-items:baseline; gap:10px; flex-wrap:wrap;
+              margin-bottom:9px; }
+  .orib-top .grow { flex:1 1 auto; }
+  .orib-sum { font-size:12px; color:var(--ink3); }
+  .orib-sum b { color:var(--ink); font-weight:600;
+                font-variant-numeric:tabular-nums; }
+  .orib-strip { display:flex; gap:3px; align-items:stretch; overflow-x:auto;
+                padding:2px 0; }
+  .orib-cell { flex:1 1 0; min-width:12px; height:34px; margin:0; border:none;
+               padding:0; border-radius:3px; cursor:pointer; position:relative;
+               transition:transform .15s ease, box-shadow .15s ease; }
+  .orib-cell:hover, .orib-cell:focus-visible { transform:scaleY(1.14);
+               box-shadow:0 0 0 2px var(--accent); outline:none; z-index:1; }
+  .orib-scale { display:flex; justify-content:space-between; margin-top:7px;
+                font-size:10px; color:var(--ink3); }
+  .orib-key { display:flex; gap:14px; flex-wrap:wrap; margin-top:10px;
+              font-size:11.5px; color:var(--ink3); }
+  .orib-key span { display:inline-flex; align-items:center; gap:6px;
+                   overflow-wrap:anywhere; }
+  .orib-key i { width:11px; height:11px; border-radius:3px; flex:none; }
+
+  /* Monitor rows — grouped worst-first, shape + word + colour per row, no
+     per-row bar. Compact enough that ten monitors read as one list. */
+  .omg + .omg { margin-top:6px; }
+  .omg-h { display:flex; align-items:center; gap:8px; padding:10px 8px 6px;
+           font-size:10.5px; font-weight:600; color:var(--ink3);
+           text-transform:uppercase; letter-spacing:.06em; }
+  .omg-h b { color:var(--ink2); }
+  /* minmax(0,1fr), not 1fr: an auto minimum refuses to shrink past its
+     content and the row overflows on a narrow panel. */
+  .omr { display:grid;
+         grid-template-columns:18px minmax(90px,190px) 86px minmax(0,1fr);
+         gap:12px; align-items:center; padding:9px 8px; border-radius:6px;
+         border-top:1px solid var(--line); scroll-margin-top:90px;
+         transition:background .15s ease; }
+  .omr:hover { background:var(--header-bg); }
+  .omr:focus-visible { outline:2px solid var(--accent); outline-offset:-2px; }
+  .omr.flash { background:var(--accent-soft);
+               box-shadow:inset 0 0 0 1px var(--accent-line); }
+  .omr-ic { width:16px; height:16px; display:block; }
+  .omr-nm { font-size:12.5px; font-weight:600; color:var(--ink);
+            overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .omr-nm small { display:block; font-weight:500; font-size:10.5px;
+                  color:var(--amber); }
+  .omr-st { font-size:11.5px; font-weight:600; white-space:nowrap; }
+  .omr-st u { display:block; text-decoration:none; color:var(--ink3);
+              font-weight:500; font-size:10.5px;
+              font-variant-numeric:tabular-nums; }
+  .omr-hl { font-size:11.5px; color:var(--ink3); line-height:1.5; min-width:0;
+            overflow-wrap:anywhere; }
+  .om-empty { font-size:12.5px; color:var(--ink3); padding:14px 8px; }
+
+  /* Attention timeline. The product pattern for incident surfaces is
+     "timeline + severity indicators": a rail of severity marks down the left,
+     bold message, detail beneath. Replaces three identical 85px severity
+     pills, which read as a block of noise rather than as three states. */
+  .oat { display:flex; flex-direction:column; margin-top:6px; }
+  /* height:auto and margin:0 are load-bearing — the global `button` rule sets
+     height:32px and margin-top:16px, which clipped these rows to 32px and let
+     their 70px of content spill over the row below. */
+  .oat-i { position:relative; display:grid;
+           grid-template-columns:20px minmax(0,1fr) auto; gap:0 12px;
+           align-items:start; width:100%; height:auto; margin:0;
+           text-align:left; border:none;
+           background:transparent; font-family:inherit; cursor:pointer;
+           padding:11px 8px 11px 4px; border-radius:6px;
+           transition:background .15s ease; }
+  .oat-i:hover { background:var(--header-bg); }
+  .oat-i:focus-visible { outline:2px solid var(--accent); outline-offset:-2px; }
+  /* Nothing to open: do not offer a pointer or a hover lift. */
+  .oat-static { cursor:default; }
+  .oat-static:hover { background:transparent; }
+  /* The rail: a hairline joining each mark to the next, so the list reads as
+     one sequence instead of three detached cards. */
+  .oat-i:not(:last-child)::before { content:""; position:absolute; left:13px;
+           top:29px; bottom:-3px; width:1px; background:var(--border); }
+  .oat-mk { width:18px; height:18px; margin-top:1px; display:block;
+            position:relative; z-index:1; }
+  .oat-b { min-width:0; }
+  .oat-sev { font-size:10px; font-weight:700; text-transform:uppercase;
+             letter-spacing:.07em; display:block; margin-bottom:3px; }
+  .oat-sev.critical { color:var(--red); }
+  .oat-sev.warning { color:var(--amber); }
+  .oat-sev.info { color:var(--ink3); }
+  .oat-msg { display:block; font-size:13px; font-weight:600; color:var(--ink);
+             line-height:1.4; overflow-wrap:anywhere; }
+  .oat-sub { display:block; font-size:11.5px; color:var(--ink3); margin-top:4px;
+             line-height:1.55; overflow-wrap:anywhere; }
+  .oat-sub b { color:var(--ink2); font-weight:600;
+               font-variant-numeric:tabular-nums; }
+  /* Visible at rest at low contrast, so the row reads as clickable without
+     hovering; a hover-only affordance is invisible to touch and to scanning. */
+  /* Full opacity in a quiet tone rather than a faded ink: half-opacity
+     --ink3 computes to ~2.3:1, under the 3:1 floor for UI graphics. */
+  .oat-go { align-self:center; flex:none; width:18px; height:18px;
+            color:var(--muted); transition:color .15s ease, transform .15s ease; }
+  .oat-i:hover .oat-go, .oat-i:focus-visible .oat-go {
+            color:var(--accent); transform:translateX(2px); }
+  .oat-none { display:flex; align-items:center; gap:9px; font-size:13px;
+              color:var(--green); font-weight:500; padding:14px 4px 6px; }
+  .oat-none svg { width:16px; height:16px; flex:none; }
+  .oat-sep { display:flex; align-items:baseline; gap:10px; flex-wrap:wrap;
+             margin-top:18px; padding-top:15px;
+             border-top:1px solid var(--line); }
+
+  /* Objective cards — one row, directly comparable. Severity lives in the
+     card's tint and edge, never in the type size, so the three burn figures
+     stay on the same optical baseline and can be read against each other. */
+  /* Flex, not auto-fit grid: with three cards in a wide panel auto-fit lays
+     out six tracks and leaves half the row empty. Flex lets them stretch. */
+  .osc { display:flex; gap:9px; margin-top:11px; flex-wrap:wrap; }
+  /* max-width so a single objective does not stretch the whole panel; three
+     cards land well under it and still fill the row. */
+  .osc-c { position:relative; flex:1 1 190px; min-width:0; max-width:420px;
+           padding:11px 12px 12px 14px; overflow:hidden;
+           border:1px solid var(--line); border-radius:var(--radius-sm);
+           background:var(--header-bg); }
+  .osc-c::before { content:""; position:absolute; left:0; top:0; bottom:0;
+                   width:3px; background:var(--ob); }
+  .osc-c.bad { background:#fff; border-color:var(--ob); }
+  .osc-nm { font-size:12px; font-weight:600; color:var(--ink);
+            overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .osc-cmp { font-size:11.5px; color:var(--ink3); margin-top:5px;
+             font-variant-numeric:tabular-nums; overflow-wrap:anywhere; }
+  .osc-cmp b { font-weight:600; }
+  .osc-burn { display:flex; align-items:baseline; gap:7px; margin-top:9px; }
+  .osc-burn b { font-size:22px; font-weight:600; line-height:1;
+                letter-spacing:-.02em; color:var(--ob);
+                font-variant-numeric:tabular-nums; }
+  .osc-burn span { font-size:11px; font-weight:600; color:var(--ob); }
+  .osc-ft { display:flex; align-items:center; gap:6px; margin-top:8px;
+            padding-top:8px; border-top:1px solid var(--line);
+            font-size:11px; color:var(--ink3); }
+  .osc-ft i { width:7px; height:7px; border-radius:50%; flex:none;
+              background:var(--ob); }
+  /* The text is one flex item, not several — a bare text node beside the dot
+     becomes its own item and wraps onto a second line. */
+  .osc-ft > span { min-width:0; overflow-wrap:anywhere; }
+  .osc-ft b { color:var(--ink2); font-weight:600; }
+  .oslo-foot { font-size:11px; color:var(--ink3); margin-top:11px;
+               line-height:1.55; }
+  .oslo-foot b { color:var(--ink2); font-weight:600;
+                 font-variant-numeric:tabular-nums; }
+
+  @media (max-width:640px) {
+    .oh-grid { grid-template-columns:repeat(2,minmax(0,1fr)); }
+    .omr { grid-template-columns:18px minmax(0,1fr); gap:3px 10px; }
+    .omr-nm, .omr-st, .omr-hl { grid-column:2; }
+    .omr-nm { white-space:normal; overflow-wrap:anywhere; }
+    .omr-st { white-space:normal; }
+    .omr-st u { display:inline; margin-left:6px; }
+    .oat-i { grid-template-columns:18px minmax(0,1fr); gap:0 8px;
+             padding-right:4px; }
+    .oat-go { display:none; }
+    /* 22px numerals do not fit a squeezed content column. */
+    .osc-burn b { font-size:18px; }
+    .osc-burn { flex-wrap:wrap; gap:2px 7px; }
+    .osc-c { padding:10px 10px 11px 12px; }
+    /* The console shell keeps its nav sidebar at phone widths, so the content
+       column can fall below any readable floor. Below it, scroll inside the
+       panel — the same thing the status ribbon and the trends chart do —
+       rather than let text spill out of its box. */
+    #obsAlerts, #obsSla { overflow-x:auto; }
+    .oat, .osc { min-width:210px; }
+  }
   @media (prefers-reduced-motion:reduce) {
-    .ot-band, .ot-tip { transition:none !important; }
+    .ot-band, .ot-tip, .ha-mix span, .omr, .oat-i, .oat-go, .oh-chip,
+    .orib-cell { transition:none !important; }
     .ot-tip { transform:none !important; }
+    .orib-cell:hover, .orib-cell:focus-visible { transform:none; }
+    .oat-i:hover .oat-go, .oat-i:focus-visible .oat-go { transform:none; }
   }
   h1 { font-size:20px; font-weight:600; letter-spacing:-.01em; margin-bottom:4px; }
   h2 { font-size:15px; font-weight:600; } h3 { font-size:13px; font-weight:600; }
@@ -1988,28 +2255,54 @@
     estate topology (not live metering).</div>
   <div class="err" id="obsErr"></div>
 
-  <div class="panel" id="obsHealthPanel" style="display:flex;gap:24px;align-items:center;flex-wrap:wrap">
-    <div id="obsGauge"></div>
-    <div style="flex:1;min-width:280px">
-      <div id="obsHealthHeadline" style="font-size:14px;font-weight:600"></div>
-      <div id="obsAlertsBar" style="margin-top:8px"></div>
-      <div id="obsExecActive" style="font-size:12.5px;color:var(--ink3);margin-top:6px"></div>
+  <!-- Zone 1 — the verdict. One number, the six signals behind it, and the
+       day-by-day ribbon that says when it changed. -->
+  <div class="panel ozone" id="obsHealthPanel">
+    <div class="oh">
+      <div class="oh-verdict">
+        <div id="obsGauge"></div>
+        <div class="oh-said">
+          <div class="oh-head" id="obsHealthHeadline"></div>
+          <div class="oh-meta" id="obsExecActive"></div>
+          <div class="oh-chips" id="obsAlertsBar"></div>
+        </div>
+      </div>
+      <div class="oh-sig" id="obsSignals"></div>
     </div>
+    <div id="obsRibbon"></div>
   </div>
 
-  <div class="sec-head"><h3>Monitors</h3><span class="cnt" id="obsMonCount"></span></div>
-  <div class="grid" id="obsMonitors" style="grid-template-columns:repeat(auto-fill,minmax(250px,1fr))"></div>
-
-  <div style="display:flex;gap:16px;flex-wrap:wrap;margin-top:8px">
-    <div class="panel" style="flex:1;min-width:320px">
-      <h3 style="margin-bottom:8px">SLA dashboard <span id="obsSlaState" style="font-size:12px"></span></h3>
-      <table id="obsSla"></table>
+  <!-- Zone 2 — what needs attention. One panel, not two: the alerts and the
+       objectives describe the same incidents, and split across a pair of
+       equal-height panels the shorter one left ~180px of dead space. -->
+  <div class="panel ozone">
+    <div class="ha-head" style="margin-bottom:2px">
+      <h3 style="margin:0">Needs attention <span id="obsAlertCount"
+           style="font-size:12px;color:var(--ink3);font-weight:400"></span></h3>
+      <span class="grow"></span>
+      <button type="button" class="jact" id="obsAlertClear"
+              style="display:none">Clear filter</button>
     </div>
-    <div class="panel" style="flex:1;min-width:320px">
-      <h3 style="margin-bottom:8px">Alerts <span id="obsAlertCount" style="font-size:12px;color:var(--muted)"></span></h3>
-      <div id="obsAlerts" style="font-size:13px"></div>
+    <div id="obsAlerts"></div>
+    <div class="oat-sep">
+      <span class="oh-lbl" style="margin:0">Service objectives</span>
+      <span id="obsSlaState" style="font-size:12px"></span>
+    </div>
+    <div id="obsSla"></div>
+  </div>
+
+  <!-- Zone 3 — every monitor, worst first. -->
+  <div class="sec-head">
+    <div style="display:flex;align-items:baseline;gap:10px">
+      <h3>Monitors</h3><span class="cnt" id="obsMonCount"></span>
+    </div>
+    <div class="seg" id="obsMonFilter" role="tablist" aria-label="Filter monitors">
+      <button role="tab" data-monf="all" aria-selected="true">All</button>
+      <button role="tab" data-monf="attn" aria-selected="false">Needs attention</button>
+      <button role="tab" data-monf="measured" aria-selected="false">Measured only</button>
     </div>
   </div>
+  <div class="panel" style="padding:6px 8px"><div id="obsMonitors"></div></div>
 
   <div class="panel">
     <h3 style="margin-bottom:8px">Performance trends <span id="obsTrendDir" style="font-size:12px;color:var(--muted)"></span></h3>
@@ -10992,74 +11285,14 @@ async function loadObservability() {
   try { d = await api('/api/observability'); }
   catch (e) { err.style.display = 'block'; err.textContent = e.message; return; }
 
-  // health gauge
-  const h = d.health_score || {};
-  $('#obsGauge').innerHTML = obsGaugeSvg(h.score, h.band);
-  $('#obsHealthHeadline').innerHTML = esc(h.headline || 'No operational history yet.');
-  const ac = d.alerting && d.alerting.counts || {};
-  $('#obsAlertsBar').innerHTML =
-    ['critical', 'warning', 'info'].map(k =>
-      '<span style="display:inline-block;background:' + (k === 'critical' ? '#fdeeec'
-        : k === 'warning' ? '#fdf6e9' : 'var(--line)') + ';color:' + (k === 'critical' ? 'var(--red)'
-        : k === 'warning' ? 'var(--amber)' : 'var(--ink3)') + ';border-radius:4px;padding:2px 9px;'
-        + 'margin-right:6px;font-size:12px;font-weight:600">' + (ac[k] || 0) + ' ' + k
-        + '</span>').join('');
-  const od = d.operational_dashboard || {};
-  $('#obsExecActive').textContent = 'Active: ' + ((od.active || {}).running_jobs || 0)
-    + ' running job(s), ' + ((od.active || {}).pending_approvals || 0)
-    + ' agent action(s) awaiting approval.';
-
-  // monitor tiles
-  const mons = d.monitors || {};
-  $('#obsMonCount').textContent = Object.keys(mons).length + ' monitors';
-  $('#obsMonitors').innerHTML = Object.keys(OBS_MON_LABELS).filter(k => mons[k]).map(k => {
-    const m = mons[k], col = obsColor(m.status);
-    const basisBadge = '<span style="font-size:10.5px;background:' + (m.basis === 'modeled'
-      ? '#fdf6e9' : m.basis === 'no_data' ? 'var(--line)' : '#eef7f0') + ';color:' + (m.basis
-      === 'modeled' ? 'var(--amber)' : m.basis === 'no_data' ? '#98a0ad' : 'var(--green)')
-      + ';border-radius:3px;padding:1px 6px">' + esc(m.basis || '') + '</span>';
-    return '<div style="border:1px solid var(--border);border-radius:var(--radius);padding:11px 13px;background:#fff" role="listitem">'
-      + '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px">'
-      + '<span style="font-weight:600;font-size:12.5px">' + esc(OBS_MON_LABELS[k]) + '</span>'
-      + basisBadge + '</div>'
-      + '<div style="margin:5px 0"><span style="display:inline-block;width:9px;height:9px;'
-      + 'border-radius:50%;background:' + col + ';margin-right:6px"></span>'
-      + '<span style="font-size:12px;color:' + col + ';font-weight:600">' + esc(m.status || '')
-      + '</span>' + (m.score != null ? ' <span style="color:var(--muted);font-size:11.5px">· '
-      + Math.round(m.score) + '</span>' : '') + '</div>'
-      + '<div style="font-size:11.5px;color:var(--ink3);line-height:1.5">' + esc(m.headline || '') + '</div></div>';
-  }).join('');
-
-  // SLA
-  const sla = d.sla_dashboard || {};
-  $('#obsSlaState').innerHTML = sla.status === 'met'
-    ? '<span style="color:var(--green)">all met</span>'
-    : sla.status === 'breached' ? '<span style="color:var(--red)">' + esc(sla.headline || '')
-      + '</span>' : '<span style="color:#98a0ad">no data</span>';
-  $('#obsSla').innerHTML = (sla.objectives || []).length
-    ? '<tr><th>Objective</th><th>Target</th><th>Actual</th><th>Status</th></tr>'
-      + sla.objectives.map(o => '<tr><td>' + esc(o.name) + '</td>'
-        + '<td>' + o.target + esc(o.unit || '') + '</td>'
-        + '<td>' + o.actual + esc(o.unit || '') + '</td>'
-        + '<td style="color:' + (o.met ? 'var(--green)' : 'var(--red)') + ';font-weight:600">'
-        + (o.met ? 'met' : 'breached')
-        + (o.error_budget_consumed_pct != null ? ' <span style="color:var(--muted);font-weight:400">('
-          + o.error_budget_consumed_pct + '% budget)</span>' : '') + '</td></tr>').join('')
-    : '<tr><td style="color:var(--muted)">No SLA history yet.</td></tr>';
-
-  // Alerts
-  const al = d.alerting || {};
-  $('#obsAlertCount').textContent = al.total ? '(' + al.total + ')' : '(none)';
-  $('#obsAlerts').innerHTML = (al.alerts || []).length
-    ? al.alerts.map(a => {
-        const c = a.severity === 'critical' ? 'var(--red)' : a.severity === 'warning'
-          ? 'var(--amber)' : 'var(--ink3)';
-        return '<div style="padding:6px 0;border-bottom:1px solid #f0f2f6">'
-          + '<span style="display:inline-block;min-width:64px;color:' + c + ';font-weight:700;'
-          + 'font-size:11px;text-transform:uppercase">' + esc(a.severity) + '</span>'
-          + '<span style="font-size:12.5px">' + esc(a.message) + '</span></div>';
-      }).join('')
-    : '<div style="color:var(--green);font-size:13px">No active alerts.</div>';
+  // health, monitors, SLOs and alerts all read from this one payload
+  gObs = d;
+  wireObsTop();
+  paintObsHealth();
+  paintObsRibbon();
+  paintObsMonitors();
+  paintObsSla();
+  paintObsAlerts();
 
   // Trends (sparkline of success rate + ops per day)
   const tr = d.performance_trends || {};
@@ -11069,23 +11302,653 @@ async function loadObservability() {
   paintObsTrends();
 
   // Historical
-  const hi = d.historical_analytics || {};
-  const kinds = Object.entries(hi.by_kind || {}).sort((a, b) => b[1] - a[1])
-    .map(([k, v]) => esc(k) + ' (' + v + ')').join(', ');
-  $('#obsHistorical').innerHTML =
-    '<div><b>' + (hi.jobs_total || 0) + '</b> jobs + <b>' + (hi.agent_runs_total || 0)
-    + '</b> agent runs analyzed'
-    + (hi.date_span ? ' · ' + esc(hi.date_span.from) + ' → ' + esc(hi.date_span.to) : '')
-    + '</div>'
-    + '<div style="margin-top:6px">Overall success rate: <b>' + (hi.overall_success_rate_pct || 0)
-    + '%</b>'
-    + (hi.mean_run_ms != null ? ' · mean agent run ' + obsMs(hi.mean_run_ms) : '')
-    + (hi.median_action_ms != null ? ' · median action ' + obsMs(hi.median_action_ms) : '') + '</div>'
-    + (kinds ? '<div style="margin-top:6px;color:var(--ink3)">By kind: ' + kinds + '</div>' : '');
+  gObsHist = d.historical_analytics || {};
+  wireObsHist();
+  paintObsHist();
 }
 
-function obsMs(v) { return v == null ? 'n/a' : (v < 1000 ? Math.round(v) + ' ms'
-  : (v / 1000).toFixed(1) + ' s'); }
+/* Job wall-clock can span hours, and "5446.3 s" is not a readable number. */
+function obsMs(v) {
+  if (v == null) return 'n/a';
+  if (v < 1000) return Math.round(v) + ' ms';
+  if (v < 60000) return (v / 1000).toFixed(1) + ' s';
+  if (v < 3600000) return (v / 60000).toFixed(1) + ' min';
+  return (v / 3600000).toFixed(1) + ' h';
+}
+
+/* Durations arrive rounded to whole milliseconds, so a stored 0 means "faster
+   than a millisecond", not "took no time" — say so rather than printing 0 ms. */
+function obsDur(v) { return v == null ? '\u2014' : v === 0 ? '<1 ms' : obsMs(v); }
+
+/* ---------------- Historical analytics ----------------
+   Same payload as before, but the parts that were dropped on the floor are
+   now shown: the status mix (by_status), mean job duration, and the job-kind
+   breakdown as a ranked bar list rather than a 20-item comma run-on. */
+let gObsHist = {};
+let gObsHistSort = 'count';      // 'count' | 'name'
+let gObsHistAll = false;         // show every kind, not just the top slice
+const HA_TOP = 8;
+
+const HA_STATUS = {
+  done: ['#157F3D', 'Succeeded'], ok: ['#157F3D', 'Succeeded'],
+  failed: ['#B42318', 'Failed'], error: ['#B42318', 'Failed'],
+  running: ['#2d6cdf', 'Running'], pending: ['#B45309', 'Pending'],
+  queued: ['#B45309', 'Queued'], cancelled: ['#7A8794', 'Cancelled'],
+};
+function haStatus(k) { return HA_STATUS[k] || ['#98a0ad', k]; }
+/* A rare kind is "<1%", never "0%" — it did happen. */
+function haShare(v, total) {
+  if (!total) return '0%';
+  const pc = 100 * v / total;
+  return v && pc < 0.5 ? '<1%' : Math.round(pc) + '%';
+}
+
+function paintObsHist() {
+  const host = $('#obsHistorical');
+  if (host) host.innerHTML = renderObsHist(gObsHist);
+}
+
+function renderObsHist(hi) {
+  const jobs = hi.jobs_total || 0, runs = hi.agent_runs_total || 0;
+  if (!jobs && !runs) {
+    return '<div style="color:var(--ink3);font-size:13px">'
+      + 'No run history analyzed yet.</div>';
+  }
+  const span = hi.date_span;
+  let days = null;
+  if (span && span.from && span.to) {
+    days = Math.round((Date.parse(span.to) - Date.parse(span.from)) / 864e5) + 1;
+  }
+  const st = hi.by_status || {};
+  const stEntries = Object.entries(st).sort((a, b) => b[1] - a[1]);
+  const stTotal = stEntries.reduce((a, kv) => a + kv[1], 0);
+  const settled = (st.done || 0) + (st.failed || 0);
+  const rate = hi.overall_success_rate_pct;
+
+  /* ---- headline numbers (the panel used to show none) ---- */
+  const kpi = (label, val, sub) => '<div class="obs-kpi"><dt>' + label
+    + '</dt><dd>' + val + (sub ? ' <small>' + sub + '</small>' : '') + '</dd></div>';
+  const kpis = '<dl class="obs-kpis">'
+    + kpi('Jobs analyzed', jobs.toLocaleString(),
+          days ? 'over ' + days + ' day' + (days > 1 ? 's' : '') : '')
+    + kpi('Agent runs', runs.toLocaleString(),
+          hi.mean_run_ms != null ? esc(obsDur(hi.mean_run_ms)) + ' mean' : '')
+    + kpi('Success rate', settled ? rate + '%' : '\u2014',
+          settled ? settled.toLocaleString() + ' settled' : 'nothing settled')
+    + kpi('Mean job', esc(obsDur(hi.mean_job_ms)), 'end to end')
+    + kpi('History window', span ? esc(span.from.slice(5)) + ' \u2192 '
+          + esc(span.to.slice(5)) : '\u2014', span ? esc(span.from.slice(0, 4)) : '')
+    + '</dl>';
+
+  /* ---- status mix: proportions, so one stacked bar beats five numbers ---- */
+  let mix = '';
+  if (stTotal) {
+    mix = '<div class="ha-sec"><h4>Status mix</h4><div class="ha-mix" role="img" '
+      + 'aria-label="' + esc(stEntries.map(kv =>
+          kv[1] + ' ' + haStatus(kv[0])[1].toLowerCase()).join(', ')) + '">'
+      + stEntries.map(kv => {
+          const c = haStatus(kv[0])[0], lbl = haStatus(kv[0])[1];
+          return '<span style="width:' + (100 * kv[1] / stTotal).toFixed(2)
+            + '%;background:' + c + '" title="' + esc(lbl) + ': ' + kv[1] + ' ('
+            + haShare(kv[1], stTotal) + ')"></span>';
+        }).join('')
+      + '</div><div class="ha-keys">'
+      + stEntries.map(kv => {
+          const c = haStatus(kv[0])[0], lbl = haStatus(kv[0])[1];
+          return '<span class="ha-key"><i style="background:' + c + '"></i>'
+            + esc(lbl) + ' <b>' + kv[1].toLocaleString() + '</b><span>('
+            + haShare(kv[1], stTotal) + ')</span></span>';
+        }).join('')
+      + '</div></div>';
+  }
+
+  /* ---- job kinds: ranked bars, sortable, collapsed to the top slice ---- */
+  let kindSec = '';
+  const kinds = Object.entries(hi.by_kind || {});
+  if (kinds.length) {
+    const sorted = kinds.slice().sort(gObsHistSort === 'name'
+      ? (a, b) => a[0].localeCompare(b[0])
+      : (a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+    const shown = gObsHistAll ? sorted : sorted.slice(0, HA_TOP);
+    const total = kinds.reduce((a, kv) => a + kv[1], 0);
+    const peak = Math.max.apply(null, kinds.map(kv => kv[1]));
+    const hidden = sorted.length - shown.length;
+    kindSec = '<div class="ha-sec"><div class="ha-head">'
+      + '<h4 style="margin:0">Job kinds <span style="text-transform:none;'
+      + 'letter-spacing:0;font-weight:500">\u00b7 ' + kinds.length
+      + ' distinct</span></h4>'
+      + '<span class="grow"></span>'
+      + '<div class="seg" role="tablist" aria-label="Sort job kinds">'
+      + [['count', 'By volume'], ['name', 'A\u2013Z']].map(kv =>
+          '<button role="tab" data-hasort="' + kv[0] + '" aria-selected="'
+          + (gObsHistSort === kv[0]) + '">' + kv[1] + '</button>').join('')
+      + '</div></div><div class="ha-rows">'
+      + shown.map(kv =>
+          '<div class="ha-row"><span class="k" title="' + esc(kv[0]) + '"><code>'
+          + esc(kv[0]) + '</code></span>'
+          + '<span class="ha-bar"><i style="width:'
+          + (100 * kv[1] / peak).toFixed(1) + '%"></i></span>'
+          + '<span class="v">' + kv[1].toLocaleString() + '<small>('
+          + haShare(kv[1], total) + ')</small></span></div>').join('')
+      + '</div>'
+      + (hidden > 0 || gObsHistAll
+        ? '<button type="button" class="jact" data-hamore="1" style="margin-top:8px" '
+          + 'aria-expanded="' + gObsHistAll + '">'
+          + (gObsHistAll
+            ? 'Show ' + (gObsHistSort === 'name' ? 'first ' : 'top ') + HA_TOP
+            : 'Show all ' + sorted.length + ' kinds')
+          + '</button>'
+        : '')
+      + '</div>';
+  }
+
+  /* ---- latency: three different measures, each labelled for what it is ---- */
+  const durSec = '<div class="ha-sec"><h4>Latency</h4><dl class="ha-dur">'
+    + '<div><dt>Mean job</dt><dd>' + esc(obsDur(hi.mean_job_ms))
+    + '</dd><p>Whole job, submit to finish.</p></div>'
+    + '<div><dt>Mean agent run</dt><dd>' + esc(obsDur(hi.mean_run_ms))
+    + '</dd><p>One full agent run.</p></div>'
+    + '<div><dt>Median agent action</dt><dd>' + esc(obsDur(hi.median_action_ms))
+    + '</dd><p>Single step inside a run.</p></div></dl></div>';
+
+  return kpis + mix + kindSec + durSec;
+}
+
+function wireObsHist() {
+  const host = $('#obsHistorical');
+  if (!host || host.dataset.wired) return;
+  host.dataset.wired = '1';
+  host.addEventListener('click', e => {
+    const so = e.target.closest('[data-hasort]');
+    if (so) { gObsHistSort = so.dataset.hasort; paintObsHist(); return; }
+    if (e.target.closest('[data-hamore]')) {
+      gObsHistAll = !gObsHistAll; paintObsHist();
+    }
+  });
+}
+
+/* ---------------- Observability: verdict / attention / monitors ------------
+   Three zones instead of six sibling panels, and a distinct form per kind of
+   number rather than one progress bar for everything:
+
+   - the six health signals are independent named metrics, so they get big
+     numerals in a matrix (a hexagon/polystat grid is for aggregating many
+     related services into composites, and hides its labels behind tooltips);
+   - state over time gets a uniform status ribbon, one cell per day, colour
+     plus a hatch on bad days — a green/red-only strip is unreadable for the
+     ~8% of men with red-green colour deficiency;
+   - objectives lead with burn rate, the multiple of sustainable error spend,
+     because "how fast is the budget going" is the actionable figure;
+   - monitors are grouped rows, worst first, with a shape + word + colour on
+     each so no single channel carries the state.
+
+   contributors / top_detractors / sample / value / threshold were all already
+   in the payload and none of them were ever rendered. */
+let gObs = {};
+let gObsMonFilter = 'all';
+let gObsAlertSev = '';           // '' = all severities
+
+const OBS_SIG_LABELS = {
+  pipeline: 'Pipeline', reliability: 'Reliability', agents: 'Agents',
+  validation: 'Validation', connectors: 'Connectors', latency: 'Latency',
+};
+const OBS_ATTENTION = ['degraded', 'partial', 'fail', 'critical', 'warn',
+                       'no_data'];
+/* Burn-rate bands from multi-window SRE practice: 1x is spending the budget
+   exactly as fast as it is granted, 6x and 14.4x are the usual page-worthy
+   multiples for a 30-day window. */
+const OBS_BURN = [[14.4, 'critical burn', 'var(--red)'],
+                  [6, 'fast burn', 'var(--red)'],
+                  [1, 'elevated', 'var(--amber)'],
+                  [0, 'sustainable', 'var(--green)']];
+
+/* Geometric status marks. Shape, not just hue: filled disc = healthy,
+   half disc = degraded, cross = failed, hollow ring = nothing measured. */
+const OBS_MARK = {
+  ok: 'disc', pass: 'disc', healthy: 'disc', complete: 'disc',
+  in_progress: 'disc', partial: 'half', warn: 'half', degraded: 'half',
+  fail: 'cross', critical: 'cross', no_data: 'ring',
+};
+function obsMarkSvg(status, col) {
+  const kind = OBS_MARK[status] || 'ring';
+  const open = '<svg class="omr-ic" viewBox="0 0 16 16" aria-hidden="true" '
+    + 'fill="none" stroke="' + col + '" stroke-width="2">';
+  if (kind === 'disc') {
+    return open + '<circle cx="8" cy="8" r="6" fill="' + col
+      + '" stroke="none"/></svg>';
+  }
+  if (kind === 'half') {
+    return open + '<circle cx="8" cy="8" r="6"/>'
+      + '<path d="M8 2a6 6 0 0 1 0 12Z" fill="' + col + '" stroke="none"/></svg>';
+  }
+  if (kind === 'cross') {
+    return open + '<circle cx="8" cy="8" r="6"/>'
+      + '<path d="M5.6 5.6l4.8 4.8M10.4 5.6l-4.8 4.8" stroke-linecap="round"/>'
+      + '</svg>';
+  }
+  return open + '<circle cx="8" cy="8" r="6" stroke-dasharray="2.6 2.4"/></svg>';
+}
+function obsSevSvg(sev) {
+  if (sev === 'critical') {
+    return '<svg viewBox="0 0 16 16" aria-hidden="true" fill="none" '
+      + 'stroke="currentColor" stroke-width="2" stroke-linecap="round">'
+      + '<circle cx="8" cy="8" r="6"/><path d="M5.6 5.6l4.8 4.8M10.4 5.6l-4.8 4.8"/>'
+      + '</svg>';
+  }
+  if (sev === 'warning') {
+    return '<svg viewBox="0 0 16 16" aria-hidden="true" fill="none" '
+      + 'stroke="currentColor" stroke-width="2" stroke-linecap="round">'
+      + '<path d="M8 1.8 14.6 13.4H1.4Z"/><path d="M8 6.4v3.1"/>'
+      + '<path d="M8 11.6h.01"/></svg>';
+  }
+  return '<svg viewBox="0 0 16 16" aria-hidden="true" fill="none" '
+    + 'stroke="currentColor" stroke-width="2" stroke-linecap="round">'
+    + '<circle cx="8" cy="8" r="6"/><path d="M8 7.4v3.4"/>'
+    + '<path d="M8 5.2h.01"/></svg>';
+}
+function obsTickSvg() {
+  return '<svg viewBox="0 0 16 16" aria-hidden="true" fill="none" '
+    + 'stroke="currentColor" stroke-width="2.2" stroke-linecap="round" '
+    + 'stroke-linejoin="round"><path d="M2.8 8.4l3.4 3.4 7-7.6"/></svg>';
+}
+
+function obsScoreColor(v) {
+  return v == null ? 'var(--line)'
+    : v >= 90 ? 'var(--green)' : v >= 75 ? '#B45309' : v >= 50 ? 'var(--amber)'
+    : 'var(--red)';
+}
+/* Naming the band in words keeps every score from being colour-only. */
+function obsScoreBand(v) {
+  return v == null ? 'not scored'
+    : v >= 90 ? 'strong' : v >= 75 ? 'fair' : v >= 50 ? 'weak' : 'poor';
+}
+
+function paintObsHealth() {
+  const h = gObs.health_score || {};
+  const act = (gObs.operational_dashboard || {}).active || {};
+  $('#obsGauge').innerHTML = obsGaugeSvg(h.score, h.band);
+
+  /* Lead with the verdict in plain words, not the engine's sentence. */
+  const band = h.band === 'insufficient' ? 'provisional' : (h.band || 'unknown');
+  $('#obsHealthHeadline').textContent = h.score == null
+    ? 'Not enough history to score operational health'
+    : 'Operational health is ' + band;
+
+  const thin = h.sample === 'thin' || h.sample === 'insufficient';
+  /* Escape each name on its own — the joining markup must not be escaped. */
+  const worst = (h.top_detractors || []).slice(0, 2)
+    .map(t => '<b>' + esc((OBS_SIG_LABELS[t.area] || t.area) + ' '
+                          + Math.round(t.score)) + '</b>');
+  $('#obsExecActive').innerHTML =
+    (h.operations != null
+      ? '<b>' + h.operations.toLocaleString() + '</b> operation'
+        + (h.operations === 1 ? '' : 's') + ' scored'
+        + (thin ? ' · <b style="color:var(--amber)">provisional sample</b>' : '')
+      : 'No scored operations')
+    + ' · <b>' + (act.running_jobs || 0) + '</b> running · <b>'
+    + (act.pending_approvals || 0) + '</b> awaiting approval'
+    + (gObs.as_of ? ' · as of ' + esc(gObs.as_of) : '')
+    + (worst.length ? '<div class="oh-weak">Held back by '
+       + worst.join(' and ') + '</div>' : '');
+
+  /* Severity chips double as the alert filter — counts you can act on. */
+  const ac = (gObs.alerting || {}).counts || {};
+  $('#obsAlertsBar').innerHTML = ['critical', 'warning', 'info'].map(k => {
+    const n = ac[k] || 0;
+    const cls = k === 'critical' ? 'crit' : k === 'warning' ? 'warn' : '';
+    return '<button type="button" class="oh-chip ' + cls + '" data-obssev="' + k
+      + '" aria-pressed="' + (gObsAlertSev === k) + '"' + (n ? '' : ' disabled')
+      + (n ? ' title="Show only ' + k + ' alerts"' : '')
+      + '>' + n + ' ' + k + '</button>';
+  }).join('');
+
+  /* The six signals, worst first, as numerals. */
+  const cs = Object.entries(h.contributors || {});
+  if (!cs.length) { $('#obsSignals').innerHTML = ''; return; }
+  /* Only the two named in "held back by" get emphasised — flagging three of
+     six as the worst tells you nothing. */
+  const low = new Set((h.top_detractors || []).slice(0, 2).map(t => t.area));
+  $('#obsSignals').innerHTML = '<div class="oh-lbl">Signals behind the score</div>'
+    + '<div class="oh-grid">'
+    + cs.sort((a, b) => a[1] - b[1]).map(([k, v]) => {
+        const c = obsScoreColor(v);
+        return '<div class="oh-cell' + (low.has(k) ? ' worst' : '')
+          + '" style="--sig:' + c + '" title="'
+          + esc((OBS_SIG_LABELS[k] || k) + ': ' + Math.round(v) + ' of 100, '
+                + obsScoreBand(v)) + '">'
+          + '<b>' + Math.round(v) + '</b>'
+          + '<span>' + esc(OBS_SIG_LABELS[k] || k) + '</span>'
+          + '<em>' + esc(obsScoreBand(v)) + '</em></div>';
+      }).join('') + '</div>';
+}
+
+/* The daily series is the one real time dimension the payload carries, so the
+   ribbon is system-wide — there is no per-monitor history to draw. */
+function paintObsRibbon() {
+  const host = $('#obsRibbon');
+  if (!host) return;
+  const series = (gObs.performance_trends || {}).series || [];
+  if (!series.length) { host.innerHTML = ''; return; }
+
+  const settled = s => (s.ok || 0) + (s.failed || 0);
+  const rate = s => settled(s) ? s.success_rate_pct : null;
+  const rated = series.filter(s => settled(s));
+  const bad = rated.filter(s => s.success_rate_pct < 90).length;
+  const tOk = series.reduce((a, s) => a + (s.ok || 0), 0);
+  const tFail = series.reduce((a, s) => a + (s.failed || 0), 0);
+  const overall = tOk + tFail
+    ? Math.round(1000 * tOk / (tOk + tFail)) / 10 : null;
+  const dir = (gObs.performance_trends || {}).direction;
+
+  const cell = s => {
+    const r = rate(s);
+    const c = r == null ? 'var(--line)'
+      : r >= 90 ? 'var(--green)' : r >= 60 ? 'var(--amber)' : 'var(--red)';
+    const state = r == null ? 'nothing settled'
+      : r >= 90 ? 'healthy' : r >= 60 ? 'degraded' : 'failing';
+    /* Bad days also get a hatch, so state survives colour blindness. */
+    const hatch = (r != null && r < 60)
+      ? 'background-image:repeating-linear-gradient(45deg,'
+        + 'rgba(255,255,255,.55) 0 2px,transparent 2px 5px);' : '';
+    return '<button type="button" class="orib-cell" data-obsday="' + esc(s.date)
+      + '" style="background:' + c + ';' + hatch + '" aria-label="'
+      + esc(s.date + ': ' + state + ', ' + (s.operations || 0) + ' operations, '
+            + (r == null ? 'no success rate yet' : r + '% succeeded'))
+      + '" title="' + esc(s.date + ' — ' + state + ' · ' + (s.operations || 0)
+            + ' ops · ' + (r == null ? 'n/a' : r + '% ok')) + '"></button>';
+  };
+
+  host.innerHTML = '<div class="orib"><div class="orib-top">'
+    + '<span class="oh-lbl" style="margin:0">Daily state · last '
+    + series.length + ' active day' + (series.length === 1 ? '' : 's') + '</span>'
+    + '<span class="grow"></span><span class="orib-sum">'
+    + (overall == null ? 'nothing settled' : '<b>' + overall + '%</b> succeeded')
+    + (bad ? ' · <b>' + bad + '</b> day' + (bad === 1 ? '' : 's') + ' below 90%'
+           : ' · no bad days')
+    + (dir ? ' · trend ' + esc(dir) : '') + '</span></div>'
+    + '<div class="orib-strip">' + series.map(cell).join('') + '</div>'
+    + '<div class="orib-scale"><span>' + esc(series[0].date) + '</span><span>'
+    + esc(series[series.length - 1].date) + '</span></div>'
+    + '<div class="orib-key">'
+    + '<span><i style="background:var(--green)"></i>90%+ succeeded</span>'
+    + '<span><i style="background:var(--amber)"></i>60–89%</span>'
+    + '<span><i style="background:var(--red);background-image:'
+    + 'repeating-linear-gradient(45deg,rgba(255,255,255,.55) 0 2px,'
+    + 'transparent 2px 5px)"></i>below 60% (hatched)</span>'
+    + '<span><i style="background:var(--line)"></i>nothing settled</span>'
+    + '</div></div>';
+}
+
+function paintObsMonitors() {
+  const mons = gObs.monitors || {};
+  const keys = Object.keys(OBS_MON_LABELS).filter(k => mons[k]);
+  const attn = keys.filter(k => OBS_ATTENTION.includes(mons[k].status));
+  $('#obsMonCount').textContent = keys.length + ' monitors'
+    + (attn.length ? ' · ' + attn.length + ' need attention' : ' · all clear');
+  document.querySelectorAll('#obsMonFilter [data-monf]').forEach(b =>
+    b.setAttribute('aria-selected', String(b.dataset.monf === gObsMonFilter)));
+
+  const shown = keys.filter(k => gObsMonFilter === 'attn'
+    ? OBS_ATTENTION.includes(mons[k].status)
+    : gObsMonFilter === 'measured' ? mons[k].basis === 'measured' : true);
+  if (!shown.length) {
+    $('#obsMonitors').innerHTML = '<div class="om-empty">'
+      + (gObsMonFilter === 'attn' ? 'No monitor needs attention right now.'
+         : 'No measured monitors yet.') + '</div>';
+    return;
+  }
+  const row = k => {
+    const m = mons[k], col = obsColor(m.status);
+    return '<div class="omr" role="listitem" id="obsMon-' + esc(k)
+      + '" tabindex="-1">'
+      + obsMarkSvg(m.status, col)
+      + '<div class="omr-nm">' + esc(OBS_MON_LABELS[k])
+      + (m.basis === 'modeled'
+        ? '<small title="Derived from estate topology, not live metering">'
+          + 'modeled, not metered</small>'
+        : m.basis === 'no_data'
+          ? '<small style="color:var(--ink3)">no history yet</small>' : '')
+      + '</div>'
+      + '<div class="omr-st" style="color:' + col + '">' + esc(m.status || '')
+      + (m.score != null ? '<u>' + Math.round(m.score) + ' / 100 · '
+         + esc(obsScoreBand(m.score)) + '</u>' : '') + '</div>'
+      + '<div class="omr-hl">' + esc(m.headline || '') + '</div></div>';
+  };
+  /* Worst first: a degraded monitor should never sit below a healthy one. */
+  const needs = shown.filter(k => OBS_ATTENTION.includes(mons[k].status));
+  const fine = shown.filter(k => !OBS_ATTENTION.includes(mons[k].status));
+  const group = (title, ks) => !ks.length ? ''
+    : '<div class="omg"><div class="omg-h">' + title + ' <b>' + ks.length
+      + '</b></div><div role="list">' + ks.map(row).join('') + '</div></div>';
+  $('#obsMonitors').innerHTML = group('Needs attention', needs)
+    + group('Healthy', fine);
+}
+
+/* Objective units render through the same formatter as everything else, so a
+   60000 ms target reads as "60.0 s" rather than a raw millisecond count. */
+function obsSlaVal(v, unit) {
+  if (v == null) return '—';
+  return unit === 'ms' ? obsMs(v) : v + (unit || '');
+}
+/* Burn rate = error spend / error allowance. Above 1x the budget for the
+   window runs out early; below 1x it lasts. */
+function obsBurn(o) {
+  const higher = o.met ? o.actual >= o.target : o.actual < o.target;
+  if (higher) {
+    const allowed = 100 - o.target;
+    if (allowed <= 0) return o.actual >= 100 ? 0 : Infinity;
+    return Math.max(0, (100 - o.actual) / allowed);
+  }
+  if (!o.target) return o.actual ? Infinity : 0;
+  return Math.max(0, o.actual / o.target);
+}
+function obsBurnBand(x) {
+  for (const [floor, label, col] of OBS_BURN) {
+    if (x >= floor) return [label, col];
+  }
+  return ['sustainable', 'var(--green)'];
+}
+function obsBurnText(x) {
+  if (!isFinite(x)) return '∞';
+  return (x >= 100 ? Math.round(x) : x >= 10 ? x.toFixed(1) : x.toFixed(2)) + '×';
+}
+
+function paintObsSla() {
+  const sla = gObs.sla_dashboard || {};
+  const objs = sla.objectives || [];
+  $('#obsSlaState').innerHTML = sla.status === 'met'
+    ? '<span style="color:var(--green);font-weight:600">all ' + objs.length
+      + ' met</span>'
+    : sla.status === 'breached'
+      ? '<span style="color:var(--red);font-weight:600">' + sla.met + ' of '
+        + sla.total + ' met</span>'
+      : '<span style="color:var(--ink3)">no data</span>';
+  if (!objs.length) {
+    $('#obsSla').innerHTML = '<div class="om-empty">No settled operations to '
+      + 'measure objectives against yet.</div>';
+    return;
+  }
+  /* Worst burn first — the objective in trouble should not sit third. */
+  const sorted = objs.slice().sort((x, y) => obsBurn(y) - obsBurn(x));
+  $('#obsSla').innerHTML = '<div class="osc">'
+    + sorted.map(o => {
+      const x = obsBurn(o), bandPair = obsBurnBand(x);
+      const higher = o.met ? o.actual >= o.target : o.actual < o.target;
+      const n = o.sample != null ? o.sample : o.samples;
+      return '<div class="osc-c' + (o.met ? '' : ' bad') + '" style="--ob:'
+        + bandPair[1] + '">'
+        + '<div class="osc-nm" title="' + esc(o.name) + '">' + esc(o.name)
+        + '</div>'
+        + '<div class="osc-cmp"><b style="color:'
+        + (o.met ? 'var(--green)' : 'var(--red)') + '">'
+        + esc(obsSlaVal(o.actual, o.unit)) + '</b> against '
+        + (higher ? '\u2265' : '\u2264') + ' <b>'
+        + esc(obsSlaVal(o.target, o.unit)) + '</b></div>'
+        + '<div class="osc-burn" role="img" aria-label="'
+        + esc('Burn rate ' + obsBurnText(x) + ', ' + bandPair[0]) + '">'
+        + '<b>' + obsBurnText(x) + '</b><span>' + esc(bandPair[0]) + '</span></div>'
+        + '<div class="osc-ft"><i></i><span><b>'
+        + (o.met ? 'met' : 'breached') + '</b>'
+        + (o.error_budget_consumed_pct != null
+          ? ' \u00b7 ' + o.error_budget_consumed_pct + '% budget used' : '')
+        + (n != null ? ' \u00b7 ' + n.toLocaleString() + ' sample'
+            + (n === 1 ? '' : 's') : '')
+        + (o.low_confidence ? ' \u00b7 low confidence' : '')
+        + '</span></div></div>';
+    }).join('')
+    + '</div><div class="oslo-foot">Burn rate is error spend divided by error '
+    + 'allowance: <b>1\u00d7</b> exactly exhausts the budget over the window, '
+    + '<b>6\u00d7</b> and <b>14.4\u00d7</b> are the usual page-worthy multiples.'
+    + '</div>';
+}
+
+/* Which objective, if any, an alert is really about — so a row can say what a
+   fired rule costs instead of repeating the threshold twice. */
+function obsAlertObjective(a) {
+  const objs = (gObs.sla_dashboard || {}).objectives || [];
+  const want = a.rule === 'availability' ? 'availability'
+    : a.rule === 'failure_rate' ? 'failure rate'
+    : a.rule === 'latency_p95' ? 'latency' : null;
+  if (!want) return null;
+  return objs.filter(o => o.name.toLowerCase().indexOf(want) === 0)[0] || null;
+}
+
+function paintObsAlerts() {
+  const al = gObs.alerting || {};
+  const all = al.alerts || [];
+  const filtered = gObsAlertSev
+    ? all.filter(a => a.severity === gObsAlertSev) : all;
+  /* Severity first, then by what it costs — otherwise the 24x availability
+     breach lands third while the objective cards rank it first. */
+  const rank = {critical: 0, warning: 1, info: 2};
+  const shown = filtered.map((a, i) => [a, i]).sort((x, y) => {
+    const bySev = (rank[x[0].severity] ?? 9) - (rank[y[0].severity] ?? 9);
+    if (bySev) return bySev;
+    const bx = obsAlertObjective(x[0]), by = obsAlertObjective(y[0]);
+    const cost = (by ? obsBurn(by) : -1) - (bx ? obsBurn(bx) : -1);
+    return cost || x[1] - y[1];
+  }).map(pair => pair[0]);
+  const ac = al.counts || {};
+  $('#obsAlertCount').textContent = all.length
+    ? (gObsAlertSev ? '(' + shown.length + ' of ' + all.length + ')'
+       : '(' + all.length + (ac.critical ? ', ' + ac.critical + ' critical' : '')
+         + ')')
+    : '(nothing firing)';
+  const clr = $('#obsAlertClear');
+  if (clr) clr.style.display = gObsAlertSev ? '' : 'none';
+
+  if (!all.length) {
+    $('#obsAlerts').innerHTML = '<div class="oat-none">' + obsTickSvg()
+      + 'No alert is firing. Every rule is inside its threshold.</div>';
+    return;
+  }
+  if (!shown.length) {
+    $('#obsAlerts').innerHTML = '<div class="om-empty">No ' + esc(gObsAlertSev)
+      + ' alerts. Clear the filter to see the other ' + all.length + '.</div>';
+    return;
+  }
+  const chevron = '<svg class="oat-go" viewBox="0 0 16 16" aria-hidden="true" '
+    + 'fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" '
+    + 'stroke-linejoin="round"><path d="M6 3.5 10.5 8 6 12.5"/></svg>';
+  $('#obsAlerts').innerHTML = '<div class="oat">' + shown.map(a => {
+    /* Some rules fire off the composite score rather than a monitor, so
+       there is no tile to open — those rows are not buttons, and their key
+       gets humanised instead of leaking as "health_score". */
+    const tile = OBS_MON_LABELS[a.monitor];
+    const mon = tile || String(a.monitor || '').replace(/_/g, ' ')
+      .replace(/^./, c => c.toUpperCase());
+    const col = a.severity === 'critical' ? 'var(--red)'
+      : a.severity === 'warning' ? 'var(--amber)' : 'var(--ink3)';
+    const obj = obsAlertObjective(a);
+    /* Say what it costs, not the threshold the message already quotes. */
+    const cost = obj
+      ? 'spending the ' + obj.name.toLowerCase() + ' error budget <b>'
+        + obsBurnText(obsBurn(obj)) + '</b> faster than allowed'
+      : (a.value != null && a.threshold != null
+        ? '<b>' + a.value + '</b> against a threshold of <b>' + a.threshold + '</b>'
+        : '');
+    const body = obsMarkSvg(a.severity === 'critical' ? 'fail' : 'warn', col)
+        .replace('omr-ic', 'oat-mk')
+      + '<span class="oat-b"><span class="oat-sev ' + esc(a.severity) + '">'
+      + esc(a.severity) + '</span>'
+      + '<span class="oat-msg">' + esc(a.message) + '</span>'
+      + '<span class="oat-sub">' + esc(mon)
+      + (cost ? ' \u00b7 ' + cost : '') + '</span></span>';
+    if (!tile) {
+      return '<div class="oat-i oat-static">' + body + '</div>';
+    }
+    return '<button type="button" class="oat-i" data-obsmon="'
+      + esc(a.monitor) + '" aria-label="'
+      + esc(a.severity + ': ' + a.message + '. From the ' + mon
+            + ' monitor. Opens that monitor.') + '">'
+      + body + chevron + '</button>';
+  }).join('') + '</div>';
+}
+
+/* One delegated wiring pass; the containers outlive every re-render. */
+function wireObsTop() {
+  const page = $('#page-observability');
+  if (!page || page.dataset.obsWired) return;
+  page.dataset.obsWired = '1';
+
+  const flash = key => {
+    const row = $('#obsMon-' + key);
+    if (!row) return;
+    row.scrollIntoView({block: 'center',
+      behavior: matchMedia('(prefers-reduced-motion:reduce)').matches
+        ? 'auto' : 'smooth'});
+    row.classList.add('flash');
+    row.focus({preventScroll: true});
+    setTimeout(() => row.classList.remove('flash'), 1600);
+  };
+
+  page.addEventListener('click', e => {
+    const f = e.target.closest('#obsMonFilter [data-monf]');
+    if (f) { gObsMonFilter = f.dataset.monf; paintObsMonitors(); return; }
+    const sev = e.target.closest('[data-obssev]');
+    if (sev) {
+      gObsAlertSev = gObsAlertSev === sev.dataset.obssev ? '' : sev.dataset.obssev;
+      paintObsHealth(); paintObsAlerts();
+      return;
+    }
+    if (e.target.closest('#obsAlertClear')) {
+      gObsAlertSev = ''; paintObsHealth(); paintObsAlerts(); return;
+    }
+    /* A ribbon day scrolls to the trends chart and focuses that same day, so
+       the glanceable strip is a way into the detailed view. */
+    const day = e.target.closest('[data-obsday]');
+    if (day) {
+      const i = gObsTrend.findIndex(s => s.date === day.dataset.obsday);
+      const plot = $('#obsTrends');
+      if (plot) {
+        plot.scrollIntoView({block: 'center',
+          behavior: matchMedia('(prefers-reduced-motion:reduce)').matches
+            ? 'auto' : 'smooth'});
+        const hit = plot.querySelectorAll('.ot-hit')[i];
+        if (hit) hit.focus({preventScroll: true});
+      }
+      return;
+    }
+    const row = e.target.closest('[data-obsmon]');
+    if (row && row.dataset.obsmon) {
+      /* An alert about a monitor hidden by the current filter is a dead end. */
+      const m = (gObs.monitors || {})[row.dataset.obsmon];
+      if (m && gObsMonFilter === 'attn' && !OBS_ATTENTION.includes(m.status)) {
+        gObsMonFilter = 'all'; paintObsMonitors();
+      }
+      flash(row.dataset.obsmon);
+    }
+  });
+
+  /* Left/right arrows walk the ribbon once a day has focus. */
+  page.addEventListener('keydown', e => {
+    const cell = e.target.closest('.orib-cell');
+    if (!cell || (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight')) return;
+    const cells = [...page.querySelectorAll('.orib-cell')];
+    const next = cells[cells.indexOf(cell) + (e.key === 'ArrowRight' ? 1 : -1)];
+    if (next) { e.preventDefault(); next.focus(); }
+  });
+}
 
 /* ---------------- Performance trends chart ----------------
    Three views over the same daily series: outcome volume (bars stacked
@@ -11152,9 +12015,14 @@ function renderObsTrends(series) {
   const rated = series.filter(s => otSettled(s));
   const worst = rated.reduce((a, s) =>
     a && a.success_rate_pct <= s.success_rate_pct ? a : s, null);
-  const durs = series.filter(s => s.mean_duration_ms != null);
-  const meanDur = durs.length
-    ? durs.reduce((a, s) => a + s.mean_duration_ms, 0) / durs.length : null;
+  /* Median, not mean: one job whose wall-clock spanned a day drags a mean of
+     daily means into the hours and buries a typical ~1 s operation. The mean
+     is still visible — the Duration view plots the outlier day explicitly. */
+  const durs = series.filter(s => s.mean_duration_ms != null)
+    .map(s => s.mean_duration_ms).sort((a, b) => a - b);
+  const mid = Math.floor(durs.length / 2);
+  const medDur = !durs.length ? null
+    : durs.length % 2 ? durs[mid] : (durs[mid - 1] + durs[mid]) / 2;
   let delta = null;
   if (rated.length >= 2) {
     const h = Math.floor(rated.length / 2);
@@ -11162,19 +12030,19 @@ function renderObsTrends(series) {
     delta = Math.round(10 * (avg(rated.slice(h)) - avg(rated.slice(0, h)))) / 10;
   }
   const kpi = (label, val, sub) =>
-    '<div class="ot-kpi"><dt>' + label + '</dt><dd>' + val
+    '<div class="obs-kpi"><dt>' + label + '</dt><dd>' + val
     + (sub ? ' <small>' + sub + '</small>' : '') + '</dd></div>';
   const dTone = delta == null || Math.abs(delta) < 5 ? 'var(--ink)'
     : delta > 0 ? 'var(--green)' : 'var(--red)';
-  const kpis = '<dl class="ot-kpis">'
+  const kpis = '<dl class="obs-kpis">'
     + kpi('Operations', tOps.toLocaleString(), 'over ' + n + ' day' + (n > 1 ? 's' : ''))
     + kpi('Success rate', overall == null ? '—' : overall + '%',
           tFail ? tFail.toLocaleString() + ' failed' : 'no failures')
     + kpi('Rate change', delta == null ? '—'
           : '<span style="color:' + dTone + '">' + (delta > 0 ? '+' : '') + delta + ' pp</span>',
           'first half → second')
-    + kpi('Mean duration', meanDur == null ? '—' : esc(obsMs(meanDur)),
-          'per operation')
+    + kpi('Typical duration', medDur == null ? '—' : esc(obsMs(medDur)),
+          'median day')
     + kpi('Worst day', worst ? worst.success_rate_pct + '%' : '—',
           worst ? esc(worst.date) : 'nothing settled')
     + '</dl>';
