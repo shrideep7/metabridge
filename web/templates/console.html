@@ -1,3 +1,4 @@
+
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -10,7 +11,9 @@
 <title>MetaBridge AI Platform</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<!-- Poppins for UI text; IBM Plex Mono stays for figures, ids and code — Poppins
+     has no monospace cut, and the metric tables depend on tabular digits. -->
+<link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 <style>
   :root {
     /* surfaces */
@@ -39,7 +42,7 @@
      With min-height the nav grew to the full document height and slid out of
      view on long pages. */
   html { height:100%; }
-  body { font-family:'IBM Plex Sans',-apple-system,'Segoe UI',Roboto,sans-serif; background:var(--bg); color:var(--ink);
+  body { font-family:'Poppins',-apple-system,'Segoe UI',Roboto,sans-serif; background:var(--bg); color:var(--ink);
          display:flex; height:100vh; overflow:hidden; font-size:13px; -webkit-font-smoothing:antialiased; }
   ::selection { background:#D6E4F7; }
   /* sidebar */
@@ -125,14 +128,69 @@
   .mcard .n { font-size:22px; font-weight:600; font-family:var(--mono); letter-spacing:-.02em; color:var(--ink); margin-top:4px; }
   .mcard .l { font-size:10.5px; color:var(--muted); text-transform:uppercase; font-weight:600; letter-spacing:.04em; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
   .mcard .d { font-size:11.5px; color:var(--muted); margin-top:3px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-  .steps { display:flex; gap:0; margin:0 0 20px; flex-wrap:wrap; }
-  .steps span { display:flex; align-items:center; gap:7px; font-size:12px; color:var(--muted); padding:6px 18px 6px 0; }
-  .steps span b { width:20px; height:20px; border-radius:var(--radius-sm); background:var(--line); color:var(--ink3);
-                  display:inline-flex; align-items:center; justify-content:center; font-size:11px; font-family:var(--mono); }
-  .steps span.on { color:var(--ink); font-weight:600; } .steps span.on b { background:var(--accent); color:#fff; }
-  .steps span.done b { background:var(--green); color:#fff; }
+  /* ---- run stepper (Modernize) ------------------------------------------
+     Five inert labels that scrolled off screen before the first field. It is
+     now the page's status bar: pinned under the topbar so it survives the
+     three screens of form, each step a control that returns to what that step
+     produced, and states that include the one the old bar could not show —
+     a step that FAILED. The rail fills as the run advances, so progress is
+     readable at a glance rather than by comparing five text colours. */
+  /* One line, always: the steps keep their natural width and the RAILS absorb
+     whatever space is left, so the bar spans the row instead of ending in dead
+     space — and no step can wrap onto a second line on its own. */
+  .steps { display:flex; align-items:center; flex-wrap:nowrap; gap:0 2px; margin:0; min-width:0; }
+  /* The stepper rides the input-mode switch: same row, opposite end. The row
+     carries the spine indent, so the switch stays aligned with the step title
+     and the run state reads at the far edge without a band of its own. */
+  .swrow { display:flex; align-items:center; gap:16px; flex-wrap:wrap; margin:0 0 14px 30px; }
+  @media (max-width:800px) { .swrow { margin-left:0; } }
+  .swrow .segbar { margin:0; }
+  /* takes every pixel the switch leaves; below its 520px basis it drops to its
+     own line and spans the full row rather than squeezing */
+  .swrow .steps { flex:1 1 520px; }
+  .steps .step { display:flex; align-items:center; gap:7px; flex:none; white-space:nowrap;
+                 margin:0; height:auto;
+                 padding:4px 8px; border:1px solid transparent; border-radius:var(--radius-sm);
+                 background:none; font-size:12px; font-weight:500; color:var(--muted); cursor:pointer; }
+  .steps .step b { width:20px; height:20px; flex:none; border-radius:50%; background:var(--line);
+                   color:var(--ink3); display:inline-flex; align-items:center; justify-content:center;
+                   font-size:11px; font-weight:600; font-family:var(--mono); }
+  /* unreached steps are not destinations yet — say so rather than dead-clicking */
+  .steps .step[aria-disabled="true"] { cursor:default; }
+  .steps .step:not([aria-disabled="true"]):hover { background:var(--header-bg); color:var(--ink); }
+  .steps .step:focus-visible { outline:none; box-shadow:var(--ring); }
+  .steps .step.on { color:var(--ink); font-weight:600; }
+  .steps .step.on b { background:var(--accent); color:#fff; }
+  .steps .step.done { color:var(--ink3); }
+  .steps .step.done b { background:var(--green); color:#fff; }
+  .steps .step.busy b { background:var(--accent); color:#fff; animation:dotpulse 1.1s ease-in-out infinite; }
+  .steps .step.fail { color:var(--red); font-weight:600; }
+  .steps .step.fail b { background:var(--red); color:#fff; }
+  /* the rail: filled behind every segment the run has already passed, and the
+     only thing that stretches — the slack in the row lives here */
+  .steps .bar { flex:1 1 auto; min-width:8px; height:2px; border-radius:1px; background:var(--line); }
+  .steps .bar.done { background:var(--green); }
+  /* The status rides the end of the same line and may shrink, never wrap: a
+     full-width basis here would make .steps claim the whole row and push the
+     stepper onto a line of its own. Empty means idle — the footer already
+     carries the "what is missing" hint next to the button it blocks. */
+  .steps .note { flex:0 1 auto; min-width:0; padding-left:12px; font-size:12px; color:var(--ink3);
+                 white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .steps .note:empty { display:none; padding:0; }
+  .steps .note.fail { color:var(--red); font-weight:600; }
+  /* too narrow to hold one line honestly — wrap rather than overflow the panel */
+  @media (max-width:900px) { .steps { flex-wrap:wrap; } .steps .bar { flex:0 1 20px; } }
+  /* stops a scrolled-to section from landing under the sticky topbar */
+  #planPanel, #planTable, #convResult, #convForm { scroll-margin-top:68px; }
   .tsel { display:grid; grid-template-columns:repeat(auto-fill,minmax(120px,1fr)); gap:8px; margin:6px 0 4px; }
-  .tsel button { margin:0; padding:8px; font-size:13px; background:#fff; color:var(--ink); border:1px solid var(--border); border-radius:var(--radius-sm); }
+  /* height:auto is load-bearing: the global `button` rule pins 32px, so a
+     two-line label ("Fabric / Synapse", which wraps in Poppins where it did
+     not in Plex Sans) rendered its second line OUTSIDE the border. The grid
+     stretches every chip in a row to the tallest, so one wrap stays tidy. */
+  .tsel button { margin:0; padding:7px 10px; height:auto; min-height:36px;
+                 display:flex; align-items:center; justify-content:center; text-align:center;
+                 line-height:1.3; font-size:13px; background:#fff; color:var(--ink);
+                 border:1px solid var(--border); border-radius:var(--radius-sm); }
   .tsel button.on { border-color:var(--accent); background:var(--accent-soft); color:var(--accent-hover); font-weight:600; }
   /* Same reasoning as .prov: these are selectable cards, so hovering one must
      not paint it in the accent fill that means "selected". */
@@ -269,6 +327,334 @@
   .jact.off { color:var(--muted); background:var(--header-bg); border-color:var(--line);
               cursor:not-allowed; opacity:.65; }
   .jact.off:hover { background:var(--header-bg); border-color:var(--line); }
+  /* The global `button` rule carries margin-top:16px for form buttons. A .jact
+     is a 28px inline chip, so on a <button> that margin is always wrong. */
+  button.jact { margin:0; }
+  /* Trend chart (Observability › Performance trends).
+     A stacked-outcome column chart with a success-rate overlay. Every day is
+     hoverable AND keyboard-focusable, and the bar is split by outcome so a bad
+     day is legible from shape alone — hue is never the only channel. */
+  .ot { position:relative; }
+  .ot-head { display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-bottom:12px; }
+  .ot-head .grow { flex:1 1 auto; }
+  .obs-kpis { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:12px; }
+  .obs-kpi { flex:1 1 130px; min-width:120px; padding:8px 10px; border:1px solid var(--line);
+            border-radius:var(--radius-sm); background:var(--header-bg); }
+  .obs-kpi dt { font-size:10.5px; font-weight:600; color:var(--ink3);
+               text-transform:uppercase; letter-spacing:.05em; }
+  .obs-kpi dd { font-size:17px; font-weight:600; color:var(--ink); margin-top:3px;
+               font-variant-numeric:tabular-nums; }
+  .obs-kpi dd small { font-size:11.5px; font-weight:500; color:var(--ink3); }
+  .ot-plot { overflow-x:auto; }
+  .ot-plot svg { display:block; }
+  .ot-grid { stroke:var(--line); shape-rendering:crispEdges; }
+  .ot-zero { stroke:var(--border); shape-rendering:crispEdges; }
+  .ot-ref { stroke:var(--amber); stroke-dasharray:4 3; opacity:.75; }
+  .ot-axis { fill:var(--ink3); font-size:10px; font-variant-numeric:tabular-nums; }
+  .ot-xlab { fill:var(--ink3); font-size:10px; }
+  /* fill-opacity, not opacity: the focus outline must stay fully opaque. */
+  .ot-band { fill:var(--accent); fill-opacity:0; stroke:none;
+             transition:fill-opacity .12s ease; }
+  .ot-slot:hover .ot-band { fill-opacity:.06; }
+  .ot-slot:focus-within .ot-band { fill-opacity:.1; stroke:var(--accent); stroke-width:2; }
+  .ot-hit { fill:transparent; cursor:pointer; outline:none; }
+  .ot-line { fill:none; stroke:var(--accent); stroke-width:2;
+             stroke-linejoin:round; stroke-linecap:round; }
+  .ot-dot { fill:#fff; stroke:var(--accent); stroke-width:2; }
+  .ot-legend { display:flex; gap:14px; flex-wrap:wrap; align-items:center;
+               font-size:11.5px; color:var(--ink3); margin-top:10px; }
+  .ot-legend span { display:inline-flex; align-items:center; gap:6px; }
+  .ot-legend i { width:10px; height:10px; border-radius:2px; flex:none; }
+  .ot-legend i.ln { width:14px; height:2px; border-radius:1px; }
+  .ot-note { font-size:11.5px; color:var(--ink3); margin-top:8px; }
+  .ot-tip { position:absolute; z-index:6; pointer-events:none; opacity:0;
+            transform:translateY(3px); transition:opacity .12s ease, transform .12s ease;
+            background:#fff; border:1px solid var(--border); border-radius:var(--radius-sm);
+            box-shadow:0 8px 22px rgba(16,24,40,.16); padding:9px 11px; width:196px; }
+  .ot-tip.on { opacity:1; transform:translateY(0); }
+  .ot-tip b { display:block; font-size:12px; color:var(--ink); margin-bottom:6px; }
+  .ot-tip .r { display:flex; justify-content:space-between; gap:12px;
+               font-size:12px; color:var(--ink3); line-height:1.75; }
+  .ot-tip .r em { font-style:normal; color:var(--ink); font-weight:600;
+                  font-variant-numeric:tabular-nums; }
+  .ot-tip .sw { display:inline-block; width:8px; height:8px; border-radius:2px;
+                margin-right:6px; vertical-align:baseline; }
+  .ot-table { margin-top:12px; overflow-x:auto; }
+  .ot-table table { width:100%; border-collapse:collapse; font-size:12px; }
+  .ot-table th, .ot-table td { padding:5px 8px; border-bottom:1px solid var(--line);
+                               text-align:right; white-space:nowrap; }
+  .ot-table th:first-child, .ot-table td:first-child { text-align:left; }
+  .ot-table th { color:var(--ink3); font-weight:600; font-size:10.5px;
+                 text-transform:uppercase; letter-spacing:.04em; }
+  .ot-table td { font-variant-numeric:tabular-nums; }
+  /* Historical analytics (Observability). The run history used to be one
+     run-on sentence plus a comma list of ~20 job kinds; it is now a status
+     mix bar plus a ranked, filterable breakdown. */
+  .ha-sec { margin-top:16px; }
+  .ha-sec h4 { font-size:11px; font-weight:600; color:var(--ink3); margin:0 0 8px;
+               text-transform:uppercase; letter-spacing:.05em; }
+  .ha-head { display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-bottom:10px; }
+  .ha-head .grow { flex:1 1 auto; }
+  .ha-mix { display:flex; height:16px; border-radius:4px; overflow:hidden;
+            background:var(--line); }
+  .ha-mix span { display:block; min-width:2px; transition:opacity .12s ease; }
+  .ha-mix:hover span { opacity:.55; }
+  .ha-mix span:hover { opacity:1; }
+  .ha-keys { display:flex; gap:16px; flex-wrap:wrap; margin-top:10px; }
+  .ha-key { display:flex; align-items:baseline; gap:6px; font-size:12px; color:var(--ink3); }
+  .ha-key i { width:9px; height:9px; border-radius:2px; flex:none; align-self:center; }
+  .ha-key b { color:var(--ink); font-variant-numeric:tabular-nums; }
+  .ha-rows { display:flex; flex-direction:column; gap:1px; }
+  .ha-row { display:grid; grid-template-columns:minmax(96px,148px) 1fr auto;
+            align-items:center; gap:10px; padding:4px 6px; border-radius:4px;
+            font-size:12.5px; }
+  .ha-row:hover { background:var(--header-bg); }
+  .ha-row > .k { color:var(--ink2); overflow:hidden; text-overflow:ellipsis;
+                 white-space:nowrap; }
+  .ha-row > .k code { font-family:var(--mono); font-size:11.5px; }
+  .ha-bar { height:9px; border-radius:3px; background:var(--line); overflow:hidden; }
+  .ha-bar i { display:block; height:100%; border-radius:3px; background:var(--accent);
+              min-width:2px; }
+  .ha-row > .v { color:var(--ink); font-weight:600; font-variant-numeric:tabular-nums;
+                 white-space:nowrap; }
+  .ha-row > .v small { color:var(--ink3); font-weight:500; margin-left:5px; }
+  .ha-dur { display:flex; gap:8px; flex-wrap:wrap; }
+  .ha-dur div { flex:1 1 150px; padding:8px 10px; border:1px solid var(--line);
+                border-radius:var(--radius-sm); }
+  .ha-dur dt { font-size:11px; color:var(--ink3); font-weight:600; }
+  .ha-dur dd { font-size:15px; font-weight:600; color:var(--ink); margin-top:2px;
+               font-variant-numeric:tabular-nums; }
+  .ha-dur p { font-size:11px; color:var(--ink3); margin-top:3px; }
+  /* ---- Observability: verdict / attention / monitors -------------------
+     Redesigned away from a wall of interchangeable progress bars. Three
+     zones: the verdict (score + the six signals behind it + a day-by-day
+     status ribbon), then what needs attention, then every monitor worst
+     first. Each form follows what its number actually is: big numerals for
+     independent named signals (a hex/polystat grid is for aggregated
+     composites, not six labelled metrics), a uniform status ribbon for
+     day-over-day state, and burn-rate multiples for objectives. */
+  .ozone { padding:18px; }
+  .ozone-row { display:flex; gap:16px; flex-wrap:wrap; margin-top:16px; }
+  .oh { display:flex; gap:26px; align-items:flex-start; flex-wrap:wrap; }
+  .oh-verdict { display:flex; gap:18px; align-items:center;
+                flex:1 1 320px; min-width:290px; }
+  .oh-said { min-width:0; }
+  .oh-head { font-size:15px; font-weight:600; color:var(--ink);
+             letter-spacing:-.01em; line-height:1.35; }
+  .oh-meta { font-size:12px; color:var(--ink3); margin-top:6px; line-height:1.6; }
+  .oh-meta b { color:var(--ink2); }
+  .oh-weak { margin-top:7px; font-size:12px; color:var(--ink3); }
+  .oh-weak b { color:var(--ink); font-weight:600; }
+  .oh-chips { display:flex; gap:6px; flex-wrap:wrap; margin-top:10px; }
+  .oh-chip { display:inline-flex; align-items:center; gap:6px; height:26px;
+             margin:0; padding:0 11px; border:1px solid transparent;
+             border-radius:6px;
+             font-size:12px; font-weight:600; font-family:inherit; cursor:pointer;
+             background:var(--line); color:var(--ink3);
+             transition:border-color .15s ease, background .15s ease; }
+  .oh-chip[disabled] { cursor:default; opacity:.6; }
+  .oh-chip.crit { background:var(--red-bg); color:var(--red); }
+  .oh-chip.warn { background:var(--amber-bg); color:var(--amber); }
+  .oh-chip[aria-pressed="true"] { border-color:currentColor; }
+  .oh-chip:not([disabled]):hover { border-color:currentColor; }
+  .oh-chip:focus-visible { outline:2px solid var(--accent); outline-offset:1px; }
+
+  /* Signal matrix — big numerals, not bars. The number is the visual; hue
+     and the named band reinforce it, so neither carries meaning alone. */
+  .oh-sig { flex:1 1 330px; min-width:300px; }
+  .oh-lbl { font-size:10.5px; font-weight:600; color:var(--ink3); margin:0 0 9px;
+            text-transform:uppercase; letter-spacing:.06em; }
+  .oh-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:7px; }
+  .oh-cell { position:relative; padding:8px 10px 9px 12px;
+             border-radius:var(--radius-sm); background:var(--header-bg);
+             border:1px solid var(--line); overflow:hidden; }
+  /* A tinted left edge, so the band survives greyscale printing. */
+  .oh-cell::before { content:""; position:absolute; left:0; top:0; bottom:0;
+                     width:3px; background:var(--sig,var(--line)); }
+  .oh-cell b { display:block; font-size:21px; font-weight:600; line-height:1.1;
+               color:var(--ink); font-variant-numeric:tabular-nums;
+               letter-spacing:-.02em; }
+  .oh-cell span { display:block; font-size:11px; color:var(--ink3); margin-top:2px; }
+  .oh-cell em { display:block; font-style:normal; font-size:10px; margin-top:3px;
+                color:var(--sig); font-weight:600; }
+  .oh-cell.worst { background:#fff; border-color:var(--sig); }
+
+  /* Status ribbon — one uniform cell per day, state by colour AND by a hatch
+     on bad days, because a green/red-only strip fails ~8% of male readers.
+     Deliberately not height-encoded: the trends chart below is the bar view. */
+  .orib { margin-top:18px; padding-top:16px; border-top:1px solid var(--line); }
+  .orib-top { display:flex; align-items:baseline; gap:10px; flex-wrap:wrap;
+              margin-bottom:9px; }
+  .orib-top .grow { flex:1 1 auto; }
+  .orib-sum { font-size:12px; color:var(--ink3); }
+  .orib-sum b { color:var(--ink); font-weight:600;
+                font-variant-numeric:tabular-nums; }
+  .orib-strip { display:flex; gap:3px; align-items:stretch; overflow-x:auto;
+                padding:2px 0; }
+  .orib-cell { flex:1 1 0; min-width:12px; height:34px; margin:0; border:none;
+               padding:0; border-radius:3px; cursor:pointer; position:relative;
+               transition:transform .15s ease, box-shadow .15s ease; }
+  .orib-cell:hover, .orib-cell:focus-visible { transform:scaleY(1.14);
+               box-shadow:0 0 0 2px var(--accent); outline:none; z-index:1; }
+  .orib-scale { display:flex; justify-content:space-between; margin-top:7px;
+                font-size:10px; color:var(--ink3); }
+  .orib-key { display:flex; gap:14px; flex-wrap:wrap; margin-top:10px;
+              font-size:11.5px; color:var(--ink3); }
+  .orib-key span { display:inline-flex; align-items:center; gap:6px;
+                   overflow-wrap:anywhere; }
+  .orib-key i { width:11px; height:11px; border-radius:3px; flex:none; }
+
+  /* Monitor rows — grouped worst-first, shape + word + colour per row, no
+     per-row bar. Compact enough that ten monitors read as one list. */
+  .omg + .omg { margin-top:6px; }
+  .omg-h { display:flex; align-items:center; gap:8px; padding:10px 8px 6px;
+           font-size:10.5px; font-weight:600; color:var(--ink3);
+           text-transform:uppercase; letter-spacing:.06em; }
+  .omg-h b { color:var(--ink2); }
+  /* minmax(0,1fr), not 1fr: an auto minimum refuses to shrink past its
+     content and the row overflows on a narrow panel. */
+  .omr { display:grid;
+         grid-template-columns:18px minmax(90px,190px) 86px minmax(0,1fr);
+         gap:12px; align-items:center; padding:9px 8px; border-radius:6px;
+         border-top:1px solid var(--line); scroll-margin-top:90px;
+         transition:background .15s ease; }
+  .omr:hover { background:var(--header-bg); }
+  .omr:focus-visible { outline:2px solid var(--accent); outline-offset:-2px; }
+  .omr.flash { background:var(--accent-soft);
+               box-shadow:inset 0 0 0 1px var(--accent-line); }
+  .omr-ic { width:16px; height:16px; display:block; }
+  .omr-nm { font-size:12.5px; font-weight:600; color:var(--ink);
+            overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .omr-nm small { display:block; font-weight:500; font-size:10.5px;
+                  color:var(--amber); }
+  .omr-st { font-size:11.5px; font-weight:600; white-space:nowrap; }
+  .omr-st u { display:block; text-decoration:none; color:var(--ink3);
+              font-weight:500; font-size:10.5px;
+              font-variant-numeric:tabular-nums; }
+  .omr-hl { font-size:11.5px; color:var(--ink3); line-height:1.5; min-width:0;
+            overflow-wrap:anywhere; }
+  .om-empty { font-size:12.5px; color:var(--ink3); padding:14px 8px; }
+
+  /* Attention timeline. The product pattern for incident surfaces is
+     "timeline + severity indicators": a rail of severity marks down the left,
+     bold message, detail beneath. Replaces three identical 85px severity
+     pills, which read as a block of noise rather than as three states. */
+  .oat { display:flex; flex-direction:column; margin-top:6px; }
+  /* height:auto and margin:0 are load-bearing — the global `button` rule sets
+     height:32px and margin-top:16px, which clipped these rows to 32px and let
+     their 70px of content spill over the row below. */
+  .oat-i { position:relative; display:grid;
+           grid-template-columns:20px minmax(0,1fr) auto; gap:0 12px;
+           align-items:start; width:100%; height:auto; margin:0;
+           text-align:left; border:none;
+           background:transparent; font-family:inherit; cursor:pointer;
+           padding:11px 8px 11px 4px; border-radius:6px;
+           transition:background .15s ease; }
+  .oat-i:hover { background:var(--header-bg); }
+  .oat-i:focus-visible { outline:2px solid var(--accent); outline-offset:-2px; }
+  /* Nothing to open: do not offer a pointer or a hover lift. */
+  .oat-static { cursor:default; }
+  .oat-static:hover { background:transparent; }
+  /* The rail: a hairline joining each mark to the next, so the list reads as
+     one sequence instead of three detached cards. */
+  .oat-i:not(:last-child)::before { content:""; position:absolute; left:13px;
+           top:29px; bottom:-3px; width:1px; background:var(--border); }
+  .oat-mk { width:18px; height:18px; margin-top:1px; display:block;
+            position:relative; z-index:1; }
+  .oat-b { min-width:0; }
+  .oat-sev { font-size:10px; font-weight:700; text-transform:uppercase;
+             letter-spacing:.07em; display:block; margin-bottom:3px; }
+  .oat-sev.critical { color:var(--red); }
+  .oat-sev.warning { color:var(--amber); }
+  .oat-sev.info { color:var(--ink3); }
+  .oat-msg { display:block; font-size:13px; font-weight:600; color:var(--ink);
+             line-height:1.4; overflow-wrap:anywhere; }
+  .oat-sub { display:block; font-size:11.5px; color:var(--ink3); margin-top:4px;
+             line-height:1.55; overflow-wrap:anywhere; }
+  .oat-sub b { color:var(--ink2); font-weight:600;
+               font-variant-numeric:tabular-nums; }
+  /* Visible at rest at low contrast, so the row reads as clickable without
+     hovering; a hover-only affordance is invisible to touch and to scanning. */
+  /* Full opacity in a quiet tone rather than a faded ink: half-opacity
+     --ink3 computes to ~2.3:1, under the 3:1 floor for UI graphics. */
+  .oat-go { align-self:center; flex:none; width:18px; height:18px;
+            color:var(--muted); transition:color .15s ease, transform .15s ease; }
+  .oat-i:hover .oat-go, .oat-i:focus-visible .oat-go {
+            color:var(--accent); transform:translateX(2px); }
+  .oat-none { display:flex; align-items:center; gap:9px; font-size:13px;
+              color:var(--green); font-weight:500; padding:14px 4px 6px; }
+  .oat-none svg { width:16px; height:16px; flex:none; }
+  .oat-sep { display:flex; align-items:baseline; gap:10px; flex-wrap:wrap;
+             margin-top:18px; padding-top:15px;
+             border-top:1px solid var(--line); }
+
+  /* Objective cards — one row, directly comparable. Severity lives in the
+     card's tint and edge, never in the type size, so the three burn figures
+     stay on the same optical baseline and can be read against each other. */
+  /* Flex, not auto-fit grid: with three cards in a wide panel auto-fit lays
+     out six tracks and leaves half the row empty. Flex lets them stretch. */
+  .osc { display:flex; gap:9px; margin-top:11px; flex-wrap:wrap; }
+  /* max-width so a single objective does not stretch the whole panel; three
+     cards land well under it and still fill the row. */
+  .osc-c { position:relative; flex:1 1 190px; min-width:0; max-width:420px;
+           padding:11px 12px 12px 14px; overflow:hidden;
+           border:1px solid var(--line); border-radius:var(--radius-sm);
+           background:var(--header-bg); }
+  .osc-c::before { content:""; position:absolute; left:0; top:0; bottom:0;
+                   width:3px; background:var(--ob); }
+  .osc-c.bad { background:#fff; border-color:var(--ob); }
+  .osc-nm { font-size:12px; font-weight:600; color:var(--ink);
+            overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .osc-cmp { font-size:11.5px; color:var(--ink3); margin-top:5px;
+             font-variant-numeric:tabular-nums; overflow-wrap:anywhere; }
+  .osc-cmp b { font-weight:600; }
+  .osc-burn { display:flex; align-items:baseline; gap:7px; margin-top:9px; }
+  .osc-burn b { font-size:22px; font-weight:600; line-height:1;
+                letter-spacing:-.02em; color:var(--ob);
+                font-variant-numeric:tabular-nums; }
+  .osc-burn span { font-size:11px; font-weight:600; color:var(--ob); }
+  .osc-ft { display:flex; align-items:center; gap:6px; margin-top:8px;
+            padding-top:8px; border-top:1px solid var(--line);
+            font-size:11px; color:var(--ink3); }
+  .osc-ft i { width:7px; height:7px; border-radius:50%; flex:none;
+              background:var(--ob); }
+  /* The text is one flex item, not several — a bare text node beside the dot
+     becomes its own item and wraps onto a second line. */
+  .osc-ft > span { min-width:0; overflow-wrap:anywhere; }
+  .osc-ft b { color:var(--ink2); font-weight:600; }
+  .oslo-foot { font-size:11px; color:var(--ink3); margin-top:11px;
+               line-height:1.55; }
+  .oslo-foot b { color:var(--ink2); font-weight:600;
+                 font-variant-numeric:tabular-nums; }
+
+  @media (max-width:640px) {
+    .oh-grid { grid-template-columns:repeat(2,minmax(0,1fr)); }
+    .omr { grid-template-columns:18px minmax(0,1fr); gap:3px 10px; }
+    .omr-nm, .omr-st, .omr-hl { grid-column:2; }
+    .omr-nm { white-space:normal; overflow-wrap:anywhere; }
+    .omr-st { white-space:normal; }
+    .omr-st u { display:inline; margin-left:6px; }
+    .oat-i { grid-template-columns:18px minmax(0,1fr); gap:0 8px;
+             padding-right:4px; }
+    .oat-go { display:none; }
+    /* 22px numerals do not fit a squeezed content column. */
+    .osc-burn b { font-size:18px; }
+    .osc-burn { flex-wrap:wrap; gap:2px 7px; }
+    .osc-c { padding:10px 10px 11px 12px; }
+    /* The console shell keeps its nav sidebar at phone widths, so the content
+       column can fall below any readable floor. Below it, scroll inside the
+       panel — the same thing the status ribbon and the trends chart do —
+       rather than let text spill out of its box. */
+    #obsAlerts, #obsSla { overflow-x:auto; }
+    .oat, .osc { min-width:210px; }
+  }
+  @media (prefers-reduced-motion:reduce) {
+    .ot-band, .ot-tip, .ha-mix span, .omr, .oat-i, .oat-go, .oh-chip,
+    .orib-cell { transition:none !important; }
+    .ot-tip { transform:none !important; }
+    .orib-cell:hover, .orib-cell:focus-visible { transform:none; }
+    .oat-i:hover .oat-go, .oat-i:focus-visible .oat-go { transform:none; }
+  }
   h1 { font-size:20px; font-weight:600; letter-spacing:-.01em; margin-bottom:4px; }
   h2 { font-size:15px; font-weight:600; } h3 { font-size:13px; font-weight:600; }
   .sub { color:var(--ink3); font-size:13px; margin-bottom:16px; }
@@ -299,8 +685,13 @@
   .pw-eye:focus-visible { outline:none; box-shadow:var(--ring); color:var(--ink2); }
   .pw-eye svg { width:16px; height:16px; display:block; }
   .row { display:flex; gap:16px; flex-wrap:wrap; } .row > div { flex:1; min-width:170px; }
-  .drop { border:1px dashed var(--border); border-radius:var(--radius); padding:24px; text-align:center; color:var(--ink3); cursor:pointer; font-size:13px; background:var(--header-bg); }
-  .drop.hover { border-color:var(--accent); background:var(--accent-soft); }
+  .drop, .mzone { border:1px dashed var(--border); border-radius:var(--radius); padding:24px; text-align:center; color:var(--ink3); cursor:pointer; font-size:13px; background:var(--header-bg); }
+  .drop.hover, .mzone.hover { border-color:var(--accent); background:var(--accent-soft); }
+  /* "or browse" is the affordance the bare bordered box never advertised — the
+     whole zone stays clickable, this just says so. */
+  .drop .browse, .mzone .browse { color:var(--accent); font-weight:600; }
+  .drop .hint, .mzone .hint { display:block; font-weight:400; font-size:12px; color:var(--muted); margin-top:4px; }
+  .mzone .hint { font-family:var(--mono); font-size:11.5px; }
   button { background:var(--accent); border:1px solid var(--accent); color:#fff; font-family:inherit; font-size:13px;
            font-weight:500; height:32px; padding:0 14px; border-radius:var(--radius-sm); cursor:pointer; margin-top:16px; }
   button:hover { background:var(--accent-hover); border-color:var(--accent-hover); }
@@ -545,6 +936,164 @@
                   border:1px solid var(--line); border-radius:3px; padding:0 4px; white-space:nowrap; }
   .infobox .cav { display:block; color:var(--muted); font-size:12px; }
   .infobox b { color:var(--ink2); }
+
+  /* ---- numbered form sections (Modernize) --------------------------------
+     The form ran as one undifferentiated column of labels, so "where does the
+     source end and the target begin" had to be inferred from the copy. A muted
+     numeral, a title and a rule to the right margin split it into steps that
+     are readable at a glance without adding a second visual weight. */
+  .fsec { display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin:26px 0 10px; }
+  .fsec:first-child { margin-top:0; }
+  .fsec .num { width:20px; height:20px; flex:none; border-radius:50%;
+               background:var(--accent); color:#fff; font-family:var(--mono);
+               font-size:11px; font-weight:600; display:inline-flex;
+               align-items:center; justify-content:center; }
+  .fsec .ttl { font-size:15px; font-weight:600; color:var(--ink); letter-spacing:-.01em; }
+  /* One spine: everything belonging to a step lines up under its TITLE, not
+     under the numeral. Before this the switch, the zone, the chips and the
+     name row each started at a different x and the form read as a pile of
+     unrelated controls. The indent collapses on narrow viewports, where the
+     30px would cost more than the alignment buys. */
+  .fbody, .segbar, .fsub { margin-left:30px; }
+  @media (max-width:800px) { .fbody, .segbar, .fsub { margin-left:0; } }
+  .fsub { font-size:12.5px; color:var(--muted); margin-top:-2px; margin-bottom:12px; }
+  /* the source switch is a two-value choice ABOUT step 1, so it gets the same
+     segmented treatment as Mode rather than a labelled bar of its own */
+  .segbar { display:inline-flex; gap:3px; padding:3px; margin-bottom:14px;
+            background:var(--header-bg); border:1px solid var(--border); border-radius:var(--radius); }
+  .segbar button { margin:0; height:auto; padding:6px 14px; font-size:12.5px; font-weight:500;
+                   background:none; border:1px solid transparent; border-radius:var(--radius-sm);
+                   color:var(--ink3); cursor:pointer; }
+  .segbar button:hover { background:#fff; border-color:var(--border); color:var(--ink); }
+  .segbar button[aria-pressed="true"] { background:#fff; border-color:var(--border);
+                   color:var(--ink); font-weight:600; box-shadow:var(--shadow); cursor:default; }
+  .segbar button:focus-visible { outline:none; box-shadow:var(--ring); }
+  /* accepted formats / supported platforms: one quiet line under the zone,
+     with the tail folded away rather than wrapping to three lines */
+  .exts { font-size:11.5px; color:var(--muted); margin:8px 2px 0; line-height:1.6; }
+  .exts.mono { font-family:var(--mono); }
+  .linkbtn { margin:0; padding:0; height:auto; background:none; border:none;
+             font-size:12px; font-weight:500; color:var(--accent); cursor:pointer; }
+  .linkbtn:hover { background:none; text-decoration:underline; }
+  .linkbtn:focus-visible { outline:none; box-shadow:var(--ring); border-radius:3px; }
+  .tgrp { font-size:11px; font-weight:600; letter-spacing:.05em; text-transform:uppercase;
+          color:var(--muted); margin:16px 0 8px; }
+  .tgrp:first-child { margin-top:0; }
+  /* a two-value radio reads as a switch, not as a list of options */
+  .segr { display:inline-flex; gap:3px; padding:3px; background:var(--header-bg);
+          border:1px solid var(--border); border-radius:var(--radius); }
+  .segr label { display:inline-flex; align-items:center; margin:0; padding:5px 12px;
+                font-size:12.5px; font-weight:500; text-transform:none; letter-spacing:0;
+                color:var(--ink3); border:1px solid transparent; border-radius:var(--radius-sm); cursor:pointer; }
+  .segr label.on { background:#fff; border-color:var(--border); color:var(--ink); font-weight:600; box-shadow:var(--shadow); }
+  .segr label:focus-within { box-shadow:var(--ring); }
+  .segr input { position:absolute; width:1px; height:1px; opacity:0; }
+  .opt-row { display:flex; align-items:center; gap:12px; flex-wrap:wrap; margin-top:16px; }
+  .opt-row .k { min-width:52px; font-size:11px; font-weight:600; letter-spacing:.05em;
+                text-transform:uppercase; color:var(--muted); }
+  .opt-row .v { font-size:12.5px; color:var(--ink3); }
+  .opt-row .end { margin-left:auto; }
+  /* The primary action sat below three screenfuls of form, so committing meant
+     scrolling back down past everything you had just filled in. It now rides
+     the bottom of the viewport for exactly as long as the form is on screen —
+     its containing block is the form body, so it releases (rather than hovering
+     over the analysis results) the moment you scroll past it. Opaque, with its
+     own top border, so nothing is obscured behind it. */
+  .fact { position:sticky; bottom:0; z-index:5;
+          display:flex; align-items:center; gap:14px; flex-wrap:wrap;
+          margin:20px -16px 0; padding:12px 16px; background:#fff;
+          border-top:1px solid var(--border); }
+  .fact button { margin-top:0; }
+  .fact .note { margin-left:auto; font-size:12px; color:var(--muted); }
+  @media (max-width:800px) { .fact .note { margin-left:0; width:100%; } }
+
+  /* ---- multi-file dropzone (orchestration, events) -----------------------
+     A bare <input type="file" multiple> renders "3 files" and drops the names,
+     so there was no way to see WHAT was attached or to remove one without
+     re-picking the whole set. The zone collapses into a list once files are
+     held; the list is the control. */
+  .flist { border:1px solid var(--border); border-radius:var(--radius); background:#fff; overflow:hidden; }
+  .flist .frow { display:flex; align-items:center; gap:10px; padding:8px 10px; border-top:1px solid var(--line); }
+  .flist .frow:first-child { border-top:none; }
+  .flist .fn { flex:1; min-width:0; font-size:13px; color:var(--ink);
+               overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .flist .fp { font-size:11.5px; color:var(--muted); white-space:nowrap; }
+  .flist .fx { margin:0; width:22px; height:22px; padding:0; flex:none; font-size:14px; line-height:1;
+               display:inline-flex; align-items:center; justify-content:center;
+               background:none; border:1px solid transparent; border-radius:var(--radius-sm); color:var(--muted); cursor:pointer; }
+  .flist .fx:hover { background:var(--red-bg); border-color:var(--red-line); color:var(--red); }
+  .flist .fx:focus-visible { outline:none; box-shadow:var(--ring); }
+  .fsum { font-size:12px; color:var(--muted); margin:8px 2px 0; }
+  /* legend for a scored table, read before the table exists */
+  .legend { display:flex; flex-wrap:wrap; gap:6px; margin:0 0 8px; }
+
+  /* ---- agent approvals (Governance) --------------------------------------
+     Decisions were a flat list of bordered cards, one per action, with the run
+     id repeated on every card — so three actions from one swarm read as three
+     unrelated events. They are grouped under the run that produced them now,
+     because "did run X get through" is the question being asked. */
+  .aqrun { display:flex; align-items:center; gap:8px; flex-wrap:wrap; padding:16px 2px 8px; }
+  .aqrun:first-child { padding-top:4px; }
+  .aqrun .rid { font-family:var(--mono); font-size:11.5px; color:var(--ink); }
+  .aqrun .who { font-size:12px; color:var(--muted); }
+  .aqtbl { table-layout:fixed; }
+  .aqtbl td { padding:8px 8px; font-size:12.5px; }
+  .aqtbl td:first-child { padding-left:2px; }
+  .aqtbl td:last-child { padding-right:2px; text-align:right; }
+  .aqtbl .mail { font-family:var(--mono); font-size:11px; color:var(--ink3);
+                 overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .aqtbl .act { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  /* confidence as a bar, not a bare percentage: the number alone gives no
+     sense of where it sits against the rest of the run */
+  .cbar { display:inline-flex; align-items:center; gap:6px; }
+  .cbar .t { width:30px; height:4px; flex:none; border-radius:2px; background:var(--line); overflow:hidden; }
+  .cbar .f { display:block; height:4px; border-radius:2px; background:var(--green); }
+  .cbar .v { font-family:var(--mono); font-size:11.5px; color:var(--ink3); }
+  .cbar.low .f { background:var(--amber); } .cbar.low .v { color:var(--amber); }
+  .aqempty { display:flex; align-items:center; gap:8px; padding:12px 14px; border-radius:var(--radius);
+             background:var(--header-bg); font-size:12.5px; color:var(--ink3); }
+
+  /* ---- source → target pair ----------------------------------------------
+     Two selects side by side with the direction drawn between them, instead
+     of two stacked labelled fields the reader has to infer an order from. */
+  .pair { display:flex; align-items:flex-end; gap:10px; flex-wrap:wrap; }
+  .pair > div { flex:1 1 220px; min-width:0; }
+  .pair > div > label { margin-top:0; }
+  .pair .arrow { flex:none; padding-bottom:9px; color:var(--muted); font-size:14px; }
+  @media (max-width:600px) { .pair .arrow { display:none; } }
+
+  /* ---- option cards ------------------------------------------------------
+     An optional branch of a form (a checkbox that reveals fields, a settings
+     group that is usually left alone) reads as part of the main flow when it
+     is just more rows. Boxing it says "this is a side door", and lets the
+     dependent fields hang off their own control instead of floating loose. */
+  .optcard { border:1px solid var(--border); border-radius:var(--radius);
+             background:var(--header-bg); padding:12px 14px; margin-top:12px; }
+  .optcard .och { display:flex; align-items:flex-start; gap:10px; margin:0; cursor:pointer;
+                  font-size:13px; font-weight:400; text-transform:none; letter-spacing:0; color:var(--ink); }
+  .optcard .och input { width:auto; height:auto; margin:2px 0 0; flex:none; }
+  .optcard .och b { font-weight:600; }
+  .optcard .och .d { display:block; margin-top:2px; font-size:12px; color:var(--ink3); font-weight:400; }
+  .optcard .ocbody { margin:14px 0 0 26px; }
+  @media (max-width:800px) { .optcard .ocbody { margin-left:0; } }
+  .ochead { display:flex; align-items:center; gap:8px; width:100%; margin:0; padding:0; height:auto;
+            background:none; border:none; text-align:left; cursor:pointer;
+            font-size:13px; font-weight:600; color:var(--ink); }
+  .ochead:hover { background:none; color:var(--accent); }
+  .ochead:focus-visible { outline:none; box-shadow:var(--ring); border-radius:3px; }
+  .ochead .caret { flex:none; width:10px; font-size:10px; color:var(--muted); transition:transform .12s; }
+  .ochead[aria-expanded="true"] .caret { transform:rotate(90deg); }
+  .ochead .d { font-weight:400; font-size:12px; color:var(--muted); }
+  .ochead .badge { margin-left:auto; }
+  /* which side of the move a group of fields configures, stated once */
+  .grp { display:flex; align-items:center; gap:8px; margin:18px 0 8px; }
+  .grp:first-child { margin-top:0; }
+  .grp .k { font-size:11px; font-weight:600; letter-spacing:.05em; text-transform:uppercase; color:var(--muted); }
+  .grp .chip { font-size:12px; padding:2px 8px; border-radius:3px; background:#fff;
+               border:1px solid var(--border); color:var(--ink3); }
+  .grp .rule { flex:1; min-width:12px; height:0; border-top:1px solid var(--line); }
+  .lockline { font-size:12px; color:var(--green); margin-top:6px; }
+  input.mono { font-family:var(--mono); font-size:12.5px; }
 
   /* ---- tool picker (Reports) --------------------------------------------
      Seven upload-and-run tools were stacked expanded on one page; nobody uses
@@ -1348,8 +1897,13 @@
       <div><b>Exports.</b> PDF report, board PowerPoint, Excel inventory, Word summary, JSON.</div>
       <span class="cav">No conversion is run.</span>
     </div>
-    <input type="file" id="assessFiles" multiple
-           accept=".zip,.xml,.sql,.yml,.yaml,.dtsx,.dsx,.item,.mp,.dml,.xfr,.ddls,.cds,.abap,.hdbcalculationview,.json,.properties">
+    <div class="pdrop" data-pdrop="assess">
+      <input type="file" id="assessFiles" multiple
+           accept=".zip,.xml,.sql,.yml,.yaml,.dtsx,.dsx,.item,.mp,.dml,.xfr,.ddls,.cds,.abap,.hdbcalculationview,.json,.properties" hidden>
+      <div class="mzone"><span class="txt"><b>Drop a project .zip or metadata files, or <span class="browse">browse</span></b>
+        <span class="hint">.zip · or loose metadata — .sql .xml .dtsx .dsx .item .json .yml</span></span></div>
+      <p class="fsum" hidden></p>
+    </div>
     <div style="display:flex;gap:10px;align-items:center;margin-top:12px;flex-wrap:wrap">
       <button type="button" id="assessRun" style="margin-top:0">Run assessment</button>
       <span id="assessStatus" style="font-size:13px;color:var(--ink3)"></span>
@@ -1383,8 +1937,13 @@
       <span class="cav">Deterministic from your metadata; a built Digital Twin enriches domain,
         ownership and platform signals.</span>
     </div>
-    <input type="file" id="airFiles" multiple webkitdirectory
-           accept=".xml,.sql,.yml,.yaml,.dtsx,.dsx,.item,.mp,.dml,.xfr,.ddls,.cds,.abap,.hdbcalculationview,.json,.properties">
+    <div class="pdrop" data-pdrop="air">
+      <input type="file" id="airFiles" multiple webkitdirectory
+           accept=".xml,.sql,.yml,.yaml,.dtsx,.dsx,.item,.mp,.dml,.xfr,.ddls,.cds,.abap,.hdbcalculationview,.json,.properties" hidden>
+      <div class="mzone"><span class="txt"><b>Drop your project folder, or <span class="browse">browse</span></b>
+        <span class="hint">a project folder — .sql .xml .dtsx .dsx .item .json .yml .properties</span></span></div>
+      <p class="fsum" hidden></p>
+    </div>
     <div style="display:flex;gap:10px;align-items:center;margin-top:12px;flex-wrap:wrap">
       <button type="button" id="airRun" style="margin-top:0">Run AI readiness assessment</button>
       <span id="airStatus" style="font-size:13px;color:var(--ink3)"></span>
@@ -1432,8 +1991,13 @@
       <div><b>Exports.</b> PDF, Excel, JSON.</div>
       <span class="cav">Topology, not telemetry — confirm "unused" against access logs before deleting.</span>
     </div>
-    <input type="file" id="debtFiles" multiple webkitdirectory
-           accept=".xml,.sql,.yml,.yaml,.dtsx,.dsx,.item,.mp,.dml,.xfr,.ddls,.cds,.abap,.hdbcalculationview,.json,.properties">
+    <div class="pdrop" data-pdrop="debt">
+      <input type="file" id="debtFiles" multiple webkitdirectory
+           accept=".xml,.sql,.yml,.yaml,.dtsx,.dsx,.item,.mp,.dml,.xfr,.ddls,.cds,.abap,.hdbcalculationview,.json,.properties" hidden>
+      <div class="mzone"><span class="txt"><b>Drop your project folder, or <span class="browse">browse</span></b>
+        <span class="hint">a project folder — .sql .xml .dtsx .dsx .item .json .yml .properties</span></span></div>
+      <p class="fsum" hidden></p>
+    </div>
     <div style="display:flex;gap:10px;align-items:center;margin-top:12px;flex-wrap:wrap">
       <button type="button" id="debtRun" style="margin-top:0">Analyze technical debt</button>
       <span id="debtStatus" style="font-size:13px;color:var(--ink3)"></span>
@@ -1481,8 +2045,13 @@
       <span class="cav">Figures are MODELED from metadata, not bills — paste telemetry to replace
         modeled components with measured ones.</span>
     </div>
-    <input type="file" id="finFiles" multiple webkitdirectory
-           accept=".xml,.sql,.yml,.yaml,.dtsx,.dsx,.item,.mp,.dml,.xfr,.ddls,.cds,.abap,.hdbcalculationview,.json,.properties">
+    <div class="pdrop" data-pdrop="fin">
+      <input type="file" id="finFiles" multiple webkitdirectory
+           accept=".xml,.sql,.yml,.yaml,.dtsx,.dsx,.item,.mp,.dml,.xfr,.ddls,.cds,.abap,.hdbcalculationview,.json,.properties" hidden>
+      <div class="mzone"><span class="txt"><b>Drop your project folder, or <span class="browse">browse</span></b>
+        <span class="hint">a project folder — .sql .xml .dtsx .dsx .item .json .yml .properties</span></span></div>
+      <p class="fsum" hidden></p>
+    </div>
     <div style="margin-top:10px">
       <label style="font-size:12.5px;color:var(--ink3);margin:0">Optional telemetry (JSON) — measured figures override modeled ones</label>
       <textarea id="finTelemetry" rows="2" placeholder='{"storage_gb": 42000, "monthly_compute_credits": 3200, "credit_price_usd": 3.0, "monthly_query_usd": 4100, "warehouse_utilization_pct": 38}'
@@ -1533,8 +2102,13 @@
       <span class="cav">Control-gap analysis &amp; audit-prep evidence from metadata — NOT a certified
         attestation. Confirm every control against the live environment.</span>
     </div>
-    <input type="file" id="secFiles" multiple webkitdirectory
-           accept=".xml,.sql,.yml,.yaml,.dtsx,.dsx,.item,.mp,.dml,.xfr,.ddls,.cds,.abap,.hdbcalculationview,.json,.properties">
+    <div class="pdrop" data-pdrop="sec">
+      <input type="file" id="secFiles" multiple webkitdirectory
+           accept=".xml,.sql,.yml,.yaml,.dtsx,.dsx,.item,.mp,.dml,.xfr,.ddls,.cds,.abap,.hdbcalculationview,.json,.properties" hidden>
+      <div class="mzone"><span class="txt"><b>Drop your project folder, or <span class="browse">browse</span></b>
+        <span class="hint">a project folder — .sql .xml .dtsx .dsx .item .json .yml .properties</span></span></div>
+      <p class="fsum" hidden></p>
+    </div>
     <div style="display:flex;gap:10px;align-items:center;margin-top:12px;flex-wrap:wrap">
       <button type="button" id="secRun" style="margin-top:0">Analyze security &amp; compliance</button>
       <span id="secStatus" style="font-size:13px;color:var(--ink3)"></span>
@@ -1584,8 +2158,13 @@
       <span class="cav">Every document is generated from that project's metadata — never from empty
         or previously-cached data.</span>
     </div>
-    <input type="file" id="docsFiles" multiple webkitdirectory
-           accept=".xml,.sql,.yml,.yaml,.dtsx,.dsx,.item,.mp,.dml,.xfr,.ddls,.cds,.abap,.hdbcalculationview,.json,.properties">
+    <div class="pdrop" data-pdrop="docs">
+      <input type="file" id="docsFiles" multiple webkitdirectory
+           accept=".xml,.sql,.yml,.yaml,.dtsx,.dsx,.item,.mp,.dml,.xfr,.ddls,.cds,.abap,.hdbcalculationview,.json,.properties" hidden>
+      <div class="mzone"><span class="txt"><b>Drop your project folder, or <span class="browse">browse</span></b>
+        <span class="hint">a project folder — .sql .xml .dtsx .dsx .item .json .yml .properties</span></span></div>
+      <p class="fsum" hidden></p>
+    </div>
     <div style="margin-top:10px">
       <div style="font-size:12.5px;color:var(--ink3);margin-bottom:4px">Documents (all selected by default):</div>
       <div id="docsChecklist" style="columns:2;font-size:13px;max-width:640px"></div>
@@ -1626,13 +2205,19 @@
     <div id="agRoster" style="margin-bottom:12px"></div>
     <div style="border-top:1px solid var(--line);padding-top:12px">
       <div style="font-size:13px;color:var(--ink2);font-weight:600;margin-bottom:6px">Run the agent swarm</div>
-      <input type="file" id="agFiles" multiple webkitdirectory
-             accept=".xml,.sql,.yml,.yaml,.dtsx,.dsx,.item,.mp,.dml,.xfr,.ddls,.cds,.abap,.hdbcalculationview,.json,.properties">
-      <div style="display:flex;gap:16px;align-items:center;margin-top:10px;flex-wrap:wrap">
-        <label style="margin:0;font-size:12.5px;color:var(--ink3)">Target region</label>
-        <select id="agRegion" style="margin:0"><option value="us">US</option><option value="eu">EU</option><option value="apac">APAC</option></select>
-        <span style="font-size:12px;color:var(--muted)">Consequential (generate) proposals are held for a separate approval by an admin — the person who runs the swarm cannot approve their own actions.</span>
+      <div class="pdrop" data-pdrop="ag">
+        <input type="file" id="agFiles" multiple webkitdirectory
+             accept=".xml,.sql,.yml,.yaml,.dtsx,.dsx,.item,.mp,.dml,.xfr,.ddls,.cds,.abap,.hdbcalculationview,.json,.properties" hidden>
+        <div class="mzone"><span class="txt"><b>Drop your project folder, or <span class="browse">browse</span></b>
+          <span class="hint">a project folder — .sql .xml .dtsx .dsx .item .json .yml .properties</span></span></div>
+        <p class="fsum" hidden></p>
       </div>
+      <div style="margin-top:14px;max-width:220px">
+        <label for="agRegion">Target region</label>
+        <select id="agRegion"><option value="us">US</option><option value="eu">EU</option><option value="apac">APAC</option></select>
+      </div>
+      <div class="fhint">Consequential (generate) proposals are held for a separate approval by an
+        admin — the person who runs the swarm cannot approve their own actions.</div>
       <div style="display:flex;gap:10px;align-items:center;margin-top:10px;flex-wrap:wrap">
         <button type="button" id="agRun" style="margin:0">Run agents</button>
         <span id="agStatus" style="font-size:13px;color:var(--ink3)"></span>
@@ -1670,28 +2255,54 @@
     estate topology (not live metering).</div>
   <div class="err" id="obsErr"></div>
 
-  <div class="panel" id="obsHealthPanel" style="display:flex;gap:24px;align-items:center;flex-wrap:wrap">
-    <div id="obsGauge"></div>
-    <div style="flex:1;min-width:280px">
-      <div id="obsHealthHeadline" style="font-size:14px;font-weight:600"></div>
-      <div id="obsAlertsBar" style="margin-top:8px"></div>
-      <div id="obsExecActive" style="font-size:12.5px;color:var(--ink3);margin-top:6px"></div>
+  <!-- Zone 1 — the verdict. One number, the six signals behind it, and the
+       day-by-day ribbon that says when it changed. -->
+  <div class="panel ozone" id="obsHealthPanel">
+    <div class="oh">
+      <div class="oh-verdict">
+        <div id="obsGauge"></div>
+        <div class="oh-said">
+          <div class="oh-head" id="obsHealthHeadline"></div>
+          <div class="oh-meta" id="obsExecActive"></div>
+          <div class="oh-chips" id="obsAlertsBar"></div>
+        </div>
+      </div>
+      <div class="oh-sig" id="obsSignals"></div>
     </div>
+    <div id="obsRibbon"></div>
   </div>
 
-  <div class="sec-head"><h3>Monitors</h3><span class="cnt" id="obsMonCount"></span></div>
-  <div class="grid" id="obsMonitors" style="grid-template-columns:repeat(auto-fill,minmax(250px,1fr))"></div>
-
-  <div style="display:flex;gap:16px;flex-wrap:wrap;margin-top:8px">
-    <div class="panel" style="flex:1;min-width:320px">
-      <h3 style="margin-bottom:8px">SLA dashboard <span id="obsSlaState" style="font-size:12px"></span></h3>
-      <table id="obsSla"></table>
+  <!-- Zone 2 — what needs attention. One panel, not two: the alerts and the
+       objectives describe the same incidents, and split across a pair of
+       equal-height panels the shorter one left ~180px of dead space. -->
+  <div class="panel ozone">
+    <div class="ha-head" style="margin-bottom:2px">
+      <h3 style="margin:0">Needs attention <span id="obsAlertCount"
+           style="font-size:12px;color:var(--ink3);font-weight:400"></span></h3>
+      <span class="grow"></span>
+      <button type="button" class="jact" id="obsAlertClear"
+              style="display:none">Clear filter</button>
     </div>
-    <div class="panel" style="flex:1;min-width:320px">
-      <h3 style="margin-bottom:8px">Alerts <span id="obsAlertCount" style="font-size:12px;color:var(--muted)"></span></h3>
-      <div id="obsAlerts" style="font-size:13px"></div>
+    <div id="obsAlerts"></div>
+    <div class="oat-sep">
+      <span class="oh-lbl" style="margin:0">Service objectives</span>
+      <span id="obsSlaState" style="font-size:12px"></span>
+    </div>
+    <div id="obsSla"></div>
+  </div>
+
+  <!-- Zone 3 — every monitor, worst first. -->
+  <div class="sec-head">
+    <div style="display:flex;align-items:baseline;gap:10px">
+      <h3>Monitors</h3><span class="cnt" id="obsMonCount"></span>
+    </div>
+    <div class="seg" id="obsMonFilter" role="tablist" aria-label="Filter monitors">
+      <button role="tab" data-monf="all" aria-selected="true">All</button>
+      <button role="tab" data-monf="attn" aria-selected="false">Needs attention</button>
+      <button role="tab" data-monf="measured" aria-selected="false">Measured only</button>
     </div>
   </div>
+  <div class="panel" style="padding:6px 8px"><div id="obsMonitors"></div></div>
 
   <div class="panel">
     <h3 style="margin-bottom:8px">Performance trends <span id="obsTrendDir" style="font-size:12px;color:var(--muted)"></span></h3>
@@ -1779,53 +2390,78 @@
     <div class="sub">Analyze and modernize legacy ETL, SQL, transformation projects, and data workloads across platforms.</div></div>
     <button class="secondary" id="askAiMod" style="margin-top:0">Ask MetaBridge AI</button>
   </div>
-  <div class="steps" id="modSteps">
-    <span class="on" data-step="1"><b>1</b> Source</span>
-    <span data-step="2"><b>2</b> Analyze</span>
-    <span data-step="3"><b>3</b> Configure</span>
-    <span data-step="4"><b>4</b> Generate</span>
-    <span data-step="5"><b>5</b> Validate</span>
-  </div>
   <div class="panel">
     <form id="convForm">
 
-      <!-- ── Input method toggle ─────────────────────────────────────── -->
-      <div style="margin-bottom:16px">
-        <label style="margin:0 0 8px">How would you like to provide your code?</label>
-        <div style="display:flex;gap:0;border:1px solid var(--border);border-radius:5px;overflow:hidden;width:fit-content">
-          <button type="button" id="inputTabUpload"
-            style="margin:0;border-radius:0;border:none;background:var(--accent);color:#fff;font-weight:600;padding:0 20px;height:34px"
-            onclick="switchInputTab('upload')">
-            📁 Upload Files / Project
-          </button>
-          <button type="button" id="inputTabConn"
-            style="margin:0;border-radius:0;border:none;background:#fff;color:var(--ink2);font-weight:500;padding:0 20px;height:34px;border-left:1px solid var(--border)"
-            onclick="switchInputTab('conn')">
-            🔗 Connect to a Live System
-          </button>
+      <!-- ── 1 Provide your code ─────────────────────────────────────────
+           The input-method choice is a property of this step, not a step of
+           its own — a segmented switch under the step title, not the labelled
+           two-button bar with its own question that stood here before. -->
+      <div class="fsec">
+        <span class="num" aria-hidden="true">1</span>
+        <span class="ttl">Provide your code</span>
+      </div>
+      <div class="swrow">
+        <div class="segbar" id="inputSwitch">
+          <button type="button" id="inputTabUpload" aria-pressed="true"
+                  onclick="switchInputTab('upload')">Upload files</button>
+          <button type="button" id="inputTabConn" aria-pressed="false"
+                  onclick="switchInputTab('conn')">Connect a live system</button>
+        </div>
+        <!-- data-go names what each step PRODUCED, so a reached step is a way back
+             to its own output instead of a label that only changes colour. -->
+        <!-- A div, deliberately: the bare `nav` element selector styles the sidebar
+             (232px wide, column, 100vh, right border), so a second nav element on
+             the page inherits all of it. The role carries the semantics instead. -->
+        <div class="steps" id="modSteps" role="navigation" aria-label="Modernization progress">
+          <button type="button" class="step on" data-step="1" data-go="convForm" aria-current="step"><b>1</b>Source</button>
+          <span class="bar" data-bar="1"></span>
+          <button type="button" class="step" data-step="2" data-go="planDetect" aria-disabled="true"><b>2</b>Analyze</button>
+          <span class="bar" data-bar="2"></span>
+          <button type="button" class="step" data-step="3" data-go="planTable" aria-disabled="true"><b>3</b>Configure</button>
+          <span class="bar" data-bar="3"></span>
+          <button type="button" class="step" data-step="4" data-go="convResult" aria-disabled="true"><b>4</b>Generate</button>
+          <span class="bar" data-bar="4"></span>
+          <button type="button" class="step" data-step="5" data-go="convResult" aria-disabled="true"><b>5</b>Validate</button>
+          <!-- empty until a run says something; the footer owns the idle hint -->
+          <span class="note" id="modStepNote" role="status" aria-live="polite"></span>
         </div>
       </div>
 
       <!-- ── Panel A: Upload ─────────────────────────────────────────── -->
-      <div id="inputPanelUpload">
+      <div id="inputPanelUpload" class="fbody">
         <div class="drop" data-drop="convFile"><input type="file"
              accept=".zip,.xml,.sql,.dtsx,.dtproj,.conmgr,.params,.dsx,.item,.properties,.mp,.dml,.xfr,.pset,.plan,.ddls,.cds,.abap,.hdbcalculationview,.json" hidden>
-          <span class="txt"><b>Upload a project, ETL export, or SQL workload</b><br>
-          <span style="font-size:12px">ZIP, dbt, PowerCenter/IDMC, SQL scripts, SSIS (.dtsx),
-          DataStage (.dsx), Talend (.item), Ab Initio (.mp/.dml/.xfr), SAP (BW XML, CDS .ddls,
-          calc views, ABAP) — platform auto-detected</span></span></div>
+          <span class="txt"><b>Drop your project here, or <span class="browse">browse</span></b>
+          <span class="hint">Platform is detected automatically</span></span></div>
+        <!-- The accepted-format list is reference, not instruction: the head of
+             it establishes the shape, the tail only matters to the person who
+             has that exact export. -->
+        <p class="exts">ZIP · dbt · PowerCenter · SQL · SSIS · DataStage · Talend · Ab Initio · SAP<span
+             class="rest" hidden> · IDMC · CDS (.ddls) · ABAP · HANA calc views</span>
+          <button type="button" class="linkbtn" data-more="4">and 4 more</button></p>
         <!-- Optional project name. Without one the label is derived from the
              upload's filename; the engine still names generated artifacts from
-             the parsed pipeline, so this only affects how the run is listed. -->
-        <label for="convProject" style="margin-top:14px">Project name
-          <span style="font-weight:400;text-transform:none;color:var(--muted);font-size:12px">(optional — how this run is listed)</span></label>
-        <input type="text" id="convProject" name="project" maxlength="64"
-               placeholder="e.g. retail_analytics — defaults to the uploaded file name"
-               autocomplete="off" style="max-width:460px">
+             the parsed pipeline, so this only affects how the run is listed.
+             Collapsed to a line of text because the default is nearly always
+             right — it cost a full labelled field to say "leave me alone". -->
+        <div class="opt-row">
+          <span class="k">Name</span>
+          <span class="v" id="convNameRO">Defaults to the uploaded file name</span>
+          <button type="button" class="linkbtn" id="convNameEdit"
+                  aria-controls="convNameFld" aria-expanded="false">Edit</button>
+        </div>
+        <div id="convNameFld" style="display:none;margin-top:8px">
+          <label for="convProject" style="margin-top:0">Project name
+            <span style="font-weight:400;text-transform:none;color:var(--muted);font-size:12px">(optional — how this run is listed)</span></label>
+          <input type="text" id="convProject" name="project" maxlength="64"
+                 placeholder="e.g. retail_analytics — defaults to the uploaded file name"
+                 autocomplete="off" style="max-width:460px">
+        </div>
       </div>
 
       <!-- ── Panel B: Connected System ───────────────────────────────── -->
-      <div id="inputPanelConn" style="display:none">
+      <div id="inputPanelConn" class="fbody" style="display:none">
         <div style="background:#F8FAFC;border:1px solid var(--border);border-radius:6px;padding:14px 16px">
           <div style="font-size:13px;color:var(--ink3);margin-bottom:10px">Select a saved connection. MetaBridge reads view definitions and schema directly — no file export needed.</div>
           <div id="modConnList" style="font-size:13px;color:var(--ink3)">—</div>
@@ -1884,16 +2520,25 @@
            requires an uploaded file — in connection mode it can only ever
            answer "no file uploaded yet". -->
       <div id="convTargetBlock">
-      <label style="margin-top:20px">Target platform <span style="font-weight:400;text-transform:none;color:var(--muted);font-size:12px">(where you want the modernized code to run)</span></label>
-      <div class="tsel" id="targetSel" role="radiogroup" aria-label="Target platform"></div>
-      <label>Target mode</label>
-      <div style="display:flex;gap:14px;flex-wrap:wrap;font-size:13.5px">
-        <label style="text-transform:none;font-weight:400;display:flex;gap:6px;align-items:center;margin:0">
-          <input type="radio" name="tmode" value="modernize" checked style="width:auto"> Modernize workload</label>
-        <label style="text-transform:none;font-weight:400;display:flex;gap:6px;align-items:center;margin:0">
-          <input type="radio" name="tmode" value="analyze" style="width:auto"> Analyze only</label>
+      <div class="fsec">
+        <span class="num" aria-hidden="true">2</span>
+        <span class="ttl">Choose your target</span>
       </div>
-      <details style="margin-top:14px"><summary style="font-size:13px;color:var(--ink3);cursor:pointer">Advanced settings</summary>
+      <p class="fsub">Where the modernized code will run.</p>
+      <div class="fbody">
+      <!-- Grouped by the role the target plays: flat, a warehouse and a
+           transformation framework read as interchangeable destinations. -->
+      <div id="targetSel" role="radiogroup" aria-label="Target platform"></div>
+      <div class="opt-row">
+        <span class="k">Mode</span>
+        <span class="segr" id="tmodeSeg">
+          <label class="on"><input type="radio" name="tmode" value="modernize" checked>Modernize</label>
+          <label><input type="radio" name="tmode" value="analyze">Analyze only</label>
+        </span>
+        <button type="button" class="linkbtn end" id="convAdvBtn"
+                aria-controls="convAdv" aria-expanded="false">Advanced settings</button>
+      </div>
+      <div id="convAdv" style="display:none;margin-top:14px">
       <div class="row">
         <div><label>Override detected source</label><select name="source"><option value="">Auto-detect</option>
           <optgroup label="Projects">
@@ -1943,11 +2588,15 @@
         <div><label>Override detected dialect</label><select name="dialect"><option value="">Auto-detected</option>
           <option>snowflake</option><option>bigquery</option><option>redshift</option><option>postgres</option><option>databricks</option><option>oracle</option></select></div>
       </div>
-      </details>
-      <div id="compatHint" style="display:none;font-size:12.5px;border-radius:8px;padding:8px 12px;margin:10px 0 0"></div>
-      <div style="display:flex;gap:12px;align-items:center">
+      </div><!-- /convAdv -->
+      <div id="compatHint" style="display:none;font-size:12.5px;border-radius:8px;padding:8px 12px;margin:14px 0 0"></div>
+      </div><!-- /fbody -->
+      <!-- Why the primary can't run yet is stated in the row, not buried in a
+           disabled button's tooltip. -->
+      <div class="fact">
         <button type="button" id="analyzeBtn">Analyze workload</button>
-        <button type="submit" class="secondary" id="generateAllBtn" disabled title="Analyze the workload first">Generate target (all assets)</button>
+        <button type="submit" class="secondary" id="generateAllBtn" disabled>Generate target</button>
+        <span class="note" id="convHint">Add a file to continue</span>
       </div>
       </div><!-- /convTargetBlock -->
     </form>
@@ -1978,19 +2627,38 @@
   </div>
 
   <div class="panel" id="evtPanel">
-    <h3 style="margin-bottom:4px">Event &amp; streaming modernization</h3>
-    <div style="color:var(--ink3);font-size:13px;margin-bottom:10px">
-      Import Kafka/Confluent configs, Schema Registry subjects, ksqlDB/Flink SQL, RabbitMQ
-      definitions, IBM MQ MQSC, Kinesis/Event Hubs/Pub-Sub exports, MQTT &amp; IoT rules,
-      NiFi templates, StreamSets pipelines, Debezium/GoldenGate CDC — platform auto-detected,
-      everything flows through the Canonical Event Representation.</div>
-    <input type="file" id="evtFiles" multiple
-           accept=".json,.sql,.properties,.mqsc,.xml,.prm,.conf,.avsc,.txt">
-    <div class="fhint"><b>Which files?</b> Streaming configs &amp; schemas —
-      <code>.json</code> · <code>.avsc</code> · <code>.sql</code> · <code>.properties</code> ·
-      <code>.mqsc</code> · <code>.xml</code> · <code>.prm</code> · <code>.conf</code> · <code>.txt</code>
-      (Kafka/Confluent, Schema Registry, ksqlDB/Flink, RabbitMQ, IBM&nbsp;MQ, NiFi, StreamSets, Debezium/GoldenGate). Pick one or many.</div>
-    <div style="display:flex;gap:10px;align-items:center;margin-top:12px;flex-wrap:wrap">
+    <div class="ihead">
+      <h3>Event &amp; streaming modernization</h3>
+      <button type="button" class="ibtn" data-info="evtInfo" aria-expanded="false"
+              aria-controls="evtInfo" aria-label="About event and streaming modernization"
+              title="What this does &amp; which files">i</button>
+    </div>
+    <div class="sub" style="margin:5px 0 12px">Everything flows through the Canonical Event
+      Representation. Platform is detected automatically.</div>
+    <div class="infobox" id="evtInfo">
+      <div>Import Kafka/Confluent configs, Schema Registry subjects, ksqlDB/Flink SQL, RabbitMQ
+        definitions, IBM MQ MQSC, Kinesis/Event Hubs/Pub-Sub exports, MQTT &amp; IoT rules,
+        NiFi templates, StreamSets pipelines, Debezium/GoldenGate CDC — everything is normalized
+        into the Canonical Event Representation before anything is generated.</div>
+      <div><b>Which files?</b> Streaming configs &amp; schemas —
+        <code>.json</code> · <code>.avsc</code> · <code>.sql</code> · <code>.properties</code> ·
+        <code>.mqsc</code> · <code>.xml</code> · <code>.prm</code> · <code>.conf</code> · <code>.txt</code>
+        (Kafka/Confluent, Schema Registry, ksqlDB/Flink, RabbitMQ, IBM&nbsp;MQ, NiFi, StreamSets, Debezium/GoldenGate). Pick one or many.</div>
+      <span class="cav">The platform shown beside each attached file is read from
+        its extension and shape — the analyzer is what confirms it.</span>
+    </div>
+    <div class="mdrop" data-mdrop="evt">
+      <input type="file" id="evtFiles" multiple hidden
+             accept=".json,.sql,.properties,.mqsc,.xml,.prm,.conf,.avsc,.txt">
+      <div class="mzone"><span class="txt"><b>Drop streaming configs and schemas, or <span class="browse">browse</span></b>
+        <span class="hint">.json .avsc .sql .properties .mqsc .xml .prm .conf .txt</span></span></div>
+      <div class="flist" hidden></div>
+      <p class="exts">Kafka, Confluent, Schema Registry, ksqlDB, Flink, RabbitMQ, IBM MQ, NiFi<span
+           class="rest" hidden> · StreamSets · Debezium · GoldenGate · Kinesis / Event Hubs / Pub-Sub</span>
+        <button type="button" class="linkbtn" data-more="4">and 4 more</button></p>
+      <p class="fsum" hidden></p>
+    </div>
+    <div style="display:flex;gap:10px;align-items:center;margin-top:14px;flex-wrap:wrap">
       <button type="button" id="evtAnalyze" style="margin-top:0">Analyze event estate</button>
       <span id="evtStatus" style="font-size:13px;color:var(--ink3)"></span>
     </div>
@@ -2055,16 +2723,36 @@
   </div>
 
   <div class="panel" id="objInvPanel">
-    <h3 style="margin-bottom:4px">Object inventory &amp; migration feasibility</h3>
-    <div style="color:var(--ink3);font-size:13px;margin-bottom:10px">
-      Enumerate every schema-level object in a connected system &mdash; views, procedures,
-      functions, tasks, streams, sequences, pipes, policies, grants, constraints &mdash; and
-      see, per object, whether the move to your target platform is <b>automated</b>,
-      <b>needs review</b>, <b>manual</b>, or has <b>no equivalent</b>. Read-only against
-      the source; view conversions are proven by transpiling each definition, not assumed.</div>
+    <div class="ihead">
+      <h3>Object inventory &amp; migration feasibility</h3>
+      <button type="button" class="ibtn" data-info="objInfo" aria-expanded="false"
+              aria-controls="objInfo" aria-label="About object inventory"
+              title="What this does &amp; what is counted">i</button>
+    </div>
+    <div class="sub" style="margin:5px 0 10px">Enumerates every schema-level object in a connected
+      system and scores each one for the move. Read-only against the source.</div>
+    <!-- The four outcomes are the whole output of this tool; naming them in
+         prose meant reading a paragraph to learn what the table will say. -->
+    <div class="legend">
+      <span class="badge ok">Automated</span>
+      <span class="badge warn">Needs review</span>
+      <span class="badge bad">Manual</span>
+      <span class="badge">No equivalent</span>
+    </div>
+    <p class="exts" style="margin-bottom:14px">View conversions are proven by transpiling each
+      definition, not assumed.</p>
+    <div class="infobox" id="objInfo">
+      <div>Enumerates every schema-level object in a connected system — views, procedures,
+        functions, tasks, streams, sequences, pipes, policies, grants, constraints — and reports,
+        per object, whether the move to your target platform is <b>automated</b>,
+        <b>needs review</b>, <b>manual</b>, or has <b>no equivalent</b>.</div>
+      <span class="cav">Read-only against the source: nothing is created, altered or dropped.
+        View conversions are proven by transpiling each definition, not assumed.</span>
+    </div>
     <div style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap">
-      <div><label>Connected system</label><select id="objConn" style="max-width:300px"></select></div>
-      <div><label>Target platform</label><select id="objTarget" style="max-width:260px"></select></div>
+      <div style="flex:1 1 240px;min-width:200px"><label>Connected system</label><select id="objConn" style="max-width:300px"></select></div>
+      <span aria-hidden="true" style="padding-bottom:8px;color:var(--muted);font-size:14px">&rarr;</span>
+      <div style="flex:1 1 200px;min-width:180px"><label>Target platform</label><select id="objTarget" style="max-width:260px"></select></div>
       <button type="button" id="objInvRun" style="margin-top:0">Run inventory</button>
       <span id="objStatus" style="font-size:13px;color:var(--ink3)"></span>
     </div>
@@ -2162,13 +2850,33 @@
     <button class="secondary" id="askAiGov" style="margin-top:0">Ask MetaBridge AI</button>
   </div>
   <div class="panel" id="agentApprovalsPanel">
-    <h3 style="margin-bottom:4px">Agent approvals <span id="aqCount" style="color:var(--muted);font-size:12px"></span></h3>
-    <div style="color:var(--ink3);font-size:13px;margin-bottom:8px">Consequential agent actions are held here until a
-    <b>different</b>, permissioned approver signs off — the person who ran the swarm can never approve their own
-    actions (they may withdraw them). Owners and admins can approve or reject.</div>
+    <div class="ihead">
+      <h3>Agent approvals</h3>
+      <button type="button" class="ibtn" data-info="aqInfo" aria-expanded="false"
+              aria-controls="aqInfo" aria-label="About agent approvals"
+              title="How approval works">i</button>
+    </div>
+    <div class="sub" style="margin:5px 0 12px">A runner can never approve their own actions —
+      only withdraw them. Owners and admins approve or reject.</div>
+    <div class="infobox" id="aqInfo">
+      <div>Consequential agent actions are held here until a <b>different</b>, permissioned
+        approver signs off. Read-only analysis commits on its own; anything that generates
+        artifacts or changes a system waits for a decision.</div>
+      <span class="cav">A decision recorded against the person who requested the run is a
+        <b>withdrawal</b>, not an approval — the server refuses self-approval, so that is the
+        only decision a runner can make on their own request.</span>
+    </div>
+    <!-- Four counts before the detail: the panel's first job is to say whether
+         anything needs a person right now. -->
+    <div class="cards" id="aqStats"></div>
+    <div class="grp"><span class="k">Pending approval</span>
+      <span id="aqCount" style="font-size:12px;color:var(--muted)"></span><span class="rule"></span></div>
     <div id="aqEscalation"></div>
     <div id="aqList"></div>
+    <div class="grp"><span class="k">Recent decisions</span><span class="rule"></span>
+      <button type="button" class="linkbtn" id="aqAudit">Agent audit trail &rarr;</button></div>
     <div id="aqDecided"></div>
+    <p class="exts" id="aqFoot"></p>
   </div>
   <div class="panel">
     <h3 style="margin-bottom:4px">Approval queue &amp; AI recommendations</h3>
@@ -2224,96 +2932,151 @@
   <div class="sub">Generate governed data pipelines from source metadata and semantic manifests —
   from a connected source (Data Estate &rarr; Analyze), an analyzed modernization, or a YAML manifest.</div>
   <div class="panel">
+    <h3 style="margin-bottom:3px">Generate pipelines</h3>
+    <div class="sub" style="margin-bottom:16px">Build target-native extraction and load pipelines
+      from your source system.</div>
     <form id="scafForm">
       <!-- The two inputs are the two halves of one decision — raw tables and
            the logic over them — so they sit side by side rather than stacked
            with the manifest preview wedged between them. `.row` already gives
-           equal widths and wraps on a narrow window. -->
+           equal widths and wraps on a narrow window.
+           The manifest decides LOAD BEHAVIOUR (full reload vs merge), and this
+           is the last point before pipelines are generated from it. It is
+           required: /api/scaffold takes `tables` as File(...), so there is no
+           run without one. -->
       <div class="row">
         <div class="drop" data-drop="scafFile"><input type="file" accept=".yml,.yaml" hidden>
-          <span class="txt"><b>Drop a table manifest (.yml)</b> — see examples/sap_to_snowflake/tables.yml</span></div>
+          <span class="txt"><b>Drop a table manifest, or <span class="browse">browse</span></b>
+          <span class="hint">.yml · see examples/sap_to_snowflake/tables.yml</span></span></div>
         <!-- Optional curated layer. A manifest describes the RAW tables only,
              so on its own it scaffolds pass-through models; supplying the ETL
              that builds the curated tables converts that logic in the SAME
              run, and lets the landing layer skip tables it already produces. -->
         <div class="drop" data-drop="scafEtlFile">
           <input type="file" accept=".zip,.xml" hidden>
-          <span class="txt"><b>Transformation logic (optional)</b> — PowerCenter XML, IDMC export, DataStage, SSIS or Talend</span></div>
+          <span class="txt"><b>Drop transformation logic, or <span class="browse">browse</span></b>
+          <span class="hint">optional · PowerCenter XML, IDMC export, DataStage, SSIS, Talend</span></span></div>
       </div>
-      <div style="font-size:12px;color:var(--muted);margin:6px 0 10px 2px">
-        Without transformation logic you get the raw layer only. With it, the
-        mappings become this project's staging &rarr; intermediate &rarr;
-        marts, and any table the logic <em>builds</em> is not also copied
-        across as raw data.
+      <p class="exts">Without transformation logic you get the raw layer only. With it, the
+        mappings become this project's staging &rarr; intermediate &rarr; marts, and any table
+        the logic <em>builds</em> is not also copied across as raw data.</p>
+      <!-- The move, stated in one row: what it reads from, what it writes for.
+           Below the inputs, because what you dropped decides what the source
+           reasonably is — and above the manifest preview, which can run to a
+           full screen and would otherwise bury these two selects. -->
+      <div class="pair" style="margin-top:16px">
+        <div><label for="scafSource">Source system</label><select name="source" id="scafSource"></select></div>
+        <span class="arrow" aria-hidden="true">&rarr;</span>
+        <div><label for="scafTarget">Target platform</label><select name="target" id="scafTarget"></select></div>
       </div>
-      <!-- The manifest decides LOAD BEHAVIOUR (full reload vs merge), and this
-           is the last point before pipelines are generated from it. -->
       <div id="scafManifestPreview"></div>
-      <label id="scafLandRow" style="display:none;align-items:center;gap:8px;margin:0 0 10px 2px;font-size:13.5px;cursor:pointer">
+      <label id="scafLandRow" style="display:none;align-items:center;gap:8px;margin:10px 0 0 2px;font-size:13px;cursor:pointer">
         <input type="checkbox" id="scafLandEtl" name="land_etl_targets" value="true" style="width:auto;margin:0">
         <span>Land those tables anyway <span style="color:var(--muted)">— only useful while running both sides in parallel to compare them</span></span>
       </label>
-      <div class="row">
-        <div><label>Source system</label><select name="source" id="scafSource"></select></div>
-        <div><label>Target platform</label><select name="target" id="scafTarget"></select></div>
-      </div>
       <!-- /api/scaffold has always accepted `project`; the console never sent
            it, so every run fell back to "<source>_to_<target>" and runs became
            indistinguishable. FormData(ev.target) picks this up by name. -->
-      <label for="scafProject">Project name
-        <span style="font-weight:400;text-transform:none;color:var(--muted);font-size:12px">(optional — defaults to source_to_target)</span></label>
+      <label for="scafProject" style="margin-top:16px">Project name
+        <span style="font-weight:400;text-transform:none;color:var(--muted);font-size:12px">· optional, defaults to source_to_target</span></label>
       <input type="text" id="scafProject" name="project" maxlength="64"
              placeholder="e.g. retail_dw_migration" autocomplete="off"
              style="max-width:460px">
-      <label style="display:inline-flex;align-items:center;gap:8px;margin:4px 0 2px;font-size:13.5px;cursor:pointer">
-        <input type="checkbox" id="scafGovern" checked style="width:auto;margin:0">
-        <span>Also generate a <b>governance report</b> (data classification &amp; residency)</span>
-      </label>
-      <div style="font-size:12px;color:var(--muted);margin:0 0 10px 24px">
-        Uncheck to generate pipelines only. Regions are needed for the residency
-        check, so they are asked for only when this is on.
-      </div>
-      <div class="row" id="scafRegionRow">
-        <div><label>Source region</label><select name="source_region"><option value="on_prem">On-premises</option><option value="eu">EU</option><option value="us">US</option></select></div>
-        <div><label>Target region</label><select name="target_region"><option value="eu">EU</option><option value="us">US</option><option value="apac">APAC</option></select></div>
-      </div>
-      <details id="mvWrap" style="margin:6px 0 10px">
-        <summary style="font-size:13px;color:var(--accent);cursor:pointer;font-weight:600">
-          Data movement settings <span id="mvState" style="font-weight:400;color:var(--muted)"></span></summary>
-        <div style="font-size:12px;color:var(--muted);margin:8px 0">
-          Set once per workspace &mdash; generated unload/load scripts come out fully
-          substituted, nothing to edit. Locations and role names only; credentials are
-          never stored. For Snowflake sources, a <b>named stage</b> is the zero-credential
-          path: create it once in Snowflake and name it here.</div>
-        <div class="row">
-          <div><label>Stage URI</label><input id="mvStageUri" placeholder="s3://my-bucket/mb"></div>
-          <div><label>Bucket region (optional)</label><input id="mvRegion" placeholder="ap-south-1"></div>
-          <div><label>Named source stage (optional)</label><input id="mvSourceStage" placeholder="MB_S3_STAGE"></div>
-          <div><label>Named source credential (optional)</label><input id="mvSourceCredential" placeholder="MB_S3"></div>
-          <div><label>Named target stage (optional)</label><input id="mvTargetStage" placeholder="MB_LANDING_STAGE"></div>
-          <div><label>Target IAM role ARN</label><input id="mvIamRole" placeholder="arn:aws:iam::123456789012:role/RedshiftCopy"></div>
+
+      <!-- Governance is opt-out, and the regions exist only to serve it —
+           so they live INSIDE its box, hanging off the control that turns
+           them on, rather than as two more rows of the main form. -->
+      <div class="optcard">
+        <label class="och">
+          <input type="checkbox" id="scafGovern" checked>
+          <span><b>Also generate a governance report</b>
+            <span class="d">Data classification and residency check. Uncheck to generate pipelines only.</span></span>
+        </label>
+        <div class="ocbody pair" id="scafRegionRow">
+          <div><label>Source region</label><select name="source_region"><option value="on_prem">On-premises</option><option value="eu">EU</option><option value="us">US</option></select></div>
+          <span class="arrow" aria-hidden="true">&rarr;</span>
+          <div><label>Target region</label><select name="target_region"><option value="eu">EU</option><option value="us">US</option><option value="apac">APAC</option></select></div>
         </div>
-        <div style="font-size:12px;color:var(--muted);margin:2px 0 8px">
-          <b>Bucket region</b> is only needed for SAP HANA sources: HANA puts it in the URI
-          scheme (<code>s3-ap-south-1://</code>) where every other platform takes a plain
-          <code>s3://</code>. Leave it blank and the HANA unload comes out with a
-          <code>&lt;region&gt;</code> placeholder to fill in by hand.<br>
-          <b>Named source credential</b> is the <code>PURPOSE</code> of a credential you
-          create once on the source — <code>CREATE CREDENTIAL FOR COMPONENT
-          'SAPHANAIMPORTEXPORT' PURPOSE 'MB_S3' …</code> on SAP HANA. It is a name, not a
-          secret: the key stays in the source system and never reaches a generated file.<br>
-          <b>Named target stage</b> is a Snowflake stage built on a storage integration.
-          Set it and the load reads <code>FROM @MB_LANDING_STAGE/table/</code> with no
-          <code>CREDENTIALS</code> clause at all &mdash; the only form that never puts an
-          access key in a generated file.</div>
-        <div style="display:flex;gap:10px;align-items:center">
-          <button type="button" id="mvSave" class="secondary" style="margin-top:0">Save movement settings</button>
-          <span id="mvStatus" style="font-size:13px;color:var(--ink3)"></span>
+      </div>
+
+      <div class="optcard">
+        <button type="button" class="ochead" id="mvHead" aria-expanded="false" aria-controls="mvBody">
+          <span class="caret" aria-hidden="true">&#9654;</span>
+          <span>Data movement settings</span>
+          <span class="d">Set once per workspace</span>
+          <span class="badge warn" id="mvState">Not set</span>
+        </button>
+        <div class="ocbody" id="mvBody" hidden>
+          <div style="font-size:12.5px;color:var(--ink3);line-height:1.6">Generated unload and load
+            scripts come out fully substituted, with nothing left to edit.</div>
+          <div class="lockline">&#128274; Locations and role names only — credentials are never stored.</div>
+
+          <div class="grp" style="margin-top:16px">
+            <span class="k">From</span><span class="chip" id="mvFromChip">source</span><span class="rule"></span>
+          </div>
+          <div class="fld" style="max-width:460px;margin-bottom:12px">
+            <label for="mvStageUri">Stage URI</label>
+            <input type="text" id="mvStageUri" class="mono" placeholder="s3://my-bucket/mb">
+          </div>
+          <div class="row">
+            <div style="max-width:200px"><label for="mvRegion">Bucket region
+              <span style="font-weight:400;text-transform:none;color:var(--muted)">· optional</span></label>
+              <input type="text" id="mvRegion" class="mono" placeholder="ap-south-1">
+              <div class="fhint">SAP HANA puts it in the URI scheme; every other platform
+                does not need it.</div></div>
+            <div><label for="mvSourceStage">Named source stage
+              <span style="font-weight:400;text-transform:none;color:var(--muted)">· optional</span></label>
+              <input type="text" id="mvSourceStage" class="mono" placeholder="MB_S3_STAGE">
+              <div class="fhint">A stage already defined on the source side.</div></div>
+            <div><label for="mvSourceCredential">Named source credential
+              <span style="font-weight:400;text-transform:none;color:var(--muted)">· optional</span></label>
+              <input type="text" id="mvSourceCredential" class="mono" placeholder="MB_S3">
+              <div class="fhint">A name, not a secret — the key stays in the source system.
+                <button type="button" class="linkbtn" data-info="mvInfo">How to create it</button></div></div>
+          </div>
+
+          <div class="grp">
+            <span class="k">To</span><span class="chip" id="mvToChip">target</span><span class="rule"></span>
+          </div>
+          <div class="row">
+            <div><label for="mvTargetStage">Named target stage
+              <span style="font-weight:400;text-transform:none;color:var(--muted)">· recommended</span></label>
+              <input type="text" id="mvTargetStage" class="mono" placeholder="MB_LANDING_STAGE">
+              <div class="fhint">The only path that never writes a key into a generated script.</div></div>
+            <div><label for="mvIamRole">Target IAM role ARN</label>
+              <input type="text" id="mvIamRole" class="mono" placeholder="arn:aws:iam::123456789012:role/RedshiftCopy">
+              <div class="fhint">Used when the target copies from the stage itself.</div></div>
+          </div>
+
+          <div class="infobox" id="mvInfo" style="margin-top:12px">
+            <div><b>Bucket region</b> is only needed for SAP HANA sources: HANA puts it in the URI
+              scheme (<code>s3-ap-south-1://</code>) where every other platform takes a plain
+              <code>s3://</code>. Leave it blank and the HANA unload comes out with a
+              <code>&lt;region&gt;</code> placeholder to fill in by hand.</div>
+            <div><b>Named source credential</b> is the <code>PURPOSE</code> of a credential you
+              create once on the source — <code>CREATE CREDENTIAL FOR COMPONENT
+              'SAPHANAIMPORTEXPORT' PURPOSE 'MB_S3' …</code> on SAP HANA. It is a name, not a
+              secret: the key stays in the source system and never reaches a generated file.</div>
+            <div><b>Named target stage</b> is a Snowflake stage built on a storage integration.
+              Set it and the load reads <code>FROM @MB_LANDING_STAGE/table/</code> with no
+              <code>CREDENTIALS</code> clause at all — the only form that never puts an
+              access key in a generated file.</div>
+          </div>
+
+          <div style="display:flex;gap:12px;align-items:center;margin-top:16px;flex-wrap:wrap">
+            <button type="button" id="mvSave" class="secondary" style="margin-top:0">Save settings</button>
+            <button type="button" class="linkbtn" data-info="mvInfo">How the zero-credential path works</button>
+            <span id="mvStatus" style="font-size:12.5px;color:var(--ink3)"></span>
+          </div>
         </div>
-      </details>
+      </div>
+
       <div id="scafConnNote" style="display:none;font-size:12px;color:var(--ink3);
-           margin:2px 0 8px;line-height:1.7"></div>
-      <button type="submit">Generate pipelines</button>
+           margin:12px 0 0;line-height:1.7"></div>
+      <div class="fact">
+        <button type="submit" id="scafGenerate">Generate pipelines</button>
+        <span class="note" id="scafHint">Pipelines and a governance report</span>
+      </div>
     </form>
     <div class="err" id="scafErr" style="white-space:pre-wrap"></div>
     <div id="scafResult" style="display:none;margin-top:20px">
@@ -2344,11 +3107,21 @@
         <code>.jil</code> (AutoSys) · <code>.xml</code> (Control-M) · <code>.cron</code>&nbsp;/&nbsp;<code>.txt</code> (crontab) ·
         <code>.dtsx</code> · <code>.dsx</code> · <code>.item</code>. Platform auto-detected; pick one or many.</div>
       <span class="cav">Airflow DAGs are read in both classic and TaskFlow
-        (<code>@dag</code>&nbsp;/&nbsp;<code>@task</code>) style.</span>
+        (<code>@dag</code>&nbsp;/&nbsp;<code>@task</code>) style. The platform shown beside each
+        attached file is read from its extension and shape — the analyzer is what confirms it.</span>
     </div>
-    <input type="file" id="orchFiles" multiple
-           accept=".py,.json,.jil,.cron,.txt,.xml,.dtsx,.dsx,.item">
-    <div style="display:flex;gap:10px;align-items:center;margin-top:12px;flex-wrap:wrap">
+    <div class="mdrop" data-mdrop="orch">
+      <input type="file" id="orchFiles" multiple hidden
+             accept=".py,.json,.jil,.cron,.txt,.xml,.dtsx,.dsx,.item">
+      <div class="mzone"><span class="txt"><b>Drop orchestration exports, or <span class="browse">browse</span></b>
+        <span class="hint">.py .json .jil .xml .cron .txt .dtsx .dsx .item</span></span></div>
+      <div class="flist" hidden></div>
+      <p class="exts">Airflow, ADF, Fabric, Step Functions, Control-M, AutoSys<span
+           class="rest" hidden> · IDMC taskflows · dbt Cloud jobs · crontabs</span>
+        <button type="button" class="linkbtn" data-more="3">and 3 more</button></p>
+      <p class="fsum" hidden></p>
+    </div>
+    <div style="display:flex;gap:10px;align-items:center;margin-top:14px;flex-wrap:wrap">
       <button type="button" id="orchAnalyze" style="margin-top:0">Analyze orchestration</button>
       <span id="orchStatus" style="font-size:13px;color:var(--ink3)"></span>
     </div>
@@ -2790,7 +3563,9 @@ document.addEventListener('DOMContentLoaded', () => paintRevealIcons());
    independent tools, and forcing an accordion would close the one you were
    reading when you opened its neighbour to compare). */
 document.addEventListener('click', ev => {
-  const btn = ev.target.closest && ev.target.closest('.ibtn');
+  // any control carrying data-info, so a text link ("How to create it") opens
+  // the same box the round ⓘ does rather than needing a second mechanism
+  const btn = ev.target.closest && ev.target.closest('[data-info]');
   if (!btn) return;
   ev.preventDefault();
   const box = document.getElementById(btn.dataset.info);
@@ -4208,11 +4983,213 @@ document.querySelectorAll('.drop').forEach(drop => {
   ['dragleave','drop'].forEach(e => drop.addEventListener(e, ev => { ev.preventDefault(); drop.classList.remove('hover'); }));
   drop.addEventListener('drop', ev => setFile(ev.dataTransfer.files[0]));
   function setFile(f) { if (!f) return; chosen[key] = f;
-    drop.querySelector('.txt').innerHTML = '<b>' + esc(f.name) + '</b> (' + Math.round(f.size/1024) + ' KB)';
+    drop.querySelector('.txt').innerHTML = '<b>' + esc(f.name) + '</b> (' + Math.round(f.size/1024) + ' KB)'
+      + '<span class="hint">Drop another file to replace it</span>';
     // a dropped table manifest previews like a handed-off one
     if (key === 'scafFile') renderScaffoldManifest(f);
     // the land-anyway choice only exists once there is ETL logic to exclude
-    if (key === 'scafEtlFile') { const r = $('#scafLandRow'); if (r) r.style.display = 'inline-flex'; } }
+    if (key === 'scafEtlFile') { const r = $('#scafLandRow'); if (r) r.style.display = 'inline-flex'; }
+    if (key === 'convFile') updateConvHint(); }
+});
+
+/* ---- multi-file dropzones (orchestration, events) ----------------------
+   A bare <input type="file" multiple> renders "3 files" and throws the names
+   away: nothing said WHAT was attached, and removing one meant re-picking the
+   whole set. These keep their own array — the input is only a file picker —
+   and render it as a list that replaces the zone once anything is held.
+
+   The platform beside each row is a guess from the file's extension (and, for
+   the ambiguous .json, from a bounded sniff of its head). It is labelled as
+   such in each panel's ⓘ, because the analyzer is what actually decides. */
+const mfiles = {};
+const MDROP_EXT = {
+  orch: {py:'Airflow', jil:'AutoSys', xml:'Control-M', cron:'crontab', txt:'crontab',
+         dtsx:'SSIS', dsx:'DataStage', item:'Talend'},
+  evt:  {avsc:'Avro schema', properties:'Kafka / Connect', mqsc:'IBM MQ',
+         sql:'ksqlDB / Flink SQL', prm:'GoldenGate', xml:'NiFi template', conf:'Config'},
+};
+// Markers anchored on keys the format actually requires, so an unrecognised
+// document stays "JSON export" rather than being mislabelled.
+const MDROP_JSON = {
+  orch: [[/"Microsoft\.DataFactory|"activities"\s*:/, 'ADF / Fabric'],
+         [/"StartAt"\s*:/, 'Step Functions'],
+         [/"taskflow|"INFA/i, 'IDMC taskflow'],
+         [/"job_definition_id"|"dbt_version"|"steps_override"/, 'dbt Cloud job']],
+  evt:  [[/"subject"\s*:[\s\S]*"schema"\s*:/, 'Schema Registry'],
+         [/"connector\.class"/, 'Debezium / Connect'],
+         [/"eventHubs?"|"consumerGroup"/i, 'Event Hubs']],
+};
+async function mdropLabel(kind, f) {
+  const ext = (f.name.split('.').pop() || '').toLowerCase();
+  if (ext !== 'json') return MDROP_EXT[kind] && MDROP_EXT[kind][ext] || '';
+  try {
+    const head = await f.slice(0, 4096).text();
+    for (const [re, label] of (MDROP_JSON[kind] || [])) if (re.test(head)) return label;
+  } catch (e) { /* unreadable head — say nothing rather than guess */ }
+  return 'JSON export';
+}
+function mdropFiles(kind) { return mfiles[kind] || []; }
+// Each panel's status line doubles as the "nothing attached yet" note beside
+// its button, the way the empty footer reads in the rest of the console. Only
+// that exact phrase is written or cleared, so a real status ("Analyzing…", an
+// error) is never clobbered.
+const MDROP_NOTE = {orch: 'orchStatus', evt: 'evtStatus'};
+const MDROP_EMPTY = 'No files selected';
+function mdropNote(kind, empty) {
+  const el = document.getElementById(MDROP_NOTE[kind] || '');
+  if (!el) return;
+  if (empty && !el.textContent.trim()) el.textContent = MDROP_EMPTY;
+  else if (!empty && el.textContent.trim() === MDROP_EMPTY) el.textContent = '';
+}
+function mdropRender(root) {
+  const kind = root.dataset.mdrop;
+  const list = root.querySelector('.flist'), zone = root.querySelector('.mzone');
+  const sum = root.querySelector('.fsum'), exts = root.querySelector('.exts');
+  const files = mdropFiles(kind);
+  zone.hidden = files.length > 0;
+  if (exts) exts.hidden = files.length > 0;
+  list.hidden = !files.length;
+  sum.hidden = !files.length;
+  mdropNote(kind, !files.length);
+  if (!files.length) { list.innerHTML = ''; return; }
+  list.innerHTML = files.map((f, i) =>
+    '<div class="frow"><span class="fn" title="' + esc(f.name) + '">' + esc(f.name) + '</span>'
+    + '<span class="fp" data-plat="' + i + '"></span>'
+    + '<button type="button" class="fx" data-rm="' + i + '" title="Remove ' + esc(f.name)
+    + '" aria-label="Remove ' + esc(f.name) + '">&times;</button></div>').join('');
+  const named = files.filter(f => f._mbPlat).map(f => f._mbPlat);
+  const uniq = [...new Set(named)];
+  sum.innerHTML = files.length + (files.length === 1 ? ' file' : ' files')
+    + (uniq.length ? ' · ' + esc(uniq.slice(0, 3).join(', '))
+        + (uniq.length > 3 ? ' +' + (uniq.length - 3) : '') : '')
+    + ' · <button type="button" class="linkbtn" data-add="1">add more</button>';
+  files.forEach((f, i) => {
+    const cell = list.querySelector('[data-plat="' + i + '"]');
+    if (cell) cell.textContent = f._mbPlat || '';
+  });
+}
+document.querySelectorAll('.mdrop').forEach(root => {
+  const kind = root.dataset.mdrop, input = root.querySelector('input[type="file"]');
+  const zone = root.querySelector('.mzone');
+  mfiles[kind] = [];
+  async function add(fileList) {
+    const incoming = [...(fileList || [])];
+    if (!incoming.length) return;
+    // same name + size twice is a re-pick, not a second file
+    const seen = new Set(mfiles[kind].map(f => f.name + ':' + f.size));
+    const fresh = incoming.filter(f => !seen.has(f.name + ':' + f.size));
+    mfiles[kind] = mfiles[kind].concat(fresh);
+    mdropRender(root);
+    await Promise.all(fresh.map(async f => { f._mbPlat = await mdropLabel(kind, f); }));
+    mdropRender(root);
+  }
+  zone.onclick = () => input.click();
+  input.onchange = () => { add(input.files); input.value = ''; };
+  ['dragover','dragenter'].forEach(e => zone.addEventListener(e, ev => { ev.preventDefault(); zone.classList.add('hover'); }));
+  ['dragleave','drop'].forEach(e => zone.addEventListener(e, ev => { ev.preventDefault(); zone.classList.remove('hover'); }));
+  zone.addEventListener('drop', ev => add(ev.dataTransfer.files));
+  mdropRender(root);                       // paints the "No files selected" note
+  root.addEventListener('click', ev => {
+    const rm = ev.target.closest('[data-rm]');
+    if (rm) { mfiles[kind].splice(+rm.dataset.rm, 1); mdropRender(root); return; }
+    if (ev.target.closest('[data-add]')) input.click();
+  });
+});
+
+/* ---- project dropzones (Reports) --------------------------------------
+   Every report tool exposed a bare <input type="file" webkitdirectory>: an OS
+   button with no drop target, no accepted-format line, and no feedback past
+   the browser's own "42 files". These wrap the same input in the zone the
+   rest of the console uses, and keep their own array so the summary can name
+   what is actually attached.
+
+   Browse REPLACES (that is what the native control does, and re-picking a
+   project folder means a different project); a drop ADDS, because dragging a
+   second batch in is an additive gesture. A dropped FOLDER is walked through
+   the entries API and every file keeps the path it had inside the drop —
+   the analyzers key on project structure (models/, mappings/), so flattening
+   it would change their answers. */
+const pfiles = {};
+function pdropFiles(kind) { return pfiles[kind] || []; }
+// the name the analyzers see: the path within the picked folder or the drop
+function pdropPath(f) { return f._mbPath || f.webkitRelativePath || f.name; }
+const PDROP_MAX = 4000;                    // a runaway drop cannot hang the tab
+
+async function pdropWalk(entry, prefix, out) {
+  if (!entry || out.length >= PDROP_MAX) return;
+  if (entry.isFile) {
+    const f = await new Promise(res => entry.file(res, () => res(null)));
+    if (f) { f._mbPath = prefix + entry.name; out.push(f); }
+    return;
+  }
+  if (!entry.isDirectory) return;
+  const reader = entry.createReader();
+  // readEntries returns a PAGE of children, not all of them — loop until empty
+  for (;;) {
+    const batch = await new Promise(res => reader.readEntries(res, () => res([])));
+    if (!batch.length) break;
+    for (const child of batch) await pdropWalk(child, prefix + entry.name + '/', out);
+  }
+}
+function pdropRender(root) {
+  const kind = root.dataset.pdrop;
+  const zone = root.querySelector('.mzone'), sum = root.querySelector('.fsum');
+  const files = pdropFiles(kind);
+  zone.hidden = false;                     // the zone stays: re-dropping is normal
+  sum.hidden = !files.length;
+  if (!files.length) return;
+  // the common root of the drop, which is the project the user thinks in
+  const roots = new Set(files.map(f => {
+    const p = pdropPath(f); const i = p.indexOf('/');
+    return i > 0 ? p.slice(0, i) + '/' : '';
+  }));
+  const named = [...roots].filter(Boolean);
+  sum.innerHTML = files.length + (files.length === 1 ? ' file' : ' files')
+    + (named.length === 1 ? ' · ' + esc(named[0]) : '')
+    + ' · <button type="button" class="linkbtn" data-preplace="1">replace</button>'
+    + ' · <button type="button" class="linkbtn" data-pclear="1">clear</button>';
+}
+document.querySelectorAll('.pdrop').forEach(root => {
+  const kind = root.dataset.pdrop, input = root.querySelector('input[type="file"]');
+  const zone = root.querySelector('.mzone');
+  pfiles[kind] = [];
+  function dedupe(list) {
+    const seen = new Set(); const out = [];
+    for (const f of list) {
+      const k = pdropPath(f) + ':' + f.size;
+      if (!seen.has(k)) { seen.add(k); out.push(f); }
+    }
+    return out.slice(0, PDROP_MAX);
+  }
+  async function addDrop(dt) {
+    const out = [];
+    const items = [...(dt.items || [])];
+    const entries = items.map(i => i.webkitGetAsEntry && i.webkitGetAsEntry()).filter(Boolean);
+    if (entries.length) for (const e of entries) await pdropWalk(e, '', out);
+    else out.push(...(dt.files || []));    // no entries API: loose files only
+    pfiles[kind] = dedupe(pfiles[kind].concat(out));
+    pdropRender(root);
+  }
+  zone.onclick = () => input.click();
+  input.onchange = () => { pfiles[kind] = dedupe([...input.files]); pdropRender(root); };
+  ['dragover','dragenter'].forEach(e => zone.addEventListener(e, ev => { ev.preventDefault(); zone.classList.add('hover'); }));
+  ['dragleave','drop'].forEach(e => zone.addEventListener(e, ev => { ev.preventDefault(); zone.classList.remove('hover'); }));
+  zone.addEventListener('drop', ev => addDrop(ev.dataTransfer));
+  root.addEventListener('click', ev => {
+    if (ev.target.closest('[data-preplace]')) { input.value = ''; input.click(); return; }
+    if (ev.target.closest('[data-pclear]')) { pfiles[kind] = []; input.value = ''; pdropRender(root); }
+  });
+});
+
+/* "and N more": the tail of a reference list, folded away until asked for */
+document.addEventListener('click', ev => {
+  const b = ev.target.closest && ev.target.closest('[data-more]');
+  if (!b) return;
+  const rest = b.parentNode.querySelector('.rest');
+  if (!rest) return;
+  const open = rest.hidden;
+  rest.hidden = !open;
+  b.textContent = open ? 'show less' : 'and ' + b.dataset.more + ' more';
 });
 
 function card(n, l, color, click) {
@@ -5537,10 +6514,8 @@ function switchInputTab(tab) {
   const isUpload = tab === 'upload';
   $('#inputPanelUpload').style.display = isUpload ? '' : 'none';
   $('#inputPanelConn').style.display   = isUpload ? 'none' : '';
-  $('#inputTabUpload').style.background = isUpload ? 'var(--accent)' : '#fff';
-  $('#inputTabUpload').style.color      = isUpload ? '#fff' : 'var(--ink2)';
-  $('#inputTabConn').style.background   = isUpload ? '#fff' : 'var(--accent)';
-  $('#inputTabConn').style.color        = isUpload ? 'var(--ink2)' : '#fff';
+  $('#inputTabUpload').setAttribute('aria-pressed', isUpload ? 'true' : 'false');
+  $('#inputTabConn').setAttribute('aria-pressed', isUpload ? 'false' : 'true');
   // Target platform / mode / Analyze belong to the UPLOAD path only. The
   // connection path picks its objects, previews the manifest and hands off to
   // Pipeline Studio, which asks for the target itself — so showing them here
@@ -5571,7 +6546,8 @@ $('#analyzeBtn').onclick = async () => {
   fd.set('project', ($('#convProject').value || '').trim());
   const btn = $('#analyzeBtn');
   analyzeInFlight = true;
-  btn.disabled = true; btn.textContent = 'Analyzing workload…'; setStep(2);
+  btn.disabled = true; btn.textContent = 'Analyzing workload…';
+  setStep(2, {busy: true, note: 'Reading the workload…'});
   try {
     // timeout so a hung/slow request can't strand the button (root cause of
     // the "stuck Analyze" bug); the finally below always restores the button
@@ -5579,9 +6555,10 @@ $('#analyzeBtn').onclick = async () => {
     if (!d || !Array.isArray(d.models))
       throw new Error('The server returned an unexpected response. Please try again.');
     planJob = d;
-    setStep(3);
+    setStep(3, {note: d.models.length + ' model' + (d.models.length === 1 ? '' : 's') + ' found — choose what to convert'});
     $('#generateAllBtn').disabled = false;
     $('#generateAllBtn').title = '';
+    updateConvHint();
     $('#planProject').textContent = d.project + ' (' + d.models.length + ' models)';
     const det = d.detection;
     $('#planDetect').innerHTML = det
@@ -5613,7 +6590,8 @@ $('#analyzeBtn').onclick = async () => {
     updateCount();
     $('#planPanel').style.display = 'block';
   } catch (e) {
-    setStep(1);                                // roll the stepper back
+    // stay on the step that failed: rewinding to 1 contradicted the error
+    setStep(2, {fail: true, note: 'Analysis failed'});
     err.innerHTML = esc(e.message || 'Analysis failed — please try again.')
       + ' <a id="analyzeRetry" style="color:var(--accent);cursor:pointer;font-weight:600">Retry</a>';
     err.style.display = 'block';
@@ -5656,7 +6634,8 @@ $('#convertSelected').onclick = async () => {
   fd.set('overrides', JSON.stringify(overrides));
   // Explicit name still wins over the label inherited from the analyze job.
   fd.set('project', ($('#convProject').value || '').trim());
-  const btn = $('#convertSelected'); btn.disabled = true; btn.textContent = 'Generating…'; setStep(4);
+  const btn = $('#convertSelected'); btn.disabled = true; btn.textContent = 'Generating…';
+  setStep(4, {busy: true, note: 'Generating the selected models…'});
   try { showConvertResult(await api('/api/convert', {method: 'POST', body: fd})); }
   catch (e) { err.textContent = e.message; err.style.display = 'block'; }
   finally { btn.disabled = false; updateCount(); }
@@ -5726,39 +6705,121 @@ $('#convForm').onsubmit = async ev => {
   if (!chosen.convFile) { err.textContent = 'Upload a workload first.'; err.style.display = 'block'; return; }
   if (!planJob) { err.textContent = 'Analyze the workload first — generation is enabled after analysis.'; err.style.display = 'block'; return; }
   const fd = new FormData(ev.target); fd.set('file', chosen.convFile);
-  const btn = $('#generateAllBtn'); btn.disabled = true; btn.textContent = 'Generating…'; setStep(4);
+  const btn = $('#generateAllBtn'); btn.disabled = true; btn.textContent = 'Generating…';
+  setStep(4, {busy: true, note: 'Generating every asset…'});
   try {
     showConvertResult(await api('/api/convert', {method:'POST', body: fd}));
-    setStep(5);
+    setStep(5, {note: 'Done — open the report or download below'});
   } catch (e) { err.textContent = e.message; err.style.display = 'block'; }
-  finally { btn.disabled = false; btn.textContent = 'Generate target (all assets)'; }
+  finally { btn.disabled = false; btn.textContent = 'Generate target'; }
 };
 
-/* step indicator */
-function setStep(n) {
-  document.querySelectorAll('#modSteps span').forEach(s => {
-    const i = +s.dataset.step;
-    s.classList.toggle('on', i === n);
-    s.classList.toggle('done', i < n);
-  });
-}
+/* ---------------- run stepper ------------------------------------------
+   `setStep(n)` still means "the run is at step n". The options carry the two
+   things the old five-colour bar could not say: that a step is IN FLIGHT, and
+   that one FAILED — a failed analyze used to rewind the bar to step 1, which
+   contradicted the error and its Retry link sitting on screen.
 
-/* target platform cards drive the hidden target select */
-const TARGETS = [['snowflake','Snowflake'],['databricks','Databricks'],['bigquery','BigQuery'],
-  ['redshift','Redshift'],['synapse','Fabric / Synapse'],['dbt','dbt'],['idmc','IDMC'],['powercenter','PowerCenter']];
-$('#targetSel').innerHTML = TARGETS.map(([v,l]) =>
-  '<button type="button" data-t="' + v + '" role="radio" aria-checked="false">' + l + '</button>').join('');
+   A step stays clickable once reached, because the output of an earlier step
+   (the detection line, the model table, the result cards) is what you want
+   back after scrolling away from it. */
+let stepMax = 1;
+function setStep(n, opts) {
+  const o = opts || {};
+  if (!o.fail) stepMax = Math.max(stepMax, n);
+  document.querySelectorAll('#modSteps .step').forEach(s => {
+    const i = +s.dataset.step;
+    s.classList.toggle('on', i === n && !o.fail);
+    s.classList.toggle('done', i < n);
+    s.classList.toggle('busy', i === n && !!o.busy);
+    s.classList.toggle('fail', i === n && !!o.fail);
+    if (i === n && !o.fail) s.setAttribute('aria-current', 'step');
+    else s.removeAttribute('aria-current');
+    const reached = i <= stepMax;
+    s.setAttribute('aria-disabled', reached ? 'false' : 'true');
+    s.title = reached ? 'Go to ' + s.textContent.replace(/^\d/, '').trim()
+                      : 'Available once the run reaches this step';
+  });
+  document.querySelectorAll('#modSteps .bar').forEach(b =>
+    b.classList.toggle('done', +b.dataset.bar < n));
+  const note = $('#modStepNote');
+  if (note) {
+    note.classList.toggle('fail', !!o.fail);
+    if (o.note !== undefined) note.textContent = o.note;
+  }
+}
+// Reached steps scroll back to what they produced. Nothing is re-run and no
+// state changes — this is navigation, not a wizard "back".
+$('#modSteps').addEventListener('click', ev => {
+  const b = ev.target.closest('.step');
+  if (!b || b.getAttribute('aria-disabled') === 'true') return;
+  const el = document.getElementById(b.dataset.go);
+  if (el && el.offsetParent !== null) el.scrollIntoView({behavior: 'smooth', block: 'start'});
+  else $('#convForm').scrollIntoView({behavior: 'smooth', block: 'start'});
+});
+
+/* Target platform cards drive the hidden target select. Grouped by the role
+   the target plays — flat, a warehouse and a transformation framework read as
+   interchangeable destinations, and they are not. One radiogroup still, so the
+   grouping is presentation and the choice stays single. */
+const TARGET_GROUPS = [
+  ['Warehouses', [['snowflake','Snowflake'],['databricks','Databricks'],
+                  ['bigquery','BigQuery'],['redshift','Redshift']]],
+  ['Transformation and ETL', [['synapse','Fabric / Synapse'],['dbt','dbt'],
+                  ['idmc','IDMC'],['powercenter','PowerCenter']]],
+];
+$('#targetSel').innerHTML = TARGET_GROUPS.map(([grp, items]) =>
+  '<p class="tgrp">' + grp + '</p><div class="tsel">'
+  + items.map(([v,l]) => '<button type="button" data-t="' + v + '" role="radio" '
+      + 'aria-checked="false">' + l + '</button>').join('')
+  + '</div>').join('');
 $('#targetSel').querySelectorAll('button').forEach(b => b.onclick = () => {
   $('#targetSel').querySelectorAll('button').forEach(x => { x.classList.remove('on'); x.setAttribute('aria-checked','false'); });
   b.classList.add('on'); b.setAttribute('aria-checked','true');
   $('#convForm').target.value = b.dataset.t;
   updateCompat();
+  updateConvHint();
 });
 document.querySelectorAll('input[name="tmode"]').forEach(r => r.onchange = () => {
   const analyzeOnly = document.querySelector('input[name="tmode"]:checked').value === 'analyze';
   $('#generateAllBtn').style.display = analyzeOnly ? 'none' : '';
   const cs = $('#convertSelected'); if (cs) cs.style.display = analyzeOnly ? 'none' : '';
+  $('#tmodeSeg').querySelectorAll('label').forEach(l =>
+    l.classList.toggle('on', l.querySelector('input').checked));
+  updateConvHint();
 });
+
+/* The blocker on the primary action, stated in the row rather than hidden in a
+   disabled button's tooltip — a tooltip on a disabled control is unreachable
+   for anyone who is not hovering a mouse over it. */
+function updateConvHint() {
+  const note = $('#convHint');
+  if (!note) return;
+  const analyzeOnly = (document.querySelector('input[name="tmode"]:checked') || {}).value === 'analyze';
+  let blocker = '';
+  if (!chosen.convFile) blocker = 'Add a file to continue';
+  else if (!$('#convForm').target.value) blocker = 'Choose a target platform';
+  else if (!planJob && !analyzeOnly) blocker = 'Analyze first to generate';
+  note.textContent = blocker;
+}
+
+/* Project name and the source/dialect overrides both default correctly almost
+   always; each cost a permanent labelled field to say so. */
+$('#convNameEdit').onclick = () => {
+  const fld = $('#convNameFld'), btn = $('#convNameEdit');
+  const open = fld.style.display === 'none';
+  fld.style.display = open ? '' : 'none';
+  btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+  $('#convNameRO').style.display = open ? 'none' : '';
+  btn.textContent = open ? 'Done' : 'Edit';
+  if (open) $('#convProject').focus();
+};
+$('#convAdvBtn').onclick = () => {
+  const adv = $('#convAdv'), btn = $('#convAdvBtn');
+  const open = adv.style.display === 'none';
+  adv.style.display = open ? '' : 'none';
+  btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+};
 
 // Hand a table manifest to Pipeline Studio. Every entry point goes through
 // here — Modernize -> connected system, Integrations -> Scaffold, and Data
@@ -5775,6 +6836,7 @@ async function selectScaffoldSource(connector) {
   if (!src.options.length) { try { await fillScaffoldSelects(); } catch (e) {} }
   if (![...src.options].some(o => o.value === connector)) return false;
   src.value = connector;
+  syncMvChips();
   return true;
 }
 /* Render the attached manifest above the Source system row. Reads the File
@@ -7342,6 +8404,7 @@ async function fillScaffoldSelects() {
   $('#scafSource').innerHTML = allConnectors.map(c => '<option value="' + c.key + '"' + (c.key==='sap_s4'?' selected':'') + '>' + c.name + '</option>').join('');
   $('#scafTarget').innerHTML = allConnectors.filter(c => c.dbt_adapter || c.category === 'cloud_dw' || c.category === 'lakehouse')
     .map(c => '<option value="' + c.key + '"' + (c.key==='snowflake'?' selected':'') + '>' + c.name + '</option>').join('');
+  syncMvChips();          // the From/To chips name whatever is selected here
 }
 /* ---------------- Reports: migration assessment ------------------------- */
 $('#assessRun').onclick = async () => {
@@ -7349,12 +8412,12 @@ $('#assessRun').onclick = async () => {
   $('#assessResult').style.display = 'none';
   $('#assessStatus').textContent = 'Assessing…';
   try {
-    const files = await Promise.all([...$('#assessFiles').files].map(f =>
+    const files = await Promise.all(pdropFiles('assess').map(f =>
       new Promise((res, rej) => {
         const r = new FileReader();
         // keep the relative path when a folder is picked so project
         // structure (models/ etc.) survives — same as AI readiness
-        r.onload = () => res({name: f.webkitRelativePath || f.name, content: r.result});
+        r.onload = () => res({name: pdropPath(f), content: r.result});
         r.onerror = rej;
         r.readAsText(f);
       })));
@@ -7437,13 +8500,12 @@ $('#airRun').onclick = async () => {
   $('#airResult').style.display = 'none';
   $('#airStatus').textContent = 'Assessing AI readiness…';
   try {
-    const files = await Promise.all([...$('#airFiles').files].map(f =>
+    const files = await Promise.all(pdropFiles('air').map(f =>
       new Promise((res, rej) => {
         const r = new FileReader();
         // keep the relative path when a folder was picked so dbt/project
         // structure survives (the parsers need models/ etc.)
-        r.onload = () => res({name: f.webkitRelativePath || f.name,
-                              content: r.result});
+        r.onload = () => res({name: pdropPath(f), content: r.result});
         r.onerror = rej;
         r.readAsText(f);
       })));
@@ -7542,10 +8604,10 @@ $('#debtRun').onclick = async () => {
   const err = $('#debtErr'); err.style.display = 'none';
   $('#debtStatus').textContent = 'Analyzing technical debt…';
   try {
-    const files = await Promise.all([...$('#debtFiles').files].map(f =>
+    const files = await Promise.all(pdropFiles('debt').map(f =>
       new Promise((res, rej) => {
         const r = new FileReader();
-        r.onload = () => res({name: f.webkitRelativePath || f.name, content: r.result});
+        r.onload = () => res({name: pdropPath(f), content: r.result});
         r.onerror = rej;
         r.readAsText(f);
       })));
@@ -7606,10 +8668,10 @@ $('#finRun').onclick = async () => {
   const err = $('#finErr'); err.style.display = 'none';
   $('#finStatus').textContent = 'Modeling FinOps…';
   try {
-    const files = await Promise.all([...$('#finFiles').files].map(f =>
+    const files = await Promise.all(pdropFiles('fin').map(f =>
       new Promise((res, rej) => {
         const r = new FileReader();
-        r.onload = () => res({name: f.webkitRelativePath || f.name, content: r.result});
+        r.onload = () => res({name: pdropPath(f), content: r.result});
         r.onerror = rej;
         r.readAsText(f);
       })));
@@ -7711,10 +8773,10 @@ $('#secRun').onclick = async () => {
   const err = $('#secErr'); err.style.display = 'none';
   $('#secStatus').textContent = 'Analyzing security & compliance…';
   try {
-    const files = await Promise.all([...$('#secFiles').files].map(f =>
+    const files = await Promise.all(pdropFiles('sec').map(f =>
       new Promise((res, rej) => {
         const r = new FileReader();
-        r.onload = () => res({name: f.webkitRelativePath || f.name, content: r.result});
+        r.onload = () => res({name: pdropPath(f), content: r.result});
         r.onerror = rej;
         r.readAsText(f);
       })));
@@ -7790,10 +8852,10 @@ $('#docsRun').onclick = async () => {
   const err = $('#docsErr'); err.style.display = 'none';
   $('#docsStatus').textContent = 'Generating documentation…';
   try {
-    const files = await Promise.all([...$('#docsFiles').files].map(f =>
+    const files = await Promise.all(pdropFiles('docs').map(f =>
       new Promise((res, rej) => {
         const r = new FileReader();
-        r.onload = () => res({name: f.webkitRelativePath || f.name, content: r.result});
+        r.onload = () => res({name: pdropPath(f), content: r.result});
         r.onerror = rej;
         r.readAsText(f);
       })));
@@ -7827,7 +8889,7 @@ $('#evtAnalyze').onclick = async () => {
   const err = $('#evtErr'); err.style.display = 'none';
   $('#evtStatus').textContent = 'Analyzing…';
   try {
-    const files = await Promise.all([...$('#evtFiles').files].map(f =>
+    const files = await Promise.all(mdropFiles('evt').map(f =>
       new Promise((res, rej) => {
         const r = new FileReader();
         r.onload = () => res({name: f.name, content: r.result});
@@ -8178,10 +9240,33 @@ async function loadMovementSettings() {
     $('#mvIamRole').value = d.iam_role || '';
     const set = !!(d.stage_uri || d.iam_role || d.source_stage || d.region
                    || d.source_credential || d.target_stage);
-    $('#mvState').textContent = set
-      ? '— configured; generated scripts come out fully substituted'
-      : '— not set; generated scripts will carry <placeholders>';
+    // A status badge on the collapsed head, so "will my scripts come out with
+    // <placeholders>?" is answerable without opening the section.
+    const st = $('#mvState');
+    st.className = 'badge ' + (set ? 'ok' : 'warn');
+    st.textContent = set ? 'Configured' : 'Not set';
+    st.title = set ? 'Generated scripts come out fully substituted'
+                   : 'Generated scripts will carry <placeholders>';
   } catch (e) { /* panel stays usable; Save reports the real error */ }
+}
+
+/* The settings are usually left alone after the first run — collapsed by
+   default, with the badge above carrying the only bit that matters closed. */
+$('#mvHead').onclick = () => {
+  const body = $('#mvBody'), head = $('#mvHead');
+  const open = body.hidden;
+  body.hidden = !open;
+  head.setAttribute('aria-expanded', String(open));
+};
+/* The From/To chips name the systems these fields actually move between,
+   instead of leaving the reader to hold the selects above in their head. */
+function syncMvChips() {
+  [['#scafSource', '#mvFromChip'], ['#scafTarget', '#mvToChip']].forEach(([s, c]) => {
+    const sel = $(s), chip = $(c);
+    if (!sel || !chip) return;
+    const opt = sel.selectedOptions[0];
+    if (opt) chip.textContent = opt.text;
+  });
 }
 
 $('#mvSave').onclick = async () => {
@@ -8204,7 +9289,7 @@ $('#mvSave').onclick = async () => {
 let orchId = null, orchGraphs = null, orchResil = null;
 
 async function orchReadFiles() {
-  const files = [...$('#orchFiles').files];
+  const files = mdropFiles('orch');
   if (!files.length) throw new Error('Choose orchestration export files first.');
   return Promise.all(files.map(f => new Promise((res, rej) => {
     const r = new FileReader();
@@ -8434,9 +9519,13 @@ $('#orchGenerate').onclick = async () => {
 function syncScafGovern() {
   const on = $('#scafGovern').checked;
   $('#scafRegionRow').style.display = on ? '' : 'none';
+  // the footer says what pressing Generate will actually produce
+  $('#scafHint').textContent = on ? 'Pipelines and a governance report' : 'Pipelines only';
 }
 $('#scafGovern').onchange = syncScafGovern;
 syncScafGovern();
+$('#scafSource').onchange = syncMvChips;
+$('#scafTarget').onchange = syncMvChips;
 
 $('#scafForm').onsubmit = async ev => {
   ev.preventDefault();
@@ -8472,7 +9561,10 @@ $('#scafForm').onsubmit = async ev => {
                  + 'artifacts use env-var placeholders';
     }).join('<br>');
   $('#scafConnNote').style.display = 'block';
-  const btn = ev.target.querySelector('button'); btn.disabled = true; btn.textContent = 'Generating…';
+  // by id, not querySelector('button') — the first button in this form is
+  // "Save settings" inside the movement card, which is what used to get
+  // disabled and relabelled "Generating…" on every run
+  const btn = $('#scafGenerate'); btn.disabled = true; btn.textContent = 'Generating…';
   try {
     const d = await api('/api/scaffold', {method:'POST', body: fd});
     const banner = $('#scafBanner');
@@ -10193,117 +11285,1046 @@ async function loadObservability() {
   try { d = await api('/api/observability'); }
   catch (e) { err.style.display = 'block'; err.textContent = e.message; return; }
 
-  // health gauge
-  const h = d.health_score || {};
-  $('#obsGauge').innerHTML = obsGaugeSvg(h.score, h.band);
-  $('#obsHealthHeadline').innerHTML = esc(h.headline || 'No operational history yet.');
-  const ac = d.alerting && d.alerting.counts || {};
-  $('#obsAlertsBar').innerHTML =
-    ['critical', 'warning', 'info'].map(k =>
-      '<span style="display:inline-block;background:' + (k === 'critical' ? '#fdeeec'
-        : k === 'warning' ? '#fdf6e9' : 'var(--line)') + ';color:' + (k === 'critical' ? 'var(--red)'
-        : k === 'warning' ? 'var(--amber)' : 'var(--ink3)') + ';border-radius:4px;padding:2px 9px;'
-        + 'margin-right:6px;font-size:12px;font-weight:600">' + (ac[k] || 0) + ' ' + k
-        + '</span>').join('');
-  const od = d.operational_dashboard || {};
-  $('#obsExecActive').textContent = 'Active: ' + ((od.active || {}).running_jobs || 0)
-    + ' running job(s), ' + ((od.active || {}).pending_approvals || 0)
-    + ' agent action(s) awaiting approval.';
-
-  // monitor tiles
-  const mons = d.monitors || {};
-  $('#obsMonCount').textContent = Object.keys(mons).length + ' monitors';
-  $('#obsMonitors').innerHTML = Object.keys(OBS_MON_LABELS).filter(k => mons[k]).map(k => {
-    const m = mons[k], col = obsColor(m.status);
-    const basisBadge = '<span style="font-size:10.5px;background:' + (m.basis === 'modeled'
-      ? '#fdf6e9' : m.basis === 'no_data' ? 'var(--line)' : '#eef7f0') + ';color:' + (m.basis
-      === 'modeled' ? 'var(--amber)' : m.basis === 'no_data' ? '#98a0ad' : 'var(--green)')
-      + ';border-radius:3px;padding:1px 6px">' + esc(m.basis || '') + '</span>';
-    return '<div style="border:1px solid var(--border);border-radius:var(--radius);padding:11px 13px;background:#fff" role="listitem">'
-      + '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px">'
-      + '<span style="font-weight:600;font-size:12.5px">' + esc(OBS_MON_LABELS[k]) + '</span>'
-      + basisBadge + '</div>'
-      + '<div style="margin:5px 0"><span style="display:inline-block;width:9px;height:9px;'
-      + 'border-radius:50%;background:' + col + ';margin-right:6px"></span>'
-      + '<span style="font-size:12px;color:' + col + ';font-weight:600">' + esc(m.status || '')
-      + '</span>' + (m.score != null ? ' <span style="color:var(--muted);font-size:11.5px">· '
-      + Math.round(m.score) + '</span>' : '') + '</div>'
-      + '<div style="font-size:11.5px;color:var(--ink3);line-height:1.5">' + esc(m.headline || '') + '</div></div>';
-  }).join('');
-
-  // SLA
-  const sla = d.sla_dashboard || {};
-  $('#obsSlaState').innerHTML = sla.status === 'met'
-    ? '<span style="color:var(--green)">all met</span>'
-    : sla.status === 'breached' ? '<span style="color:var(--red)">' + esc(sla.headline || '')
-      + '</span>' : '<span style="color:#98a0ad">no data</span>';
-  $('#obsSla').innerHTML = (sla.objectives || []).length
-    ? '<tr><th>Objective</th><th>Target</th><th>Actual</th><th>Status</th></tr>'
-      + sla.objectives.map(o => '<tr><td>' + esc(o.name) + '</td>'
-        + '<td>' + o.target + esc(o.unit || '') + '</td>'
-        + '<td>' + o.actual + esc(o.unit || '') + '</td>'
-        + '<td style="color:' + (o.met ? 'var(--green)' : 'var(--red)') + ';font-weight:600">'
-        + (o.met ? 'met' : 'breached')
-        + (o.error_budget_consumed_pct != null ? ' <span style="color:var(--muted);font-weight:400">('
-          + o.error_budget_consumed_pct + '% budget)</span>' : '') + '</td></tr>').join('')
-    : '<tr><td style="color:var(--muted)">No SLA history yet.</td></tr>';
-
-  // Alerts
-  const al = d.alerting || {};
-  $('#obsAlertCount').textContent = al.total ? '(' + al.total + ')' : '(none)';
-  $('#obsAlerts').innerHTML = (al.alerts || []).length
-    ? al.alerts.map(a => {
-        const c = a.severity === 'critical' ? 'var(--red)' : a.severity === 'warning'
-          ? 'var(--amber)' : 'var(--ink3)';
-        return '<div style="padding:6px 0;border-bottom:1px solid #f0f2f6">'
-          + '<span style="display:inline-block;min-width:64px;color:' + c + ';font-weight:700;'
-          + 'font-size:11px;text-transform:uppercase">' + esc(a.severity) + '</span>'
-          + '<span style="font-size:12.5px">' + esc(a.message) + '</span></div>';
-      }).join('')
-    : '<div style="color:var(--green);font-size:13px">No active alerts.</div>';
+  // health, monitors, SLOs and alerts all read from this one payload
+  gObs = d;
+  wireObsTop();
+  paintObsHealth();
+  paintObsRibbon();
+  paintObsMonitors();
+  paintObsSla();
+  paintObsAlerts();
 
   // Trends (sparkline of success rate + ops per day)
   const tr = d.performance_trends || {};
   $('#obsTrendDir').textContent = tr.direction ? '· ' + tr.direction : '';
-  $('#obsTrends').innerHTML = renderObsTrends(tr.series || []);
+  gObsTrend = tr.series || [];
+  wireObsTrends();
+  paintObsTrends();
 
   // Historical
-  const hi = d.historical_analytics || {};
-  const kinds = Object.entries(hi.by_kind || {}).sort((a, b) => b[1] - a[1])
-    .map(([k, v]) => esc(k) + ' (' + v + ')').join(', ');
-  $('#obsHistorical').innerHTML =
-    '<div><b>' + (hi.jobs_total || 0) + '</b> jobs + <b>' + (hi.agent_runs_total || 0)
-    + '</b> agent runs analyzed'
-    + (hi.date_span ? ' · ' + esc(hi.date_span.from) + ' → ' + esc(hi.date_span.to) : '')
-    + '</div>'
-    + '<div style="margin-top:6px">Overall success rate: <b>' + (hi.overall_success_rate_pct || 0)
-    + '%</b>'
-    + (hi.mean_run_ms != null ? ' · mean agent run ' + obsMs(hi.mean_run_ms) : '')
-    + (hi.median_action_ms != null ? ' · median action ' + obsMs(hi.median_action_ms) : '') + '</div>'
-    + (kinds ? '<div style="margin-top:6px;color:var(--ink3)">By kind: ' + kinds + '</div>' : '');
+  gObsHist = d.historical_analytics || {};
+  wireObsHist();
+  paintObsHist();
 }
 
-function obsMs(v) { return v == null ? 'n/a' : (v < 1000 ? Math.round(v) + ' ms'
-  : (v / 1000).toFixed(1) + ' s'); }
+/* Job wall-clock can span hours, and "5446.3 s" is not a readable number. */
+function obsMs(v) {
+  if (v == null) return 'n/a';
+  if (v < 1000) return Math.round(v) + ' ms';
+  if (v < 60000) return (v / 1000).toFixed(1) + ' s';
+  if (v < 3600000) return (v / 60000).toFixed(1) + ' min';
+  return (v / 3600000).toFixed(1) + ' h';
+}
+
+/* Durations arrive rounded to whole milliseconds, so a stored 0 means "faster
+   than a millisecond", not "took no time" — say so rather than printing 0 ms. */
+function obsDur(v) { return v == null ? '\u2014' : v === 0 ? '<1 ms' : obsMs(v); }
+
+/* ---------------- Historical analytics ----------------
+   Same payload as before, but the parts that were dropped on the floor are
+   now shown: the status mix (by_status), mean job duration, and the job-kind
+   breakdown as a ranked bar list rather than a 20-item comma run-on. */
+let gObsHist = {};
+let gObsHistSort = 'count';      // 'count' | 'name'
+let gObsHistAll = false;         // show every kind, not just the top slice
+const HA_TOP = 8;
+
+const HA_STATUS = {
+  done: ['#157F3D', 'Succeeded'], ok: ['#157F3D', 'Succeeded'],
+  failed: ['#B42318', 'Failed'], error: ['#B42318', 'Failed'],
+  running: ['#2d6cdf', 'Running'], pending: ['#B45309', 'Pending'],
+  queued: ['#B45309', 'Queued'], cancelled: ['#7A8794', 'Cancelled'],
+};
+function haStatus(k) { return HA_STATUS[k] || ['#98a0ad', k]; }
+/* A rare kind is "<1%", never "0%" — it did happen. */
+function haShare(v, total) {
+  if (!total) return '0%';
+  const pc = 100 * v / total;
+  return v && pc < 0.5 ? '<1%' : Math.round(pc) + '%';
+}
+
+function paintObsHist() {
+  const host = $('#obsHistorical');
+  if (host) host.innerHTML = renderObsHist(gObsHist);
+}
+
+function renderObsHist(hi) {
+  const jobs = hi.jobs_total || 0, runs = hi.agent_runs_total || 0;
+  if (!jobs && !runs) {
+    return '<div style="color:var(--ink3);font-size:13px">'
+      + 'No run history analyzed yet.</div>';
+  }
+  const span = hi.date_span;
+  let days = null;
+  if (span && span.from && span.to) {
+    days = Math.round((Date.parse(span.to) - Date.parse(span.from)) / 864e5) + 1;
+  }
+  const st = hi.by_status || {};
+  const stEntries = Object.entries(st).sort((a, b) => b[1] - a[1]);
+  const stTotal = stEntries.reduce((a, kv) => a + kv[1], 0);
+  const settled = (st.done || 0) + (st.failed || 0);
+  const rate = hi.overall_success_rate_pct;
+
+  /* ---- headline numbers (the panel used to show none) ---- */
+  const kpi = (label, val, sub) => '<div class="obs-kpi"><dt>' + label
+    + '</dt><dd>' + val + (sub ? ' <small>' + sub + '</small>' : '') + '</dd></div>';
+  const kpis = '<dl class="obs-kpis">'
+    + kpi('Jobs analyzed', jobs.toLocaleString(),
+          days ? 'over ' + days + ' day' + (days > 1 ? 's' : '') : '')
+    + kpi('Agent runs', runs.toLocaleString(),
+          hi.mean_run_ms != null ? esc(obsDur(hi.mean_run_ms)) + ' mean' : '')
+    + kpi('Success rate', settled ? rate + '%' : '\u2014',
+          settled ? settled.toLocaleString() + ' settled' : 'nothing settled')
+    + kpi('Mean job', esc(obsDur(hi.mean_job_ms)), 'end to end')
+    + kpi('History window', span ? esc(span.from.slice(5)) + ' \u2192 '
+          + esc(span.to.slice(5)) : '\u2014', span ? esc(span.from.slice(0, 4)) : '')
+    + '</dl>';
+
+  /* ---- status mix: proportions, so one stacked bar beats five numbers ---- */
+  let mix = '';
+  if (stTotal) {
+    mix = '<div class="ha-sec"><h4>Status mix</h4><div class="ha-mix" role="img" '
+      + 'aria-label="' + esc(stEntries.map(kv =>
+          kv[1] + ' ' + haStatus(kv[0])[1].toLowerCase()).join(', ')) + '">'
+      + stEntries.map(kv => {
+          const c = haStatus(kv[0])[0], lbl = haStatus(kv[0])[1];
+          return '<span style="width:' + (100 * kv[1] / stTotal).toFixed(2)
+            + '%;background:' + c + '" title="' + esc(lbl) + ': ' + kv[1] + ' ('
+            + haShare(kv[1], stTotal) + ')"></span>';
+        }).join('')
+      + '</div><div class="ha-keys">'
+      + stEntries.map(kv => {
+          const c = haStatus(kv[0])[0], lbl = haStatus(kv[0])[1];
+          return '<span class="ha-key"><i style="background:' + c + '"></i>'
+            + esc(lbl) + ' <b>' + kv[1].toLocaleString() + '</b><span>('
+            + haShare(kv[1], stTotal) + ')</span></span>';
+        }).join('')
+      + '</div></div>';
+  }
+
+  /* ---- job kinds: ranked bars, sortable, collapsed to the top slice ---- */
+  let kindSec = '';
+  const kinds = Object.entries(hi.by_kind || {});
+  if (kinds.length) {
+    const sorted = kinds.slice().sort(gObsHistSort === 'name'
+      ? (a, b) => a[0].localeCompare(b[0])
+      : (a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+    const shown = gObsHistAll ? sorted : sorted.slice(0, HA_TOP);
+    const total = kinds.reduce((a, kv) => a + kv[1], 0);
+    const peak = Math.max.apply(null, kinds.map(kv => kv[1]));
+    const hidden = sorted.length - shown.length;
+    kindSec = '<div class="ha-sec"><div class="ha-head">'
+      + '<h4 style="margin:0">Job kinds <span style="text-transform:none;'
+      + 'letter-spacing:0;font-weight:500">\u00b7 ' + kinds.length
+      + ' distinct</span></h4>'
+      + '<span class="grow"></span>'
+      + '<div class="seg" role="tablist" aria-label="Sort job kinds">'
+      + [['count', 'By volume'], ['name', 'A\u2013Z']].map(kv =>
+          '<button role="tab" data-hasort="' + kv[0] + '" aria-selected="'
+          + (gObsHistSort === kv[0]) + '">' + kv[1] + '</button>').join('')
+      + '</div></div><div class="ha-rows">'
+      + shown.map(kv =>
+          '<div class="ha-row"><span class="k" title="' + esc(kv[0]) + '"><code>'
+          + esc(kv[0]) + '</code></span>'
+          + '<span class="ha-bar"><i style="width:'
+          + (100 * kv[1] / peak).toFixed(1) + '%"></i></span>'
+          + '<span class="v">' + kv[1].toLocaleString() + '<small>('
+          + haShare(kv[1], total) + ')</small></span></div>').join('')
+      + '</div>'
+      + (hidden > 0 || gObsHistAll
+        ? '<button type="button" class="jact" data-hamore="1" style="margin-top:8px" '
+          + 'aria-expanded="' + gObsHistAll + '">'
+          + (gObsHistAll
+            ? 'Show ' + (gObsHistSort === 'name' ? 'first ' : 'top ') + HA_TOP
+            : 'Show all ' + sorted.length + ' kinds')
+          + '</button>'
+        : '')
+      + '</div>';
+  }
+
+  /* ---- latency: three different measures, each labelled for what it is ---- */
+  const durSec = '<div class="ha-sec"><h4>Latency</h4><dl class="ha-dur">'
+    + '<div><dt>Mean job</dt><dd>' + esc(obsDur(hi.mean_job_ms))
+    + '</dd><p>Whole job, submit to finish.</p></div>'
+    + '<div><dt>Mean agent run</dt><dd>' + esc(obsDur(hi.mean_run_ms))
+    + '</dd><p>One full agent run.</p></div>'
+    + '<div><dt>Median agent action</dt><dd>' + esc(obsDur(hi.median_action_ms))
+    + '</dd><p>Single step inside a run.</p></div></dl></div>';
+
+  return kpis + mix + kindSec + durSec;
+}
+
+function wireObsHist() {
+  const host = $('#obsHistorical');
+  if (!host || host.dataset.wired) return;
+  host.dataset.wired = '1';
+  host.addEventListener('click', e => {
+    const so = e.target.closest('[data-hasort]');
+    if (so) { gObsHistSort = so.dataset.hasort; paintObsHist(); return; }
+    if (e.target.closest('[data-hamore]')) {
+      gObsHistAll = !gObsHistAll; paintObsHist();
+    }
+  });
+}
+
+/* ---------------- Observability: verdict / attention / monitors ------------
+   Three zones instead of six sibling panels, and a distinct form per kind of
+   number rather than one progress bar for everything:
+
+   - the six health signals are independent named metrics, so they get big
+     numerals in a matrix (a hexagon/polystat grid is for aggregating many
+     related services into composites, and hides its labels behind tooltips);
+   - state over time gets a uniform status ribbon, one cell per day, colour
+     plus a hatch on bad days — a green/red-only strip is unreadable for the
+     ~8% of men with red-green colour deficiency;
+   - objectives lead with burn rate, the multiple of sustainable error spend,
+     because "how fast is the budget going" is the actionable figure;
+   - monitors are grouped rows, worst first, with a shape + word + colour on
+     each so no single channel carries the state.
+
+   contributors / top_detractors / sample / value / threshold were all already
+   in the payload and none of them were ever rendered. */
+let gObs = {};
+let gObsMonFilter = 'all';
+let gObsAlertSev = '';           // '' = all severities
+
+const OBS_SIG_LABELS = {
+  pipeline: 'Pipeline', reliability: 'Reliability', agents: 'Agents',
+  validation: 'Validation', connectors: 'Connectors', latency: 'Latency',
+};
+const OBS_ATTENTION = ['degraded', 'partial', 'fail', 'critical', 'warn',
+                       'no_data'];
+/* Burn-rate bands from multi-window SRE practice: 1x is spending the budget
+   exactly as fast as it is granted, 6x and 14.4x are the usual page-worthy
+   multiples for a 30-day window. */
+const OBS_BURN = [[14.4, 'critical burn', 'var(--red)'],
+                  [6, 'fast burn', 'var(--red)'],
+                  [1, 'elevated', 'var(--amber)'],
+                  [0, 'sustainable', 'var(--green)']];
+
+/* Geometric status marks. Shape, not just hue: filled disc = healthy,
+   half disc = degraded, cross = failed, hollow ring = nothing measured. */
+const OBS_MARK = {
+  ok: 'disc', pass: 'disc', healthy: 'disc', complete: 'disc',
+  in_progress: 'disc', partial: 'half', warn: 'half', degraded: 'half',
+  fail: 'cross', critical: 'cross', no_data: 'ring',
+};
+function obsMarkSvg(status, col) {
+  const kind = OBS_MARK[status] || 'ring';
+  const open = '<svg class="omr-ic" viewBox="0 0 16 16" aria-hidden="true" '
+    + 'fill="none" stroke="' + col + '" stroke-width="2">';
+  if (kind === 'disc') {
+    return open + '<circle cx="8" cy="8" r="6" fill="' + col
+      + '" stroke="none"/></svg>';
+  }
+  if (kind === 'half') {
+    return open + '<circle cx="8" cy="8" r="6"/>'
+      + '<path d="M8 2a6 6 0 0 1 0 12Z" fill="' + col + '" stroke="none"/></svg>';
+  }
+  if (kind === 'cross') {
+    return open + '<circle cx="8" cy="8" r="6"/>'
+      + '<path d="M5.6 5.6l4.8 4.8M10.4 5.6l-4.8 4.8" stroke-linecap="round"/>'
+      + '</svg>';
+  }
+  return open + '<circle cx="8" cy="8" r="6" stroke-dasharray="2.6 2.4"/></svg>';
+}
+function obsSevSvg(sev) {
+  if (sev === 'critical') {
+    return '<svg viewBox="0 0 16 16" aria-hidden="true" fill="none" '
+      + 'stroke="currentColor" stroke-width="2" stroke-linecap="round">'
+      + '<circle cx="8" cy="8" r="6"/><path d="M5.6 5.6l4.8 4.8M10.4 5.6l-4.8 4.8"/>'
+      + '</svg>';
+  }
+  if (sev === 'warning') {
+    return '<svg viewBox="0 0 16 16" aria-hidden="true" fill="none" '
+      + 'stroke="currentColor" stroke-width="2" stroke-linecap="round">'
+      + '<path d="M8 1.8 14.6 13.4H1.4Z"/><path d="M8 6.4v3.1"/>'
+      + '<path d="M8 11.6h.01"/></svg>';
+  }
+  return '<svg viewBox="0 0 16 16" aria-hidden="true" fill="none" '
+    + 'stroke="currentColor" stroke-width="2" stroke-linecap="round">'
+    + '<circle cx="8" cy="8" r="6"/><path d="M8 7.4v3.4"/>'
+    + '<path d="M8 5.2h.01"/></svg>';
+}
+function obsTickSvg() {
+  return '<svg viewBox="0 0 16 16" aria-hidden="true" fill="none" '
+    + 'stroke="currentColor" stroke-width="2.2" stroke-linecap="round" '
+    + 'stroke-linejoin="round"><path d="M2.8 8.4l3.4 3.4 7-7.6"/></svg>';
+}
+
+function obsScoreColor(v) {
+  return v == null ? 'var(--line)'
+    : v >= 90 ? 'var(--green)' : v >= 75 ? '#B45309' : v >= 50 ? 'var(--amber)'
+    : 'var(--red)';
+}
+/* Naming the band in words keeps every score from being colour-only. */
+function obsScoreBand(v) {
+  return v == null ? 'not scored'
+    : v >= 90 ? 'strong' : v >= 75 ? 'fair' : v >= 50 ? 'weak' : 'poor';
+}
+
+function paintObsHealth() {
+  const h = gObs.health_score || {};
+  const act = (gObs.operational_dashboard || {}).active || {};
+  $('#obsGauge').innerHTML = obsGaugeSvg(h.score, h.band);
+
+  /* Lead with the verdict in plain words, not the engine's sentence. */
+  const band = h.band === 'insufficient' ? 'provisional' : (h.band || 'unknown');
+  $('#obsHealthHeadline').textContent = h.score == null
+    ? 'Not enough history to score operational health'
+    : 'Operational health is ' + band;
+
+  const thin = h.sample === 'thin' || h.sample === 'insufficient';
+  /* Escape each name on its own — the joining markup must not be escaped. */
+  const worst = (h.top_detractors || []).slice(0, 2)
+    .map(t => '<b>' + esc((OBS_SIG_LABELS[t.area] || t.area) + ' '
+                          + Math.round(t.score)) + '</b>');
+  $('#obsExecActive').innerHTML =
+    (h.operations != null
+      ? '<b>' + h.operations.toLocaleString() + '</b> operation'
+        + (h.operations === 1 ? '' : 's') + ' scored'
+        + (thin ? ' · <b style="color:var(--amber)">provisional sample</b>' : '')
+      : 'No scored operations')
+    + ' · <b>' + (act.running_jobs || 0) + '</b> running · <b>'
+    + (act.pending_approvals || 0) + '</b> awaiting approval'
+    + (gObs.as_of ? ' · as of ' + esc(gObs.as_of) : '')
+    + (worst.length ? '<div class="oh-weak">Held back by '
+       + worst.join(' and ') + '</div>' : '');
+
+  /* Severity chips double as the alert filter — counts you can act on. */
+  const ac = (gObs.alerting || {}).counts || {};
+  $('#obsAlertsBar').innerHTML = ['critical', 'warning', 'info'].map(k => {
+    const n = ac[k] || 0;
+    const cls = k === 'critical' ? 'crit' : k === 'warning' ? 'warn' : '';
+    return '<button type="button" class="oh-chip ' + cls + '" data-obssev="' + k
+      + '" aria-pressed="' + (gObsAlertSev === k) + '"' + (n ? '' : ' disabled')
+      + (n ? ' title="Show only ' + k + ' alerts"' : '')
+      + '>' + n + ' ' + k + '</button>';
+  }).join('');
+
+  /* The six signals, worst first, as numerals. */
+  const cs = Object.entries(h.contributors || {});
+  if (!cs.length) { $('#obsSignals').innerHTML = ''; return; }
+  /* Only the two named in "held back by" get emphasised — flagging three of
+     six as the worst tells you nothing. */
+  const low = new Set((h.top_detractors || []).slice(0, 2).map(t => t.area));
+  $('#obsSignals').innerHTML = '<div class="oh-lbl">Signals behind the score</div>'
+    + '<div class="oh-grid">'
+    + cs.sort((a, b) => a[1] - b[1]).map(([k, v]) => {
+        const c = obsScoreColor(v);
+        return '<div class="oh-cell' + (low.has(k) ? ' worst' : '')
+          + '" style="--sig:' + c + '" title="'
+          + esc((OBS_SIG_LABELS[k] || k) + ': ' + Math.round(v) + ' of 100, '
+                + obsScoreBand(v)) + '">'
+          + '<b>' + Math.round(v) + '</b>'
+          + '<span>' + esc(OBS_SIG_LABELS[k] || k) + '</span>'
+          + '<em>' + esc(obsScoreBand(v)) + '</em></div>';
+      }).join('') + '</div>';
+}
+
+/* The daily series is the one real time dimension the payload carries, so the
+   ribbon is system-wide — there is no per-monitor history to draw. */
+function paintObsRibbon() {
+  const host = $('#obsRibbon');
+  if (!host) return;
+  const series = (gObs.performance_trends || {}).series || [];
+  if (!series.length) { host.innerHTML = ''; return; }
+
+  const settled = s => (s.ok || 0) + (s.failed || 0);
+  const rate = s => settled(s) ? s.success_rate_pct : null;
+  const rated = series.filter(s => settled(s));
+  const bad = rated.filter(s => s.success_rate_pct < 90).length;
+  const tOk = series.reduce((a, s) => a + (s.ok || 0), 0);
+  const tFail = series.reduce((a, s) => a + (s.failed || 0), 0);
+  const overall = tOk + tFail
+    ? Math.round(1000 * tOk / (tOk + tFail)) / 10 : null;
+  const dir = (gObs.performance_trends || {}).direction;
+
+  const cell = s => {
+    const r = rate(s);
+    const c = r == null ? 'var(--line)'
+      : r >= 90 ? 'var(--green)' : r >= 60 ? 'var(--amber)' : 'var(--red)';
+    const state = r == null ? 'nothing settled'
+      : r >= 90 ? 'healthy' : r >= 60 ? 'degraded' : 'failing';
+    /* Bad days also get a hatch, so state survives colour blindness. */
+    const hatch = (r != null && r < 60)
+      ? 'background-image:repeating-linear-gradient(45deg,'
+        + 'rgba(255,255,255,.55) 0 2px,transparent 2px 5px);' : '';
+    return '<button type="button" class="orib-cell" data-obsday="' + esc(s.date)
+      + '" style="background:' + c + ';' + hatch + '" aria-label="'
+      + esc(s.date + ': ' + state + ', ' + (s.operations || 0) + ' operations, '
+            + (r == null ? 'no success rate yet' : r + '% succeeded'))
+      + '" title="' + esc(s.date + ' — ' + state + ' · ' + (s.operations || 0)
+            + ' ops · ' + (r == null ? 'n/a' : r + '% ok')) + '"></button>';
+  };
+
+  host.innerHTML = '<div class="orib"><div class="orib-top">'
+    + '<span class="oh-lbl" style="margin:0">Daily state · last '
+    + series.length + ' active day' + (series.length === 1 ? '' : 's') + '</span>'
+    + '<span class="grow"></span><span class="orib-sum">'
+    + (overall == null ? 'nothing settled' : '<b>' + overall + '%</b> succeeded')
+    + (bad ? ' · <b>' + bad + '</b> day' + (bad === 1 ? '' : 's') + ' below 90%'
+           : ' · no bad days')
+    + (dir ? ' · trend ' + esc(dir) : '') + '</span></div>'
+    + '<div class="orib-strip">' + series.map(cell).join('') + '</div>'
+    + '<div class="orib-scale"><span>' + esc(series[0].date) + '</span><span>'
+    + esc(series[series.length - 1].date) + '</span></div>'
+    + '<div class="orib-key">'
+    + '<span><i style="background:var(--green)"></i>90%+ succeeded</span>'
+    + '<span><i style="background:var(--amber)"></i>60–89%</span>'
+    + '<span><i style="background:var(--red);background-image:'
+    + 'repeating-linear-gradient(45deg,rgba(255,255,255,.55) 0 2px,'
+    + 'transparent 2px 5px)"></i>below 60% (hatched)</span>'
+    + '<span><i style="background:var(--line)"></i>nothing settled</span>'
+    + '</div></div>';
+}
+
+function paintObsMonitors() {
+  const mons = gObs.monitors || {};
+  const keys = Object.keys(OBS_MON_LABELS).filter(k => mons[k]);
+  const attn = keys.filter(k => OBS_ATTENTION.includes(mons[k].status));
+  $('#obsMonCount').textContent = keys.length + ' monitors'
+    + (attn.length ? ' · ' + attn.length + ' need attention' : ' · all clear');
+  document.querySelectorAll('#obsMonFilter [data-monf]').forEach(b =>
+    b.setAttribute('aria-selected', String(b.dataset.monf === gObsMonFilter)));
+
+  const shown = keys.filter(k => gObsMonFilter === 'attn'
+    ? OBS_ATTENTION.includes(mons[k].status)
+    : gObsMonFilter === 'measured' ? mons[k].basis === 'measured' : true);
+  if (!shown.length) {
+    $('#obsMonitors').innerHTML = '<div class="om-empty">'
+      + (gObsMonFilter === 'attn' ? 'No monitor needs attention right now.'
+         : 'No measured monitors yet.') + '</div>';
+    return;
+  }
+  const row = k => {
+    const m = mons[k], col = obsColor(m.status);
+    return '<div class="omr" role="listitem" id="obsMon-' + esc(k)
+      + '" tabindex="-1">'
+      + obsMarkSvg(m.status, col)
+      + '<div class="omr-nm">' + esc(OBS_MON_LABELS[k])
+      + (m.basis === 'modeled'
+        ? '<small title="Derived from estate topology, not live metering">'
+          + 'modeled, not metered</small>'
+        : m.basis === 'no_data'
+          ? '<small style="color:var(--ink3)">no history yet</small>' : '')
+      + '</div>'
+      + '<div class="omr-st" style="color:' + col + '">' + esc(m.status || '')
+      + (m.score != null ? '<u>' + Math.round(m.score) + ' / 100 · '
+         + esc(obsScoreBand(m.score)) + '</u>' : '') + '</div>'
+      + '<div class="omr-hl">' + esc(m.headline || '') + '</div></div>';
+  };
+  /* Worst first: a degraded monitor should never sit below a healthy one. */
+  const needs = shown.filter(k => OBS_ATTENTION.includes(mons[k].status));
+  const fine = shown.filter(k => !OBS_ATTENTION.includes(mons[k].status));
+  const group = (title, ks) => !ks.length ? ''
+    : '<div class="omg"><div class="omg-h">' + title + ' <b>' + ks.length
+      + '</b></div><div role="list">' + ks.map(row).join('') + '</div></div>';
+  $('#obsMonitors').innerHTML = group('Needs attention', needs)
+    + group('Healthy', fine);
+}
+
+/* Objective units render through the same formatter as everything else, so a
+   60000 ms target reads as "60.0 s" rather than a raw millisecond count. */
+function obsSlaVal(v, unit) {
+  if (v == null) return '—';
+  return unit === 'ms' ? obsMs(v) : v + (unit || '');
+}
+/* Burn rate = error spend / error allowance. Above 1x the budget for the
+   window runs out early; below 1x it lasts. */
+function obsBurn(o) {
+  const higher = o.met ? o.actual >= o.target : o.actual < o.target;
+  if (higher) {
+    const allowed = 100 - o.target;
+    if (allowed <= 0) return o.actual >= 100 ? 0 : Infinity;
+    return Math.max(0, (100 - o.actual) / allowed);
+  }
+  if (!o.target) return o.actual ? Infinity : 0;
+  return Math.max(0, o.actual / o.target);
+}
+function obsBurnBand(x) {
+  for (const [floor, label, col] of OBS_BURN) {
+    if (x >= floor) return [label, col];
+  }
+  return ['sustainable', 'var(--green)'];
+}
+function obsBurnText(x) {
+  if (!isFinite(x)) return '∞';
+  return (x >= 100 ? Math.round(x) : x >= 10 ? x.toFixed(1) : x.toFixed(2)) + '×';
+}
+
+function paintObsSla() {
+  const sla = gObs.sla_dashboard || {};
+  const objs = sla.objectives || [];
+  $('#obsSlaState').innerHTML = sla.status === 'met'
+    ? '<span style="color:var(--green);font-weight:600">all ' + objs.length
+      + ' met</span>'
+    : sla.status === 'breached'
+      ? '<span style="color:var(--red);font-weight:600">' + sla.met + ' of '
+        + sla.total + ' met</span>'
+      : '<span style="color:var(--ink3)">no data</span>';
+  if (!objs.length) {
+    $('#obsSla').innerHTML = '<div class="om-empty">No settled operations to '
+      + 'measure objectives against yet.</div>';
+    return;
+  }
+  /* Worst burn first — the objective in trouble should not sit third. */
+  const sorted = objs.slice().sort((x, y) => obsBurn(y) - obsBurn(x));
+  $('#obsSla').innerHTML = '<div class="osc">'
+    + sorted.map(o => {
+      const x = obsBurn(o), bandPair = obsBurnBand(x);
+      const higher = o.met ? o.actual >= o.target : o.actual < o.target;
+      const n = o.sample != null ? o.sample : o.samples;
+      return '<div class="osc-c' + (o.met ? '' : ' bad') + '" style="--ob:'
+        + bandPair[1] + '">'
+        + '<div class="osc-nm" title="' + esc(o.name) + '">' + esc(o.name)
+        + '</div>'
+        + '<div class="osc-cmp"><b style="color:'
+        + (o.met ? 'var(--green)' : 'var(--red)') + '">'
+        + esc(obsSlaVal(o.actual, o.unit)) + '</b> against '
+        + (higher ? '\u2265' : '\u2264') + ' <b>'
+        + esc(obsSlaVal(o.target, o.unit)) + '</b></div>'
+        + '<div class="osc-burn" role="img" aria-label="'
+        + esc('Burn rate ' + obsBurnText(x) + ', ' + bandPair[0]) + '">'
+        + '<b>' + obsBurnText(x) + '</b><span>' + esc(bandPair[0]) + '</span></div>'
+        + '<div class="osc-ft"><i></i><span><b>'
+        + (o.met ? 'met' : 'breached') + '</b>'
+        + (o.error_budget_consumed_pct != null
+          ? ' \u00b7 ' + o.error_budget_consumed_pct + '% budget used' : '')
+        + (n != null ? ' \u00b7 ' + n.toLocaleString() + ' sample'
+            + (n === 1 ? '' : 's') : '')
+        + (o.low_confidence ? ' \u00b7 low confidence' : '')
+        + '</span></div></div>';
+    }).join('')
+    + '</div><div class="oslo-foot">Burn rate is error spend divided by error '
+    + 'allowance: <b>1\u00d7</b> exactly exhausts the budget over the window, '
+    + '<b>6\u00d7</b> and <b>14.4\u00d7</b> are the usual page-worthy multiples.'
+    + '</div>';
+}
+
+/* Which objective, if any, an alert is really about — so a row can say what a
+   fired rule costs instead of repeating the threshold twice. */
+function obsAlertObjective(a) {
+  const objs = (gObs.sla_dashboard || {}).objectives || [];
+  const want = a.rule === 'availability' ? 'availability'
+    : a.rule === 'failure_rate' ? 'failure rate'
+    : a.rule === 'latency_p95' ? 'latency' : null;
+  if (!want) return null;
+  return objs.filter(o => o.name.toLowerCase().indexOf(want) === 0)[0] || null;
+}
+
+function paintObsAlerts() {
+  const al = gObs.alerting || {};
+  const all = al.alerts || [];
+  const filtered = gObsAlertSev
+    ? all.filter(a => a.severity === gObsAlertSev) : all;
+  /* Severity first, then by what it costs — otherwise the 24x availability
+     breach lands third while the objective cards rank it first. */
+  const rank = {critical: 0, warning: 1, info: 2};
+  const shown = filtered.map((a, i) => [a, i]).sort((x, y) => {
+    const bySev = (rank[x[0].severity] ?? 9) - (rank[y[0].severity] ?? 9);
+    if (bySev) return bySev;
+    const bx = obsAlertObjective(x[0]), by = obsAlertObjective(y[0]);
+    const cost = (by ? obsBurn(by) : -1) - (bx ? obsBurn(bx) : -1);
+    return cost || x[1] - y[1];
+  }).map(pair => pair[0]);
+  const ac = al.counts || {};
+  $('#obsAlertCount').textContent = all.length
+    ? (gObsAlertSev ? '(' + shown.length + ' of ' + all.length + ')'
+       : '(' + all.length + (ac.critical ? ', ' + ac.critical + ' critical' : '')
+         + ')')
+    : '(nothing firing)';
+  const clr = $('#obsAlertClear');
+  if (clr) clr.style.display = gObsAlertSev ? '' : 'none';
+
+  if (!all.length) {
+    $('#obsAlerts').innerHTML = '<div class="oat-none">' + obsTickSvg()
+      + 'No alert is firing. Every rule is inside its threshold.</div>';
+    return;
+  }
+  if (!shown.length) {
+    $('#obsAlerts').innerHTML = '<div class="om-empty">No ' + esc(gObsAlertSev)
+      + ' alerts. Clear the filter to see the other ' + all.length + '.</div>';
+    return;
+  }
+  const chevron = '<svg class="oat-go" viewBox="0 0 16 16" aria-hidden="true" '
+    + 'fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" '
+    + 'stroke-linejoin="round"><path d="M6 3.5 10.5 8 6 12.5"/></svg>';
+  $('#obsAlerts').innerHTML = '<div class="oat">' + shown.map(a => {
+    /* Some rules fire off the composite score rather than a monitor, so
+       there is no tile to open — those rows are not buttons, and their key
+       gets humanised instead of leaking as "health_score". */
+    const tile = OBS_MON_LABELS[a.monitor];
+    const mon = tile || String(a.monitor || '').replace(/_/g, ' ')
+      .replace(/^./, c => c.toUpperCase());
+    const col = a.severity === 'critical' ? 'var(--red)'
+      : a.severity === 'warning' ? 'var(--amber)' : 'var(--ink3)';
+    const obj = obsAlertObjective(a);
+    /* Say what it costs, not the threshold the message already quotes. */
+    const cost = obj
+      ? 'spending the ' + obj.name.toLowerCase() + ' error budget <b>'
+        + obsBurnText(obsBurn(obj)) + '</b> faster than allowed'
+      : (a.value != null && a.threshold != null
+        ? '<b>' + a.value + '</b> against a threshold of <b>' + a.threshold + '</b>'
+        : '');
+    const body = obsMarkSvg(a.severity === 'critical' ? 'fail' : 'warn', col)
+        .replace('omr-ic', 'oat-mk')
+      + '<span class="oat-b"><span class="oat-sev ' + esc(a.severity) + '">'
+      + esc(a.severity) + '</span>'
+      + '<span class="oat-msg">' + esc(a.message) + '</span>'
+      + '<span class="oat-sub">' + esc(mon)
+      + (cost ? ' \u00b7 ' + cost : '') + '</span></span>';
+    if (!tile) {
+      return '<div class="oat-i oat-static">' + body + '</div>';
+    }
+    return '<button type="button" class="oat-i" data-obsmon="'
+      + esc(a.monitor) + '" aria-label="'
+      + esc(a.severity + ': ' + a.message + '. From the ' + mon
+            + ' monitor. Opens that monitor.') + '">'
+      + body + chevron + '</button>';
+  }).join('') + '</div>';
+}
+
+/* One delegated wiring pass; the containers outlive every re-render. */
+function wireObsTop() {
+  const page = $('#page-observability');
+  if (!page || page.dataset.obsWired) return;
+  page.dataset.obsWired = '1';
+
+  const flash = key => {
+    const row = $('#obsMon-' + key);
+    if (!row) return;
+    row.scrollIntoView({block: 'center',
+      behavior: matchMedia('(prefers-reduced-motion:reduce)').matches
+        ? 'auto' : 'smooth'});
+    row.classList.add('flash');
+    row.focus({preventScroll: true});
+    setTimeout(() => row.classList.remove('flash'), 1600);
+  };
+
+  page.addEventListener('click', e => {
+    const f = e.target.closest('#obsMonFilter [data-monf]');
+    if (f) { gObsMonFilter = f.dataset.monf; paintObsMonitors(); return; }
+    const sev = e.target.closest('[data-obssev]');
+    if (sev) {
+      gObsAlertSev = gObsAlertSev === sev.dataset.obssev ? '' : sev.dataset.obssev;
+      paintObsHealth(); paintObsAlerts();
+      return;
+    }
+    if (e.target.closest('#obsAlertClear')) {
+      gObsAlertSev = ''; paintObsHealth(); paintObsAlerts(); return;
+    }
+    /* A ribbon day scrolls to the trends chart and focuses that same day, so
+       the glanceable strip is a way into the detailed view. */
+    const day = e.target.closest('[data-obsday]');
+    if (day) {
+      const i = gObsTrend.findIndex(s => s.date === day.dataset.obsday);
+      const plot = $('#obsTrends');
+      if (plot) {
+        plot.scrollIntoView({block: 'center',
+          behavior: matchMedia('(prefers-reduced-motion:reduce)').matches
+            ? 'auto' : 'smooth'});
+        const hit = plot.querySelectorAll('.ot-hit')[i];
+        if (hit) hit.focus({preventScroll: true});
+      }
+      return;
+    }
+    const row = e.target.closest('[data-obsmon]');
+    if (row && row.dataset.obsmon) {
+      /* An alert about a monitor hidden by the current filter is a dead end. */
+      const m = (gObs.monitors || {})[row.dataset.obsmon];
+      if (m && gObsMonFilter === 'attn' && !OBS_ATTENTION.includes(m.status)) {
+        gObsMonFilter = 'all'; paintObsMonitors();
+      }
+      flash(row.dataset.obsmon);
+    }
+  });
+
+  /* Left/right arrows walk the ribbon once a day has focus. */
+  page.addEventListener('keydown', e => {
+    const cell = e.target.closest('.orib-cell');
+    if (!cell || (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight')) return;
+    const cells = [...page.querySelectorAll('.orib-cell')];
+    const next = cells[cells.indexOf(cell) + (e.key === 'ArrowRight' ? 1 : -1)];
+    if (next) { e.preventDefault(); next.focus(); }
+  });
+}
+
+/* ---------------- Performance trends chart ----------------
+   Three views over the same daily series: outcome volume (bars stacked
+   ok / failed / in-flight), success rate, and mean duration. Rate is only
+   meaningful once a day has settled operations — a day that is entirely
+   in-flight reports 0.0% from the API, which must NOT be painted as a
+   total failure, so those days are drawn as gaps instead. */
+let gObsTrend = [];
+let gObsTrendMode = 'ops';
+let gObsTrendTable = false;
+
+const OT_COL = {ok: '#157F3D', failed: '#B42318', pend: '#CBD3DC', rate: '#1E62D0'};
+const OT_MODES = [['ops', 'Volume & outcome'], ['rate', 'Success rate'],
+                  ['dur', 'Mean duration']];
+const OT_HEALTHY = 90;   // same threshold the SLA panel treats as healthy
+
+/* Settled = finished either way. Anything else is still in flight, and its
+   success rate is unknown rather than zero. */
+function otSettled(s) { return (s.ok || 0) + (s.failed || 0); }
+function otRate(s) { return otSettled(s) ? s.success_rate_pct : null; }
+function otBand(p) {
+  return p == null ? OT_COL.pend
+    : p >= OT_HEALTHY ? OT_COL.ok : p >= 60 ? '#B45309' : OT_COL.failed;
+}
+function otNice(v) {
+  if (!(v > 0)) return 1;
+  const mag = Math.pow(10, Math.floor(Math.log10(v)));
+  for (const m of [1, 1.5, 2, 2.5, 4, 5, 7.5]) {
+    if (v <= mag * m) return mag * m;
+  }
+  return mag * 10;
+}
+function otDay(iso) {
+  const p = String(iso).split('-');
+  return p.length === 3 ? p[1] + '/' + p[2] : String(iso);
+}
+
+function paintObsTrends() {
+  const host = $('#obsTrends');
+  if (!host) return;
+  host.innerHTML = renderObsTrends(gObsTrend);
+  /* Bar widths come from the measured container. If the panel had no width yet
+     (section revealed in the same frame), re-lay out once it does. */
+  if (gObsTrend.length && !host.clientWidth) {
+    requestAnimationFrame(() => {
+      if (host.clientWidth) host.innerHTML = renderObsTrends(gObsTrend);
+    });
+  }
+}
 
 function renderObsTrends(series) {
-  if (!series.length) return '<div style="color:var(--muted);font-size:13px">No history yet.</div>';
-  const max = Math.max(1, ...series.map(s => s.operations));
-  const bars = series.map(s => {
-    const hgt = Math.round(6 + 54 * s.operations / max);
-    const col = s.success_rate_pct >= 90 ? 'var(--green)' : s.success_rate_pct >= 60
-      ? 'var(--amber)' : 'var(--red)';
-    return '<div title="' + esc(s.date) + ': ' + s.operations + ' ops, '
-      + s.success_rate_pct + '% ok" style="flex:1;min-width:14px;display:flex;'
-      + 'flex-direction:column;align-items:center;gap:3px">'
-      + '<div style="width:100%;max-width:26px;height:' + hgt + 'px;background:' + col
-      + ';border-radius:3px 3px 0 0"></div>'
-      + '<span style="font-size:9px;color:#98a0ad;transform:rotate(-45deg);white-space:nowrap">'
-      + esc(s.date.slice(5)) + '</span></div>';
-  }).join('');
-  return '<div style="display:flex;gap:5px;align-items:flex-end;min-height:80px;'
-    + 'overflow-x:auto;padding-bottom:14px">' + bars + '</div>'
-    + '<div style="font-size:11px;color:var(--muted)">Bar height = operations/day; colour = daily success rate.</div>';
+  if (!series || !series.length) {
+    return '<div style="color:var(--muted);font-size:13px">No history yet.</div>';
+  }
+  const mode = gObsTrendMode;
+  const host = $('#obsTrends');
+  const n = series.length;
+
+  /* ---- summary numbers (the panel used to show none) ---- */
+  const tOps = series.reduce((a, s) => a + (s.operations || 0), 0);
+  const tOk = series.reduce((a, s) => a + (s.ok || 0), 0);
+  const tFail = series.reduce((a, s) => a + (s.failed || 0), 0);
+  const overall = tOk + tFail ? Math.round(1000 * tOk / (tOk + tFail)) / 10 : null;
+  const rated = series.filter(s => otSettled(s));
+  const worst = rated.reduce((a, s) =>
+    a && a.success_rate_pct <= s.success_rate_pct ? a : s, null);
+  /* Median, not mean: one job whose wall-clock spanned a day drags a mean of
+     daily means into the hours and buries a typical ~1 s operation. The mean
+     is still visible — the Duration view plots the outlier day explicitly. */
+  const durs = series.filter(s => s.mean_duration_ms != null)
+    .map(s => s.mean_duration_ms).sort((a, b) => a - b);
+  const mid = Math.floor(durs.length / 2);
+  const medDur = !durs.length ? null
+    : durs.length % 2 ? durs[mid] : (durs[mid - 1] + durs[mid]) / 2;
+  let delta = null;
+  if (rated.length >= 2) {
+    const h = Math.floor(rated.length / 2);
+    const avg = a => a.reduce((x, s) => x + s.success_rate_pct, 0) / a.length;
+    delta = Math.round(10 * (avg(rated.slice(h)) - avg(rated.slice(0, h)))) / 10;
+  }
+  const kpi = (label, val, sub) =>
+    '<div class="obs-kpi"><dt>' + label + '</dt><dd>' + val
+    + (sub ? ' <small>' + sub + '</small>' : '') + '</dd></div>';
+  const dTone = delta == null || Math.abs(delta) < 5 ? 'var(--ink)'
+    : delta > 0 ? 'var(--green)' : 'var(--red)';
+  const kpis = '<dl class="obs-kpis">'
+    + kpi('Operations', tOps.toLocaleString(), 'over ' + n + ' day' + (n > 1 ? 's' : ''))
+    + kpi('Success rate', overall == null ? '—' : overall + '%',
+          tFail ? tFail.toLocaleString() + ' failed' : 'no failures')
+    + kpi('Rate change', delta == null ? '—'
+          : '<span style="color:' + dTone + '">' + (delta > 0 ? '+' : '') + delta + ' pp</span>',
+          'first half → second')
+    + kpi('Typical duration', medDur == null ? '—' : esc(obsMs(medDur)),
+          'median day')
+    + kpi('Worst day', worst ? worst.success_rate_pct + '%' : '—',
+          worst ? esc(worst.date) : 'nothing settled')
+    + '</dl>';
+
+  /* ---- vertical scale first: the axis labels decide the left gutter ---- */
+  const vals = series.map(s => mode === 'ops' ? (s.operations || 0)
+    : mode === 'rate' ? (otRate(s) || 0) : (s.mean_duration_ms || 0));
+  const yMax = mode === 'rate' ? 100 : otNice(Math.max(...vals));
+  const fmtY = v => mode === 'ops' ? String(Math.round(v))
+    : mode === 'rate' ? v + '%' : obsMs(v);
+  /* Fewer ticks on a tiny scale, so 0/1 never prints as "0 0 1 1 1". */
+  const ticks = mode === 'rate' ? 4 : Math.max(1, Math.min(4, Math.floor(yMax)));
+  const yLabels = [];
+  for (let t = 0; t <= ticks; t++) yLabels.push(fmtY(yMax * t / ticks));
+  const labW = Math.max(...yLabels.map(s => s.length));
+
+  /* ---- geometry: crisp pixels, scrolls sideways when history is long ---- */
+  const avail = Math.max(320, (host && host.clientWidth ? host.clientWidth : 900) - 2);
+  const padL = Math.max(30, 12 + labW * 6), padR = mode === 'ops' ? 42 : 14;
+  const padT = 14, padB = 42;
+  const slot = Math.max(30, Math.min(72, (avail - padL - padR) / n));
+  const W = Math.max(avail, Math.round(padL + padR + n * slot));
+  const H = 236;
+  const plotW = W - padL - padR, plotH = H - padT - padB;
+  const sw = plotW / n;
+  const bw = Math.max(6, Math.min(30, sw * 0.6));
+  const x = i => padL + sw * i + sw / 2;
+  const base = padT + plotH;
+  const y = v => base - plotH * Math.min(1, v / yMax);
+
+  /* gridlines + left axis */
+  let g = '';
+  for (let t = 0; t <= ticks; t++) {
+    const v = yMax * t / ticks, yy = Math.round(y(v)) + 0.5;
+    g += '<line class="' + (t ? 'ot-grid' : 'ot-zero') + '" x1="' + padL + '" x2="'
+      + (W - padR) + '" y1="' + yy + '" y2="' + yy + '"/>'
+      + '<text class="ot-axis" x="' + (padL - 8) + '" y="' + (yy + 3.5)
+      + '" text-anchor="end">' + esc(yLabels[t]) + '</text>';
+  }
+  /* healthy-threshold reference, on whichever axis carries percentages */
+  if (mode === 'ops' || mode === 'rate') {
+    const ry = Math.round(mode === 'rate' ? y(OT_HEALTHY)
+      : base - plotH * OT_HEALTHY / 100) + 0.5;
+    g += '<line class="ot-ref" x1="' + padL + '" x2="' + (W - padR)
+      + '" y1="' + ry + '" y2="' + ry + '"/>';
+  }
+  /* right axis: percent scale for the success-rate overlay */
+  if (mode === 'ops') {
+    for (let t = 0; t <= 4; t++) {
+      const yy = Math.round(base - plotH * t / 4) + 3.5;
+      g += '<text class="ot-axis" x="' + (W - padR + 8) + '" y="' + yy + '">'
+        + (t * 25) + '%</text>';
+    }
+  }
+
+  /* x labels: thin them out instead of rotating — rotated text was unreadable */
+  const step = Math.max(1, Math.ceil(n / Math.floor(plotW / 46)));
+  let xl = '';
+  series.forEach((s, i) => {
+    if (i % step && i !== n - 1) return;
+    xl += '<text class="ot-xlab" x="' + x(i).toFixed(1) + '" y="' + (base + 16)
+      + '" text-anchor="middle">' + esc(otDay(s.date)) + '</text>';
+  });
+
+  /* ---- bars ---- */
+  let bars = '';
+  series.forEach((s, i) => {
+    const cx = x(i), left = cx - bw / 2;
+    let seg = '';
+    if (mode === 'ops') {
+      const parts = [
+        [s.ok || 0, OT_COL.ok],
+        [s.failed || 0, OT_COL.failed],
+        [Math.max(0, (s.operations || 0) - otSettled(s)), OT_COL.pend],
+      ];
+      let acc = 0;
+      parts.forEach(([v, c]) => {
+        if (v <= 0) return;
+        const h = plotH * v / yMax;
+        const top = base - plotH * (acc + v) / yMax;
+        acc += v;
+        seg += '<rect x="' + left.toFixed(1) + '" y="' + top.toFixed(1) + '" width="'
+          + bw.toFixed(1) + '" height="' + Math.max(1, h).toFixed(1)
+          + '" fill="' + c + '" rx="1.5"/>';
+      });
+    } else {
+      const v = mode === 'rate' ? otRate(s) : s.mean_duration_ms;
+      if (v == null) {
+        seg += '<rect x="' + left.toFixed(1) + '" y="' + (base - 3) + '" width="'
+          + bw.toFixed(1) + '" height="3" fill="' + OT_COL.pend + '" rx="1.5"/>';
+      } else {
+        const top = y(v);
+        seg += '<rect x="' + left.toFixed(1) + '" y="' + top.toFixed(1) + '" width="'
+          + bw.toFixed(1) + '" height="' + Math.max(1, base - top).toFixed(1)
+          + '" fill="' + (mode === 'rate' ? otBand(v) : OT_COL.rate) + '" rx="2"/>';
+      }
+    }
+    bars += '<g class="ot-slot">'
+      + '<rect class="ot-band" x="' + (cx - sw / 2).toFixed(1) + '" y="' + padT
+      + '" width="' + sw.toFixed(1) + '" height="' + plotH + '" rx="3"/>'
+      + seg
+      + '<rect class="ot-hit" data-i="' + i + '" tabindex="0" role="img" aria-label="'
+      + esc(otAria(s)) + '" x="' + (cx - sw / 2).toFixed(1) + '" y="' + padT
+      + '" width="' + sw.toFixed(1) + '" height="' + plotH + '"/></g>';
+  });
+
+  /* ---- success-rate overlay (volume view only), broken at unsettled days ---- */
+  let line = '';
+  if (mode === 'ops') {
+    let run = [];
+    const flush = () => {
+      if (run.length > 1) {
+        line += '<polyline class="ot-line" points="' + run.join(' ') + '"/>';
+      }
+      run = [];
+    };
+    series.forEach((s, i) => {
+      const r = otRate(s);
+      if (r == null) { flush(); return; }
+      const py = base - plotH * r / 100;
+      run.push(x(i).toFixed(1) + ',' + py.toFixed(1));
+      line += '<circle class="ot-dot" cx="' + x(i).toFixed(1) + '" cy="' + py.toFixed(1)
+        + '" r="3"/>';
+    });
+    flush();
+  }
+
+  /* ---- controls ---- */
+  const segs = '<div class="seg" role="tablist" aria-label="Trend metric">'
+    + OT_MODES.map(([k, lbl]) =>
+      '<button role="tab" data-otmode="' + k + '" aria-selected="'
+      + (mode === k) + '">' + lbl + '</button>').join('') + '</div>';
+  const head = '<div class="ot-head">' + segs + '<span class="grow"></span>'
+    + '<button type="button" class="jact" data-ottable="1" aria-expanded="'
+    + gObsTrendTable + '">' + (gObsTrendTable ? 'Hide table' : 'Show table') + '</button>'
+    + '<button type="button" class="jact" data-otcsv="1">Export CSV</button></div>';
+
+  const legend = '<div class="ot-legend">'
+    + (mode === 'ops'
+      ? '<span><i style="background:' + OT_COL.ok + '"></i>Succeeded</span>'
+        + '<span><i style="background:' + OT_COL.failed + '"></i>Failed</span>'
+        + '<span><i style="background:' + OT_COL.pend + '"></i>In flight</span>'
+        + '<span><i class="ln" style="background:' + OT_COL.rate + '"></i>Success rate (right axis)</span>'
+      : mode === 'rate'
+        ? '<span><i style="background:' + OT_COL.ok + '"></i>≥' + OT_HEALTHY + '%</span>'
+          + '<span><i style="background:#B45309"></i>60–' + (OT_HEALTHY - 1) + '%</span>'
+          + '<span><i style="background:' + OT_COL.failed + '"></i>&lt;60%</span>'
+          + '<span><i style="background:' + OT_COL.pend + '"></i>Nothing settled</span>'
+        : '<span><i style="background:' + OT_COL.rate + '"></i>Mean duration per operation</span>')
+    + (mode === 'dur' ? ''
+      : '<span><i class="ln" style="background:var(--amber)"></i>' + OT_HEALTHY
+        + '% healthy threshold</span>')
+    + '</div>';
+
+  const note = '<div class="ot-note">Hover or tab through a day for its full '
+    + 'breakdown. Days with nothing settled yet are shown as gaps, not as 0%.</div>';
+
+  return '<div class="ot">' + kpis + head
+    + '<div class="ot-plot"><svg width="' + W + '" height="' + H
+    + '" viewBox="0 0 ' + W + ' ' + H + '" role="group" aria-label="Daily '
+    + esc(OT_MODES.filter(m => m[0] === mode)[0][1]) + '">'
+    + g + bars + line + xl + '</svg></div>'
+    + legend + note
+    + '<div class="ot-tip" id="obsTrendTip" aria-hidden="true"></div>'
+    + (gObsTrendTable ? otTable(series) : '') + '</div>';
+}
+
+function otAria(s) {
+  const r = otRate(s);
+  return s.date + ': ' + (s.operations || 0) + ' operations, ' + (s.ok || 0)
+    + ' succeeded, ' + (s.failed || 0) + ' failed, '
+    + (r == null ? 'success rate not yet measurable' : r + ' percent success')
+    + (s.mean_duration_ms != null ? ', mean duration ' + obsMs(s.mean_duration_ms) : '');
+}
+
+function otTipHtml(s) {
+  const r = otRate(s), inflight = Math.max(0, (s.operations || 0) - otSettled(s));
+  const row = (lbl, val, col) => '<div class="r"><span>'
+    + (col ? '<i class="sw" style="background:' + col + '"></i>' : '') + lbl
+    + '</span><em>' + val + '</em></div>';
+  return '<b>' + esc(s.date) + '</b>'
+    + row('Operations', (s.operations || 0).toLocaleString())
+    + row('Succeeded', (s.ok || 0).toLocaleString(), OT_COL.ok)
+    + row('Failed', (s.failed || 0).toLocaleString(), OT_COL.failed)
+    + (inflight ? row('In flight', inflight.toLocaleString(), OT_COL.pend) : '')
+    + row('Success rate', r == null
+        ? '<span style="color:var(--muted)">n/a</span>'
+        : '<span style="color:' + otBand(r) + '">' + r + '%</span>')
+    + row('Mean duration', esc(obsMs(s.mean_duration_ms)));
+}
+
+function otTable(series) {
+  return '<div class="ot-table"><table><caption class="ot-note" '
+    + 'style="text-align:left;margin:0 0 6px">Daily figures behind the chart'
+    + '</caption><thead><tr><th scope="col">Date</th><th scope="col">Operations</th>'
+    + '<th scope="col">Succeeded</th><th scope="col">Failed</th>'
+    + '<th scope="col">In flight</th><th scope="col">Success rate</th>'
+    + '<th scope="col">Mean duration</th></tr></thead><tbody>'
+    + series.map(s => {
+      const r = otRate(s);
+      return '<tr><th scope="row" style="font-weight:500">' + esc(s.date) + '</th>'
+        + '<td>' + (s.operations || 0) + '</td><td>' + (s.ok || 0) + '</td>'
+        + '<td>' + (s.failed || 0) + '</td>'
+        + '<td>' + Math.max(0, (s.operations || 0) - otSettled(s)) + '</td>'
+        + '<td style="color:' + otBand(r) + ';font-weight:600">'
+        + (r == null ? '—' : r + '%') + '</td>'
+        + '<td>' + esc(obsMs(s.mean_duration_ms)) + '</td></tr>';
+    }).join('') + '</tbody></table></div>';
+}
+
+function otExportCsv() {
+  const rows = [['date', 'operations', 'succeeded', 'failed', 'in_flight',
+                 'success_rate_pct', 'mean_duration_ms']];
+  gObsTrend.forEach(s => rows.push([s.date, s.operations || 0, s.ok || 0,
+    s.failed || 0, Math.max(0, (s.operations || 0) - otSettled(s)),
+    otRate(s) == null ? '' : s.success_rate_pct,
+    s.mean_duration_ms == null ? '' : s.mean_duration_ms]));
+  const blob = new Blob([rows.map(r => r.join(',')).join('\n')],
+    {type: 'text/csv;charset=utf-8'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'performance-trends.csv';
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+}
+
+/* Delegated once on the container, which survives every re-render. */
+function wireObsTrends() {
+  const host = $('#obsTrends');
+  if (!host || host.dataset.wired) return;
+  host.dataset.wired = '1';
+
+  const showTip = hit => {
+    const tip = $('#obsTrendTip'), s = gObsTrend[+hit.dataset.i];
+    if (!tip || !s) return;
+    tip.innerHTML = otTipHtml(s);
+    tip.classList.add('on');
+    const hb = hit.getBoundingClientRect(), pb = host.getBoundingClientRect();
+    const left = hb.left - pb.left + hb.width / 2 - tip.offsetWidth / 2;
+    tip.style.left = Math.max(0, Math.min(host.clientWidth - tip.offsetWidth, left)) + 'px';
+    tip.style.top = Math.max(0, hb.top - pb.top + 8) + 'px';
+  };
+  const hideTip = () => {
+    const tip = $('#obsTrendTip');
+    if (tip) tip.classList.remove('on');
+  };
+
+  host.addEventListener('mouseover', e => {
+    const hit = e.target.closest('.ot-hit');
+    if (hit) showTip(hit); else if (!e.target.closest('.ot-tip')) hideTip();
+  });
+  host.addEventListener('mouseleave', hideTip);
+  host.addEventListener('focusin', e => {
+    const hit = e.target.closest('.ot-hit');
+    if (hit) showTip(hit);
+  });
+  host.addEventListener('focusout', e => {
+    if (e.target.closest('.ot-hit')) hideTip();
+  });
+  host.addEventListener('click', e => {
+    const m = e.target.closest('[data-otmode]');
+    if (m) { gObsTrendMode = m.dataset.otmode; paintObsTrends(); return; }
+    if (e.target.closest('[data-ottable]')) {
+      gObsTrendTable = !gObsTrendTable; paintObsTrends(); return;
+    }
+    if (e.target.closest('[data-otcsv]')) otExportCsv();
+  });
+  /* Left/right arrows walk the series once a day has focus. */
+  host.addEventListener('keydown', e => {
+    const hit = e.target.closest('.ot-hit');
+    if (!hit || (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight')) return;
+    const hits = [...host.querySelectorAll('.ot-hit')];
+    const next = hits[hits.indexOf(hit) + (e.key === 'ArrowRight' ? 1 : -1)];
+    if (next) { e.preventDefault(); next.focus(); }
+  });
+  /* Bar widths are computed from the container, so re-lay out on resize. */
+  let rt = null;
+  window.addEventListener('resize', () => {
+    if (!gObsTrend.length || !host.offsetParent) return;
+    clearTimeout(rt);
+    rt = setTimeout(paintObsTrends, 150);
+  });
 }
 
 if ($('#obsRefresh')) $('#obsRefresh').onclick = loadObservability;
@@ -10356,10 +12377,10 @@ $('#agRun') && ($('#agRun').onclick = async () => {
   const err = $('#agErr'); err.style.display = 'none';
   $('#agStatus').textContent = 'Running agent swarm…';
   try {
-    const files = await Promise.all([...$('#agFiles').files].map(f =>
+    const files = await Promise.all(pdropFiles('ag').map(f =>
       new Promise((res, rej) => {
         const r = new FileReader();
-        r.onload = () => res({name: f.webkitRelativePath || f.name, content: r.result});
+        r.onload = () => res({name: pdropPath(f), content: r.result});
         r.onerror = rej;
         r.readAsText(f);
       })));
@@ -10604,23 +12625,101 @@ async function loadReports() {
 // The agent approval queue — visible to every signed-in member so an
 // eligible approver (not the requester) can find and decide pending
 // requests; the sidebar badge advertises pending work without opening it.
+// A rejection recorded against the requester is a WITHDRAWAL: the server never
+// lets anyone approve their own request, so that is the only decision a runner
+// can make on their own run (web/app.py agents_reject). Calling both of them
+// "rejected" made a routine self-cancel look like a governance veto.
+function aqWithdrawn(a) {
+  const by = (a.approver || '').trim().toLowerCase();
+  const req = (a.requested_by || '').trim().toLowerCase();
+  return a.status === 'withdrawn'
+      || (a.status === 'rejected' && !!by && by === req);
+}
+function aqOutcome(a) {
+  if (a.status === 'approved') return {key: 'approved', label: 'Approved', tone: 'ok'};
+  if (aqWithdrawn(a)) return {key: 'withdrawn', label: 'Withdrawn', tone: ''};
+  if (a.status === 'rejected') return {key: 'rejected', label: 'Rejected', tone: 'bad'};
+  // badge() writes its text as HTML, and this branch carries a server value
+  return {key: a.status, label: esc(a.status || 'unknown'), tone: 'warn'};
+}
+function aqConfidence(a) {
+  const pct = Math.round((a.confidence || 0) * 100);
+  return '<span class="cbar' + (pct < 70 ? ' low' : '') + '">'
+    + '<span class="t"><span class="f" style="width:' + Math.max(0, Math.min(100, pct)) + '%"></span></span>'
+    + '<span class="v">' + pct + '%</span></span>';
+}
+// One block per run: header line (id, who ran it, how it came out) + its rows.
+function aqRunBlock(runId, rows) {
+  const ok = rows.filter(a => aqOutcome(a).key === 'approved').length;
+  const wd = rows.filter(a => aqOutcome(a).key === 'withdrawn').length;
+  const rj = rows.filter(a => aqOutcome(a).key === 'rejected').length;
+  const chip = rj ? badge(rj + ' rejected', 'var(--red)')
+    : wd && !ok ? badge(wd + ' withdrawn by runner', 'var(--amber)')
+    : wd ? badge(ok + ' approved · ' + wd + ' withdrawn', 'var(--amber)')
+    : badge(ok + ' of ' + rows.length + ' approved', 'var(--green)');
+  const who = (rows.find(a => a.requested_by) || {}).requested_by || '';
+  return '<div class="aqrun"><span class="rid">' + esc(runId || '—') + '</span>'
+    + (who ? '<span class="who">run by ' + esc(who) + '</span>' : '')
+    + chip + '</div>'
+    + '<table class="aqtbl"><colgroup><col style="width:26%"><col style="width:18%">'
+    + '<col style="width:34%"><col style="width:22%"></colgroup>'
+    + rows.map(a => {
+        const o = aqOutcome(a);
+        return '<tr><td class="act" title="' + esc(a.agent_id || '') + '">'
+          + esc((a.agent_id || '').replace(/_/g, ' ')) + '</td>'
+          + '<td>' + aqConfidence(a) + '</td>'
+          + '<td class="mail" title="' + esc(a.approver || '') + '">' + esc(a.approver || '—') + '</td>'
+          + '<td>' + badge(o.label, o.tone === 'ok' ? 'var(--green)'
+                                  : o.tone === 'bad' ? 'var(--red)'
+                                  : o.tone === 'warn' ? 'var(--amber)' : '') + '</td></tr>';
+      }).join('')
+    + '</table>';
+}
 async function loadApprovalQueue() {
   if (!$('#aqList')) return;
   try {
     const d = await api('/api/agents/approvals?scope=all');
-    const pend = (d.approvals || []).filter(a => a.status === 'pending');
-    const decided = (d.approvals || []).filter(a => a.status !== 'pending').slice(-8).reverse();
-    $('#aqCount').textContent = pend.length ? '(' + pend.length + ' pending)' : '';
+    const all = d.approvals || [];
+    const pend = all.filter(a => a.status === 'pending');
+    const done = all.filter(a => a.status !== 'pending');
+    // counts run over EVERY decision, not just the page of recent ones shown
+    const n = k => done.filter(a => aqOutcome(a).key === k).length;
+    $('#aqStats').innerHTML = card(done.length, 'Decisions')
+      + card(n('approved'), 'Approved', n('approved') ? 'var(--green)' : 'var(--muted)')
+      + card(n('withdrawn'), 'Withdrawn')
+      + card(n('rejected'), 'Rejected', n('rejected') ? 'var(--red)' : 'var(--muted)');
+    $('#aqCount').textContent = pend.length ? pend.length + ' waiting' : '';
     $('#aqEscalation').innerHTML = pend.some(a => a.no_eligible_approver) ? approvalEscalationBanner() : '';
     $('#aqList').innerHTML = pend.map(a => approvalRow(a, true)).join('')
-      || '<div style="color:var(--muted);font-size:13px">No agent actions are waiting for approval.</div>';
-    $('#aqDecided').innerHTML = decided.length
-      ? '<div style="margin:12px 0 6px;font-size:11.5px;letter-spacing:.6px;color:var(--ink3);font-weight:600">RECENT DECISIONS</div>'
-        + decided.map(a => approvalRow(a, true)).join('')
-      : '';
+      || '<div class="aqempty">&#10003; Nothing waiting. Consequential actions appear here when a swarm runs.</div>';
+    // newest run first; rows keep the order the queue reports them in
+    const recent = done.slice(-12).reverse();
+    const order = [], byRun = {};
+    recent.forEach(a => {
+      const k = a.run_id || '';
+      if (!byRun[k]) { byRun[k] = []; order.push(k); }
+      byRun[k].push(a);
+    });
+    $('#aqDecided').innerHTML = order.length
+      ? order.map(k => aqRunBlock(k, byRun[k].slice().reverse())).join('')
+      : '<div class="aqempty">No decisions recorded yet.</div>';
+    // Name the action class rather than asserting one: a mixed set of classes
+    // would make the single-sentence claim false.
+    const classes = [...new Set(recent.map(a => a.action_class).filter(Boolean))];
+    $('#aqFoot').textContent = recent.length && classes.length === 1
+      ? 'All ' + recent.length + ' are ' + classes[0] + ' actions — they produce artifacts or '
+        + 'change systems, so approval is always required.'
+      : recent.length ? 'Action classes in view: ' + classes.join(', ') + '.' : '';
     updateGovBadge(d.pending_count || 0);
   } catch (e) { /* queue stays empty; server enforces access */ }
 }
+// The audit trail is rendered per run on Reports -> Agentic AI; there is no
+// separate page for it, so this goes to where it actually lives.
+$('#aqAudit').onclick = () => {
+  document.querySelector('nav a[data-page="reports"]').click();
+  const tab = $('#rtAg');
+  if (tab) tab.click();
+};
 function updateGovBadge(n) {
   const nav = document.querySelector('nav a[data-page="governance"]');
   if (!nav) return;

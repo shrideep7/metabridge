@@ -9,8 +9,10 @@ from metabridge.engine import (
     WAREHOUSE_FORMATS, compatibility_matrix, evaluate_compatibility,
 )
 
+# encoding is explicit: the console is UTF-8 and read_text() would otherwise
+# use the platform default, which fails collection outright on a cp1252 host
 CONSOLE = (Path(__file__).resolve().parent.parent / "web" / "templates" /
-           "console.html").read_text()
+           "console.html").read_text(encoding="utf-8")
 
 
 # ---------------------------------------------------------------------------

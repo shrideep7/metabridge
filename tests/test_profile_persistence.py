@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 CONSOLE = (Path(__file__).resolve().parents[1]
-           / "web" / "templates" / "console.html").read_text()
+           / "web" / "templates" / "console.html").read_text(encoding="utf-8")
 
 
 @pytest.fixture()

@@ -258,7 +258,7 @@ def test_self_guard_not_bypassable_via_whitespace_or_case(workspace):
 def test_console_gates_actions_by_permission():
     from pathlib import Path
     console = (Path(__file__).resolve().parents[1]
-               / "web" / "templates" / "console.html").read_text()
+               / "web" / "templates" / "console.html").read_text(encoding="utf-8")
     assert "function can(p)" in console
     assert "applyRbacUi" in console and "RBAC_UI" in console
     # run-class and settings-class controls are covered by the static map
