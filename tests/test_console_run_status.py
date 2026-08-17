@@ -15,8 +15,12 @@ regression guard is that it no longer appears anywhere.
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
-CONSOLE = (REPO / "web" / "templates" / "console.html").read_text(
+# CONSOLE is the shell markup + its JS bundle concatenated, since the
+# assertions below check JS symbols that now live in console.js.
+CONSOLE = ((REPO / "web" / "templates" / "console.html").read_text(
     encoding="utf-8")
+    + (REPO / "web" / "static" / "js" / "console.js").read_text(
+        encoding="utf-8"))
 APP = (REPO / "web" / "app.py").read_text(encoding="utf-8")
 
 

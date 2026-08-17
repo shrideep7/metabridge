@@ -1872,8 +1872,9 @@ def test_console_renders_the_oracle_object_classes():
     """The estate asset list is an explicit allowlist, so a class the backend
     returns but the console does not push would silently vanish."""
     from pathlib import Path
-    html = (Path(__file__).resolve().parent.parent / "web" / "templates"
-            / "console.html").read_text(encoding="utf-8")
+    _web = Path(__file__).resolve().parent.parent / "web"
+    html = ((_web / "templates" / "console.html").read_text(encoding="utf-8")
+            + (_web / "static" / "js" / "console.js").read_text(encoding="utf-8"))
     for cls in ("d.packages", "d.triggers", "d.synonyms", "d.db_links",
                 "d.scheduler_jobs", "d.queues", "d.types", "d.rules",
                 "d.indexes", "d.scheduler_programs", "d.scheduler_schedules",
@@ -1892,8 +1893,9 @@ def test_every_object_class_the_backend_returns_is_rendered(ora_driver,
     real introspect result rather than a hand-kept list, so adding a class
     to the backend and forgetting the console fails HERE."""
     from pathlib import Path
-    html = (Path(__file__).resolve().parent.parent / "web" / "templates"
-            / "console.html").read_text(encoding="utf-8")
+    _web = Path(__file__).resolve().parent.parent / "web"
+    html = ((_web / "templates" / "console.html").read_text(encoding="utf-8")
+            + (_web / "static" / "js" / "console.js").read_text(encoding="utf-8"))
     # keys that are not object classes: scalars, tables/views (rendered by
     # their own branch), and the report's own metadata
     not_a_class = {
@@ -1994,8 +1996,9 @@ def test_console_renders_the_multi_level_estate_filters():
     needs. There is no browser in CI, so this asserts the markup and the
     wiring exist rather than the rendered behaviour."""
     from pathlib import Path
-    html = (Path(__file__).resolve().parent.parent / "web" / "templates"
-            / "console.html").read_text(encoding="utf-8")
+    _web = Path(__file__).resolve().parent.parent / "web"
+    html = ((_web / "templates" / "console.html").read_text(encoding="utf-8")
+            + (_web / "static" / "js" / "console.js").read_text(encoding="utf-8"))
     # Level 2 control + the context strip that hosts levels 1 and 3
     assert 'id="estateSchema"' in html
     assert 'id="estateContext"' in html

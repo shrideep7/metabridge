@@ -46,6 +46,10 @@
   .meter { height:5px; border-radius:4px; background:rgba(60,80,120,.4); margin-top:8px; overflow:hidden; }
   .meter i { display:block; height:100%; width:0; border-radius:4px; background:#f87171; transition:.25s; }
   .hint { font-size:12px; color:#7d92b5; margin-top:5px; }
+  /* Only `company` is optional; marking it matches the convention the
+     connector dialog already uses ("INSTANCE URL *"), so the four fields
+     no longer look uniformly mandatory. */
+  label .opt { font-weight:400; text-transform:none; letter-spacing:0; color:#7d92b5; }
   .btn { width:100%; margin-top:26px; padding:14px; border:none; border-radius:11px; font-size:15.5px; font-weight:700; color:#04121f; cursor:pointer; background:linear-gradient(135deg,#3ddad0,#4da3ff); box-shadow:0 10px 26px rgba(50,180,190,.3); transition:.18s; }
   .btn:hover { transform:translateY(-1px); }
   .btn:disabled { opacity:.6; cursor:wait; transform:none; }
@@ -61,7 +65,7 @@
   <div class="orb o1"></div><div class="orb o2"></div>
   <div class="brand">Meta<b>Bridge</b></div>
   <div class="pitch">
-    <h2>Your data estate,<br><span>modernized in three steps.</span></h2>
+    <h2>Your first migration,<br><span>in three steps.</span></h2>
     <div class="steps">
       <div class="step"><div class="n">1</div><div><b>Upload or point</b>
         <span>A dbt project, PowerCenter export, IDMC bundle — or an SAP table manifest.</span></div></div>
@@ -79,22 +83,40 @@
   <div class="sub" id="subtitle">The first account becomes the workspace owner.</div>
   <form id="f">
     <div class="row">
-      <div><label>Full name</label><input name="name" placeholder="Ada Lovelace" required></div>
-      <div><label>Company</label><input name="company" placeholder="Acme Analytics"></div>
+      <div><label for="name">Full name</label><input id="name" name="name" autocomplete="name"
+           placeholder="Ada Lovelace" required></div>
+      <div><label for="company">Company <span class="opt">(optional)</span></label>
+           <input id="company" name="company" autocomplete="organization"
+           placeholder="Acme Analytics"></div>
     </div>
-    <label>Work email</label>
-    <input type="email" name="email" placeholder="you@company.com" required>
-    <label>Password</label>
+    <label for="email">Work email</label>
+    <input type="email" id="email" name="email" autocomplete="username email"
+           placeholder="you@company.com" required>
+    <label for="pw">Password</label>
     <div class="field">
-      <input type="password" name="password" id="pw" placeholder="8+ characters" required minlength="8">
+      <input type="password" name="password" id="pw" autocomplete="new-password"
+             placeholder="At least 8 characters" required minlength="8">
       <button type="button" class="toggle" id="tg">SHOW</button>
     </div>
     <div class="meter"><i id="meterBar"></i></div>
-    <div class="hint" id="hint">Use 12+ characters with a mix of cases, numbers and symbols.</div>
+    <!-- States the rule the server actually enforces (MIN_PASSWORD_LENGTH = 8,
+         web/auth.py). The old copy demanded 12+ while minlength was 8, so the
+         page asked for one thing and accepted another. -->
+    <div class="hint" id="hint">At least 8 characters. 12+ with mixed cases,
+      numbers and symbols is much stronger.</div>
     <button class="btn" type="submit">Create workspace →</button>
     <div class="err" id="err"></div>
   </form>
-  <div class="alt">Already have an account? <a href="/login">Sign in</a></div>
+  <!-- Shown instead of the form once /api/v1/me says an owner already exists —
+       the form used to stay fully fillable (name, email, a password the user
+       just invented, the strength meter responding) right up until submit
+       returned 403, so the refusal arrived after the effort instead of before it. -->
+  <div id="joinBlocked" style="display:none">
+    <div class="hint" style="margin-top:0;font-size:13.5px">Ask them to add you from
+      <b>Settings &rarr; Members</b> inside the console, or sign in if you already have an invite.</div>
+    <a class="btn" style="display:block;box-sizing:border-box;text-align:center;text-decoration:none" href="/login">Sign in →</a>
+  </div>
+  <div class="alt" id="altLine">Already have an account? <a href="/login">Sign in</a></div>
 </div></div>
 <script>
 const tg = document.getElementById('tg'), pw = document.getElementById('pw'), bar = document.getElementById('meterBar');
@@ -112,7 +134,10 @@ fetch('/api/v1/me').then(r => r.json()).then(d => {
   if (!d.first_run && !d.user) {
     document.getElementById('title').textContent = 'Join this workspace';
     document.getElementById('subtitle').textContent =
-      'This instance already has an owner — ask them to sign you up from a signed-in browser, or sign in.';
+      'This instance already has an owner — you need an invite to sign up here.';
+    document.getElementById('f').style.display = 'none';
+    document.getElementById('altLine').style.display = 'none';
+    document.getElementById('joinBlocked').style.display = 'block';
   }
 }).catch(() => {});
 document.getElementById('f').onsubmit = async ev => {

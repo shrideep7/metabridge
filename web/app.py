@@ -38,10 +38,10 @@ app = FastAPI(
                 "connector marketplace, and US/EU data governance.",
 )
 
-# Compress responses over 1 KB. The console shell alone is ~570 KB of inlined
-# CSS/JS and is served no-store (see console()), so EVERY page load re-sent it
-# uncompressed; text this repetitive gzips to roughly a quarter of its size.
-# Applies to /api JSON too. Starlette skips it unless the client sends
+# Compress responses over 1 KB. console.js/console.css are ~500 KB combined and,
+# unlike the console shell, are cacheable (see console()) but still worth
+# gzipping on first load; text this repetitive gzips to roughly a quarter of its
+# size. Applies to /api JSON too. Starlette skips it unless the client sends
 # Accept-Encoding: gzip, and already-compressed downloads (the job .zip
 # StreamingResponse) gain nothing but lose nothing either.
 app.add_middleware(GZipMiddleware, minimum_size=1000)
@@ -289,6 +289,11 @@ def _required_permission(path: str, method: str) -> str:
     # acknowledging one's own notifications is a read-side action
     if _at(path, "/api/system/notifications/seen"):
         return "jobs:read"
+    # Batched report reads. POST only because the id list goes in the body (a
+    # 20-id query string is fragile); it reads and writes nothing, so it must
+    # stay jobs:read or a viewer could not load the Overview at all.
+    if _at(path, "/api/jobs/reports"):
+        return "jobs:read"
     # workspaces: listing and switching your OWN active workspace are
     # read-side (any member); creating a workspace and managing its member
     # roster are authorized in-handler (account admin / workspace admin)
@@ -394,20 +399,30 @@ def reset_password_page() -> str:
 _CONSOLE_BUILD: dict = {"key": None, "id": ""}
 
 
+_CONSOLE_ASSETS = (
+    _TPL / "console.html",
+    _STATIC / "css" / "console.css",
+    _STATIC / "js" / "console.js",
+)
+
+
 def _console_build_id() -> str:
-    """Short content hash of the console template — the BUILD STAMP. Shown in
-    the UI and returned by /api/v1/info so "which bytes is this browser
-    actually running?" is answerable at a glance (a stale cached page or an
-    image built from older code shows a different id)."""
-    f = _TPL / "console.html"
+    """Short content hash of the console shell + its CSS/JS — the BUILD STAMP.
+    Shown in the UI and returned by /api/v1/info so "which bytes is this
+    browser actually running?" is answerable at a glance (a stale cached page
+    or an image built from older code shows a different id). Also embedded as
+    a cache-busting query param on the CSS/JS <link>/<script> tags, since those
+    two files (unlike the shell) are served cacheable."""
     try:
-        st = f.stat()
+        key = tuple((f.stat().st_mtime_ns, f.stat().st_size) for f in _CONSOLE_ASSETS)
     except OSError:
         return "unknown"
-    key = (st.st_mtime_ns, st.st_size)
     if _CONSOLE_BUILD["key"] != key:
         import hashlib
-        _CONSOLE_BUILD["id"] = hashlib.sha256(f.read_bytes()).hexdigest()[:8]
+        h = hashlib.sha256()
+        for f in _CONSOLE_ASSETS:
+            h.update(f.read_bytes())
+        _CONSOLE_BUILD["id"] = h.hexdigest()[:8]
         _CONSOLE_BUILD["key"] = key
     return _CONSOLE_BUILD["id"]
 
@@ -417,12 +432,15 @@ def console() -> HTMLResponse:
     # NEVER cache the console shell: browsers heuristically cache HTML served
     # without cache headers, which pinned users to a stale build across
     # rebuilds (sections rendering blank because their JS/HTML no longer
-    # matched the server).
+    # matched the server). console.css/console.js are cache-busted instead via
+    # the ?v= build id below, so THEY can be served cacheable by StaticFiles.
+    build_id = _console_build_id()
     html = (_TPL / "console.html").read_text(encoding="utf-8")
+    html = html.replace("{{CONSOLE_BUILD_ID}}", build_id)
     return HTMLResponse(html, headers={
         "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
         "Pragma": "no-cache",
-        "X-MetaBridge-Build": _console_build_id()})
+        "X-MetaBridge-Build": build_id})
 
 
 # ---------------------------------------------------------------------------
@@ -3009,6 +3027,10 @@ def _today() -> str:
     return datetime.datetime.now().strftime("%Y-%m-%d")
 
 
+def _now_iso() -> str:
+    return datetime.datetime.now().isoformat(timespec="seconds")
+
+
 @app.get("/api/agents")
 def agents_roster():
     """The agent roster (roles, risk classes, dependencies), the default
@@ -3021,30 +3043,66 @@ def agents_roster():
 
 @app.post("/api/agents/run")
 async def agents_run(request: Request):
-    """{"files":[...] | "from_job": id, "source_format"?, "target_region"?,
-    "task_types"?: [...]} -> run the agent swarm over the uploaded/selected
-    project. Every action is scored, governed and audited; consequential
-    (GENERATE) proposals are ALWAYS held for approval — the run requester
-    cannot pre-authorize their own consequential actions (segregation of
-    duties). Approval is a separate, permissioned, audited decision."""
+    """{"files":[...] | "from_job": id, "connection_ids"?: [...],
+    "source_format"?, "target_region"?, "task_types"?: [...]} -> run the agent
+    swarm over the uploaded project, the selected saved connections, or BOTH
+    (the folder supplies the pipelines to convert, the connection supplies the
+    live estate they land in). Every action is scored, governed and audited;
+    consequential (GENERATE) proposals are ALWAYS held for approval — the run
+    requester cannot pre-authorize their own consequential actions
+    (segregation of duties). Approval is a separate, permissioned, audited
+    decision."""
     body = await _json_object(request)
     user = _require_account(request)
+    conn_ids = body.get("connection_ids") or []
+    if not isinstance(conn_ids, list):
+        raise HTTPException(422, "connection_ids must be a list")
+    conn_ids = [str(c) for c in conn_ids if str(c).strip()]
+    # Validate the selection BEFORE creating a job, so a stopped or unknown
+    # connection is a clean 422 instead of a failed job in the history.
+    conn_rows = _resolve_agent_connections(conn_ids) if conn_ids else []
+    if not conn_ids and not body.get("files") and not body.get("from_job"):
+        raise HTTPException(422, "Choose a project folder or at least one "
+                                 "connected system to run the agents on.")
     job_dir = _new_job("agents")
     try:
+        paths = []
         if body.get("from_job"):
-            root = _job_input_root(_job_dir(str(body["from_job"])))
-        else:
+            paths.append(str(_job_input_root(_job_dir(str(body["from_job"])))))
+        elif body.get("files"):
             root = _write_tree_files(body.get("files"), job_dir / "input")
             entries = [p for p in root.iterdir()
                        if not p.name.startswith(".")]
             if len(entries) == 1 and entries[0].is_dir():
                 root = entries[0]
+            paths.append(str(root))
+        live = {"views_written": 0, "notes": []}
+        if conn_rows:
+            # UNDER input/, not beside it. Everything that reads a job's source
+            # tree later — documentation via `from_job`, conversion, analysis —
+            # resolves it through _job_input_root, so SQL written anywhere else
+            # is invisible to them. It used to go to a sibling connections/
+            # dir, and because _new_job pre-creates an EMPTY input/, `from_job`
+            # silently resolved to that empty dir and produced blank documents
+            # for a connection-only run instead of failing loudly.
+            #
+            # Appended as its own path rather than collapsing both sources to
+            # input/: as siblings they are disjoint (so nothing is walked
+            # twice) AND each still gets its own format detection, where the
+            # collapsed root was classified "path:input (unrecognized)".
+            live = _materialize_connection_sql(
+                conn_rows, job_dir / "input" / "_connections")
+            if live.get("dir"):
+                paths.append(live["dir"])
         from metabridge.agents import SharedContext
         ctx = SharedContext(
-            paths=[str(root)],
+            paths=paths,
             source_format=str(body.get("source_format", "") or ""),
             target_region=str(body.get("target_region", "") or ""),
-            project=str(body.get("project", "") or "estate"))
+            project=str(body.get("project", "") or "estate"),
+            connection_ids=conn_ids)
+        ctx.connection_notes = list(live.get("notes") or [])
+        ctx.has_upload = bool(body.get("files") or body.get("from_job"))
         task_types = body.get("task_types") or None
         if task_types is not None and not isinstance(task_types, list):
             raise HTTPException(422, "task_types must be a list")
@@ -3054,7 +3112,7 @@ async def agents_run(request: Request):
         report = _agents_orch().run(
             ctx, task_types=task_types,
             requested_by=user.get("email", "") or "operator",
-            created_at=_today())
+            created_at=_now_iso())
         _finish_job(job_dir, run_id=report["run_id"],
                     project=_inline_label(body, "agent_run"))
         _announce_pending_approvals(report["run_id"],
@@ -3890,6 +3948,94 @@ def _ensure_connection_inventories() -> None:
                 record_inventory(cid, rep)
         except Exception:                    # noqa: BLE001 - per-connection
             continue
+
+
+def _resolve_agent_connections(conn_ids: list) -> list:
+    """Validate a run's selected connections and return their public rows.
+
+    Hard-fails on an unknown or STOPPED connection: the requester picked it
+    explicitly, so silently dropping it would produce a run that looks like it
+    covered a system it never touched. Stopped is the manual gate (see
+    connections_store.resolve_params), and saying so is the useful error."""
+    from metabridge.connections_store import get_connection
+    rows = []
+    for cid in conn_ids:
+        row = get_connection(cid)
+        if row is None:
+            raise HTTPException(422, "Unknown connection: %s" % cid)
+        if row.get("status") != "active":
+            raise HTTPException(
+                422, "Connection '%s' is stopped — start it before running "
+                     "agents against it." % (row.get("name") or cid))
+        rows.append(row)
+    return rows
+
+
+# Snowflake and SQL Server return the WHOLE `CREATE OR REPLACE VIEW ... AS
+# SELECT ...` statement in view_definition; Postgres and MySQL return only the
+# SELECT body. Wrapping unconditionally produced `CREATE VIEW x AS CREATE OR
+# REPLACE VIEW x AS SELECT ...` — invalid SQL that parsed to nothing.
+_CREATE_VIEW_RE = re.compile(
+    r"^\s*create\s+(or\s+replace\s+)?(force\s+)?(secure\s+)?"
+    r"(recursive\s+)?(materialized\s+)?view\b", re.I | re.S)
+
+
+def _materialize_connection_sql(conn_rows: list, out_dir: Path) -> dict:
+    """Capture an inventory for each selected connection that lacks one, then
+    write every introspected view definition out as a .sql file.
+
+    This is what lets a connected system feed the PARSE-dependent agents: a
+    warehouse has no ETL project to upload, but its view SQL is real,
+    parseable evidence, so parse -> semantic -> migration -> validation ->
+    testing score on it exactly as they would on an uploaded folder. Reading
+    is bounded and read-only (INFORMATION_SCHEMA selects); an unreachable
+    system degrades to 'system node only' rather than failing the run."""
+    from metabridge.connections_store import (get_inventory, record_inventory,
+                                              resolve_params)
+    from metabridge.livecheck import introspect, live_support
+    out_dir.mkdir(parents=True, exist_ok=True)
+    written, notes = 0, []
+    for c in conn_rows:
+        cid, connector = c.get("id", ""), str(c.get("connector", ""))
+        label = c.get("name") or connector or cid
+        try:
+            inv = get_inventory(cid)
+            if not inv and live_support(connector).get("introspect"):
+                rep = introspect(connector, resolve_params(cid))
+                if rep.get("ok") and rep.get("mode") != "databases":
+                    record_inventory(cid, rep)
+                    inv = get_inventory(cid)
+                elif not rep.get("ok"):
+                    notes.append("%s: %s" % (label,
+                                             str(rep.get("error", ""))[:120]))
+            if not inv:
+                notes.append("%s: no object inventory — discovered as a "
+                             "system only" % label)
+                continue
+            for v in inv.get("views") or []:
+                sql = str(v.get("definition") or "").strip()
+                if not sql:
+                    continue
+                stem = "__".join(filter(None, (
+                    _safe_name(connector), _safe_name(str(v.get("schema", ""))),
+                    _safe_name(str(v.get("name", ""))))))
+                # Only add the CREATE VIEW header when the driver did not
+                # already give us one (see _CREATE_VIEW_RE) — a bare SELECT
+                # parses, but the target name is what makes it a named
+                # transformation in the IR.
+                qual = ".".join(filter(None, (str(v.get("schema", "")),
+                                              str(v.get("name", "")))))
+                stmt = sql if _CREATE_VIEW_RE.match(sql) else (
+                    "CREATE VIEW %s AS\n%s" % (qual, sql))
+                (out_dir / ("%s.sql" % (stem or "view_%d" % written))).write_text(
+                    stmt.rstrip().rstrip(";") + ";\n", encoding="utf-8")
+                written += 1
+        except PermissionError as e:                 # stopped mid-run
+            notes.append("%s: %s" % (label, str(e)[:120]))
+        except Exception as e:                       # noqa: BLE001
+            notes.append("%s: %s" % (label, str(e)[:120]))
+    return {"views_written": written, "dir": str(out_dir) if written else "",
+            "notes": notes}
 
 
 @app.post("/api/twin/build")
@@ -4967,6 +5113,37 @@ def job_report_json(job_id: str):
         if f.exists():
             return json.loads(f.read_text(encoding="utf-8"))
     raise HTTPException(404, "Report not found")
+
+
+@app.post("/api/jobs/reports")
+async def job_reports_batch(request: Request):
+    """Several jobs' report.json in ONE request.
+
+    The Overview summarises N recent conversions, which meant N separate
+    /report.json round-trips on every load (~20 on a populated workspace) just
+    to paint six tiles. Jobs with no report are returned as null rather than
+    404-ing the batch, so one reportless run cannot fail the whole page.
+    Capped so a hand-rolled request cannot ask for the world.
+    """
+    body = await _json_object(request)
+    ids = body.get("ids")
+    if not isinstance(ids, list):
+        raise HTTPException(422, "ids must be a list of job ids")
+    if len(ids) > 200:
+        raise HTTPException(422, "at most 200 ids per request")
+    out: dict = {}
+    for raw in ids:
+        job_id = str(raw)
+        out[job_id] = None
+        for name in ("conversion_report.json", "governance_report.json"):
+            f = _job_dir(job_id) / "output" / name
+            if f.exists():
+                try:
+                    out[job_id] = json.loads(f.read_text(encoding="utf-8"))
+                except (ValueError, OSError):
+                    out[job_id] = None
+                break
+    return {"reports": out}
 
 
 @app.get("/api/jobs/{job_id}/migration-report", response_class=HTMLResponse)

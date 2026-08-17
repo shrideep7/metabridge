@@ -266,6 +266,229 @@ def test_api_roster(client):
     assert "approval_threshold" in d["governance"]
 
 
+def _saved_snowflake_full_ddl():
+    """Snowflake returns the WHOLE `CREATE OR REPLACE VIEW ... AS SELECT ...`
+    statement in INFORMATION_SCHEMA.VIEWS.view_definition — not a bare SELECT
+    like Postgres/MySQL. This is the real shape."""
+    from metabridge import connections_store as cs
+    row = cs.save_connection("snowflake", {
+        "account": "acme-x1", "user": "svc", "warehouse": "WH",
+        "database": "BANK", "schema": "ANALYTICS"}, name="Bank Data")
+    cs.record_inventory(row["id"], {
+        "connector": "snowflake", "database": "BANK", "schema": "ANALYTICS",
+        "tables": [{"schema": "ANALYTICS", "name": "CUSTOMER_HOLDINGS",
+                    "type": "BASE TABLE", "rows": 900, "bytes": 2048,
+                    "columns": [{"name": "CUSTOMER_ID"},
+                                {"name": "TOTAL_BALANCE"}]}],
+        "views": [{"schema": "ANALYTICS", "name": "V_CUSTOMER_360"}],
+        "view_definitions": {
+            "V_CUSTOMER_360":
+                "CREATE OR REPLACE VIEW ANALYTICS.V_CUSTOMER_360 AS\n"
+                "SELECT customer_id, email, total_balance\n"
+                "FROM ANALYTICS.CUSTOMER_HOLDINGS"}})
+    return row
+
+
+def test_connection_view_ddl_reaches_the_column_level_agents(client):
+    """Regression: the CREATE VIEW header was added unconditionally, yielding
+    `CREATE VIEW x AS CREATE OR REPLACE VIEW x AS SELECT ...` — invalid SQL
+    that parsed to nothing, so the run classified 0 columns and every
+    downstream document came out empty. Asserted on behaviour, not on the
+    file layout: the view's columns must actually reach governance."""
+    row = _saved_snowflake_full_ddl()
+    rep = client.post("/api/agents/run",
+                      json={"connection_ids": [row["id"]]}).json()
+    parse = next(r for r in rep["results"] if r["agent_id"] == "parse")
+    assert parse["confidence"] > 0, parse["summary"]
+    gov = next(r for r in rep["results"] if r["agent_id"] == "governance")
+    classified = gov["outputs"]["governance"]["classified_columns"]
+    assert classified > 0, gov["summary"]
+    # `email` in the view's SELECT list is PII by name heuristics
+    assert gov["outputs"]["governance"]["special_category_columns"] >= 0
+    assert "Classified 0 column(s)" not in gov["summary"]
+
+
+def test_connection_only_run_leaves_a_documentable_input_tree(client):
+    """Regression: connection SQL was written to a sibling connections/ dir, so
+    `from_job` resolved to the empty input/ that _new_job pre-creates and every
+    generated document reported 0 file(s) / 0 pipeline(s)."""
+    row = _saved_snowflake_full_ddl()
+    rep = client.post("/api/agents/run",
+                      json={"connection_ids": [row["id"]]}).json()
+    job_id = next(j["id"] for j in
+                  client.get("/api/jobs?kind=agents&limit=1000").json()["jobs"]
+                  if j.get("run_id") == rep["run_id"])
+    # documentation regenerated from the run must see real source
+    d = client.post("/api/docs",
+                    json={"from_job": job_id,
+                          "documents": ["governance_report", "data_dictionary"],
+                          "formats": ["md"]})
+    assert d.status_code == 200, d.text
+    got = d.json()
+    md = client.get("/api/docs/%s/download?doc=governance_report&format=md"
+                    % got["docs_id"]).text
+    # the exact string the empty PDFs carried in their source snapshot
+    assert "0 file(s), 0 pipeline(s)" not in md, md[:800]
+    assert "CUSTOMER" in md.upper(), md[:800]
+
+
+def _saved_snowflake(with_inventory=True, name="Prod Snowflake", prefix="ORD",
+                     database="RETAIL"):
+    """A saved, ACTIVE Snowflake connection, optionally already analyzed so an
+    object inventory (tables + view SQL) exists without touching a network.
+
+    Pass a distinct `database` for a SECOND connection: save_connection upserts
+    on connector+params and ignores `name`, so two calls with identical params
+    return the same row — and the twin keys nodes by name, so identical object
+    names would collapse onto the same nodes even if they didn't.
+    """
+    from metabridge import connections_store as cs
+    row = cs.save_connection("snowflake", {
+        "account": "acme-x1", "user": "svc", "warehouse": "WH",
+        "database": database, "schema": "PUBLIC"}, name=name)
+    if with_inventory:
+        tbl, view = "%s_ORDERS" % prefix, "V_%s_TOTALS" % prefix
+        cs.record_inventory(row["id"], {
+            "connector": "snowflake", "database": database,
+            "schema": "PUBLIC",
+            "tables": [{"schema": "PUBLIC", "name": tbl,
+                        "type": "BASE TABLE", "rows": 1200, "bytes": 4096,
+                        "columns": [{"name": "ID"}, {"name": "TOTAL"}]}],
+            "views": [{"schema": "PUBLIC", "name": view}],
+            "view_definitions": {
+                view: "SELECT ID, SUM(TOTAL) AS TOTAL FROM PUBLIC.%s "
+                      "GROUP BY ID" % tbl}})
+    return row
+
+
+def test_api_run_on_connection_only_no_files(client):
+    """A connected warehouse is a valid source on its own: no ETL folder to
+    upload, but its view SQL is real, parseable evidence."""
+    row = _saved_snowflake()
+    r = client.post("/api/agents/run",
+                    json={"connection_ids": [row["id"]],
+                          "project": "warehouse", "target_region": "us"})
+    assert r.status_code == 200, r.text
+    rep = r.json()
+    assert rep["params"]["connection_ids"] == [row["id"]]
+    assert rep["audit"]["verification"]["intact"]
+    assert rep["summary"]["failed"] == 0
+    disc = next(x for x in rep["results"] if x["agent_id"] == "discovery")
+    assert disc["decision"] in ("allow", "flag_review")
+    assert "live connection" in disc["summary"]
+    # the view SQL reached the PARSE-dependent agents
+    parse = next(x for x in rep["results"] if x["agent_id"] == "parse")
+    assert parse["confidence"] > 0, parse["summary"]
+    # ...and it survives a reopen (params are persisted with the run)
+    again = client.get("/api/agents/runs/%s" % rep["run_id"]).json()
+    assert again["params"]["connection_ids"] == [row["id"]]
+
+
+def test_api_run_accepts_folder_and_connection_together(client):
+    """Both sources at once: the folder supplies the pipelines, the connection
+    supplies the live estate they land in."""
+    row = _saved_snowflake()
+    r = client.post("/api/agents/run",
+                    json={"files": _project_files(FIXTURE),
+                          "connection_ids": [row["id"]], "project": "both"})
+    assert r.status_code == 200, r.text
+    rep = r.json()
+    assert rep["params"]["connection_ids"] == [row["id"]]
+    # ONE root: with both sources present, input/ itself is the root, so the
+    # uploaded tree and the materialized view SQL are each walked exactly once
+    # (two separate paths would have double-counted the connection SQL).
+    # Two disjoint sibling paths under input/, so nothing is walked twice and
+    # each still gets its own format detection (collapsing both to input/ made
+    # the twin report one "path:input (unrecognized)" blob).
+    paths = rep["params"]["paths"]
+    assert len(paths) == 2, paths
+    assert any(p.endswith("_connections") for p in paths), paths
+    disc = next(x for x in rep["results"] if x["agent_id"] == "discovery")
+    assert "live connection" in disc["summary"]
+    srcs = disc["outputs"]["discovery"]["sources"]
+    assert "connections" in srcs, srcs
+    assert not any("unrecognized" in s for s in srcs), srcs
+    parse = next(x for x in rep["results"] if x["agent_id"] == "parse")
+    assert parse["confidence"] > 0, parse["summary"]
+
+
+def test_api_run_connection_without_inventory_still_discovers_system(client):
+    """No inventory and no reachable driver -> the system is still a node in
+    the twin, and the run says so instead of pretending it read the tables."""
+    row = _saved_snowflake(with_inventory=False)
+    r = client.post("/api/agents/run",
+                    json={"connection_ids": [row["id"]], "project": "warehouse"})
+    assert r.status_code == 200, r.text
+    rep = r.json()
+    assert rep["params"]["connection_notes"], "expected a capture note"
+    assert any("Prod Snowflake" in n for n in rep["params"]["connection_notes"])
+
+
+def test_api_run_rejects_unknown_and_stopped_connections(client):
+    r = client.post("/api/agents/run", json={"connection_ids": ["nope"]})
+    assert r.status_code == 422 and "Unknown connection" in r.text
+
+    from metabridge import connections_store as cs
+    row = _saved_snowflake()
+    cs.set_status(row["id"], "stopped")
+    r = client.post("/api/agents/run", json={"connection_ids": [row["id"]]})
+    assert r.status_code == 422 and "stopped" in r.text
+
+
+def test_api_run_target_region_is_optional(client):
+    """Target region is optional: omitted entirely, or sent empty by the
+    console's "Not specified" default. Residency then falls back to the policy
+    and, failing that, is reported as not declared — never a hard failure."""
+    row = _saved_snowflake()
+    for body in ({"connection_ids": [row["id"]]},
+                 {"connection_ids": [row["id"]], "target_region": ""}):
+        r = client.post("/api/agents/run", json=body)
+        assert r.status_code == 200, r.text
+        rep = r.json()
+        assert rep["params"]["target_region"] == ""
+        assert rep["summary"]["failed"] == 0
+        gov = next(x for x in rep["results"]
+                   if x["agent_id"] == "governance")
+        assert gov["decision"] in ("allow", "flag_review"), gov
+    # an explicit region still rides through
+    rep = client.post("/api/agents/run",
+                      json={"connection_ids": [row["id"]],
+                            "target_region": "eu"}).json()
+    assert rep["params"]["target_region"] == "eu"
+
+
+def test_api_run_requires_at_least_one_source(client):
+    r = client.post("/api/agents/run", json={})
+    assert r.status_code == 422
+    assert "connected system" in r.text
+
+
+def test_agent_run_does_not_pull_in_unselected_connections(client):
+    """A run is scoped to the systems its requester picked — it must not
+    silently sweep in every saved connection in the workspace.
+
+    Asserted on the twin's NODE COUNT, not on built_from: build_twin records
+    the whole connection walk as the single literal source "connections", so a
+    "connection:<id> not in sources" check would pass no matter what.
+    """
+    picked = _saved_snowflake()
+    other = _saved_snowflake(name="Other Snowflake", prefix="INV",
+                             database="WAREHOUSE")
+    assert picked["id"] != other["id"], "fixture must create two connections"
+
+    def nodes(ids):
+        rep = client.post("/api/agents/run",
+                          json={"connection_ids": ids}).json()
+        d = next(x for x in rep["results"] if x["agent_id"] == "discovery")
+        return d["outputs"]["discovery"]["nodes"]
+
+    one, both = nodes([picked["id"]]), nodes([picked["id"], other["id"]])
+    assert one > 0, "the selected connection must produce nodes"
+    assert both > one, (
+        "selecting a second connection must add nodes — equal counts mean the "
+        "walk ignored the selection and took every saved connection")
+
+
 def test_api_run_and_segregation_of_duties(client):
     from fastapi.testclient import TestClient
     files = _project_files(FIXTURE)
@@ -318,6 +541,51 @@ def test_api_run_and_segregation_of_duties(client):
                for e in live["audit"]["events"])
     approved = [a for a in live["approvals"] if a["id"] == aid]
     assert approved and approved[0]["status"] == "approved"
+
+
+def test_approved_documentation_is_downloadable_from_the_run(client):
+    """The documentation agent discards its rendered bodies by design (that is
+    what makes the GENERATE gate real), so the run view regenerates them on
+    demand from the job that already holds the uploaded tree — no re-upload
+    into a second tab."""
+    from fastapi.testclient import TestClient
+    rep = client.post("/api/agents/run",
+                      json={"files": _project_files(FIXTURE)}).json()
+    run_id = rep["run_id"]
+
+    # the run reports which documents it produced, with slugs
+    doc_row = next(r for r in rep["results"] if r["agent_id"] == "documentation")
+    assert doc_row["decision"] == "needs_approval"
+    slugs = [d["slug"] for d in doc_row["outputs"]["documents"]["documents"]]
+    assert slugs, "documentation slugs must survive into the report"
+
+    # a distinct admin approves it (the requester never can)
+    client.post("/api/users", json={"email": "a2@x.com",
+                                    "password": "Pw123456!", "name": "Adm",
+                                    "role": "admin"})
+    admin = TestClient(client.app)
+    admin.post("/auth/login", json={"email": "a2@x.com",
+                                    "password": "Pw123456!"})
+    aid = next(a["id"] for a in client.get("/api/agents/approvals").json()
+               ["approvals"] if a["agent_id"] == "documentation")
+    assert admin.post("/api/agents/approvals/approve",
+                      json={"approval_id": aid}).status_code == 200
+
+    # the run's own job carries the source tree, so from_job needs no upload
+    jobs = client.get("/api/jobs?kind=agents&limit=1000").json()["jobs"]
+    job_id = next(j["id"] for j in jobs if j.get("run_id") == run_id)
+
+    d = client.post("/api/docs", json={"from_job": job_id, "documents": slugs,
+                                       "formats": ["md"]})
+    assert d.status_code == 200, d.text
+    got = d.json()
+    assert {x["slug"] for x in got["documents"]} == set(slugs)
+
+    # and each one actually downloads
+    first = got["documents"][0]
+    r = client.get("/api/docs/%s/download?doc=%s&format=md"
+                   % (got["docs_id"], first["slug"]))
+    assert r.status_code == 200 and r.content
 
 
 def test_api_bad_input(client):

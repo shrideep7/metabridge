@@ -231,11 +231,22 @@ def _render_list(block: list[str]) -> str:
 
 def _sidebar(active: str) -> str:
     parts = ['<nav class="side"><a class="brand" href="/documentation/index">Meta<b>Bridge</b> <span>DOCS</span></a>']
+    # Back to the app: the docs open in a new tab, but anyone who lands here
+    # from a link or a bookmark had no route into the console at all.
+    parts.append('<a class="back-app" href="/console">← Back to console</a>')
+    # Client-side filter over the nav — the whole point is to stop scrolling 22
+    # sections looking for a heading, and it needs no index or build step.
+    parts.append('<label class="dsearch-l" for="docSearch">Filter sections</label>'
+                 '<input id="docSearch" class="dsearch" type="search" '
+                 'placeholder="Filter sections…" autocomplete="off" '
+                 'aria-label="Filter documentation sections">')
     for group, items in NAV:
-        parts.append('<div class="grp">%s</div>' % html.escape(group))
+        parts.append('<div class="grp" data-grp="1">%s</div>' % html.escape(group))
         for slug, title in items:
             cls = "on" if slug == active else ""
-            parts.append('<a class="lnk %s" href="/documentation/%s">%s</a>' % (cls, slug, html.escape(title)))
+            parts.append('<a class="lnk %s" data-t="%s" href="/documentation/%s">%s</a>'
+                         % (cls, html.escape(title.lower()), slug, html.escape(title)))
+    parts.append('<div class="dsearch-none" hidden>No section matches.</div>')
     parts.append("</nav>")
     return "".join(parts)
 
@@ -282,7 +293,7 @@ def render_page(slug: str) -> tuple[str, int]:
 _SHELL = """<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>{title} · MetaBridge Docs</title>
+<title>{title} · MetaBridge AI Docs</title>
 <style>
   :root{{ --bg:#f7f9fc; --panel:#fff; --ink:#0b1526; --text:#26324a; --mut:#66748c;
     --line:#e4e9f2; --blue:#2f6bd8; --blue2:#4da3ff; --codebg:#0d1728; }}
@@ -301,6 +312,15 @@ _SHELL = """<!doctype html>
   .side .lnk{{display:block;color:#c3d2ea;font-size:14px;padding:6px 8px;border-radius:7px;}}
   .side .lnk:hover{{background:rgba(77,163,255,.12);color:#fff;text-decoration:none;}}
   .side .lnk.on{{background:rgba(77,163,255,.16);color:#fff;font-weight:600;}}
+  .side .back-app{{display:block;color:#9db2d4;font-size:12.5px;padding:5px 8px;margin:0 0 12px;
+    border-radius:7px;}}
+  .side .back-app:hover{{background:rgba(77,163,255,.12);color:#fff;text-decoration:none;}}
+  .side .dsearch-l{{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);}}
+  .side .dsearch{{width:calc(100% - 16px);margin:0 8px 6px;padding:7px 10px;border-radius:7px;
+    border:1px solid #24344f;background:#0f1c30;color:#e8eefb;font-size:13px;outline:none;}}
+  .side .dsearch:focus{{border-color:var(--blue2);box-shadow:0 0 0 3px rgba(77,163,255,.18);}}
+  .side .dsearch::placeholder{{color:#6d7f9c;}}
+  .side .dsearch-none{{color:#7d92b5;font-size:12.5px;padding:8px;}}
   .main{{padding:0;}}
   .content{{max-width:860px;margin:0 auto;padding:52px 48px 80px;}}
   .content h1{{font-size:34px;line-height:1.15;letter-spacing:-.5px;color:var(--ink);margin:0 0 18px;}}
@@ -333,4 +353,33 @@ _SHELL = """<!doctype html>
 </style></head>
 <body><div class="layout">{sidebar}<div class="main"><div class="content">{body}
 <div class="pager">{prev}{next}</div>
-</div></div></div></body></html>"""
+</div></div></div>
+<script>
+/* Nav filter. Hides non-matching links, then hides any group heading left with
+   no visible links under it, so the sidebar never shows an empty category. */
+(function () {{
+  var box = document.getElementById('docSearch');
+  if (!box) return;
+  var side = box.closest('.side');
+  var none = side.querySelector('.dsearch-none');
+  box.addEventListener('input', function () {{
+    var q = box.value.trim().toLowerCase();
+    var shown = 0;
+    side.querySelectorAll('.lnk').forEach(function (a) {{
+      var hit = !q || (a.dataset.t || '').indexOf(q) !== -1;
+      a.hidden = !hit;
+      if (hit) shown++;
+    }});
+    side.querySelectorAll('[data-grp]').forEach(function (g) {{
+      var n = g.nextElementSibling, any = false;
+      while (n && !n.hasAttribute('data-grp')) {{
+        if (n.classList.contains('lnk') && !n.hidden) {{ any = true; break; }}
+        n = n.nextElementSibling;
+      }}
+      g.hidden = !any;
+    }});
+    none.hidden = shown > 0;
+  }});
+}})();
+</script>
+</body></html>"""

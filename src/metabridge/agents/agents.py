@@ -33,8 +33,14 @@ class DiscoveryAgent(Agent):
 
     def _execute(self, ctx):
         from ..twin.discover import build_twin
-        twin = build_twin(paths=ctx.paths, include_connections=False,
-                          name=ctx.project)
+        # Connections were unconditionally excluded here, which cut the swarm
+        # off from every connected system (Snowflake, HANA, Oracle) even
+        # though build_twin has always supported them. They are included now
+        # when the run selected some, scoped to that selection — a run must
+        # not silently pull in every saved connection in the workspace.
+        conns = list(getattr(ctx, "connection_ids", []) or [])
+        twin = build_twin(paths=ctx.paths, include_connections=bool(conns),
+                          connection_ids=conns or None, name=ctx.project)
         counts = twin.counts()
         nodes = sum(v for k, v in counts.items() if k != "edges")
         built = list(twin.built_from)
@@ -42,8 +48,10 @@ class DiscoveryAgent(Agent):
         recog = (len(recognized) / len(built)) if built else 0.0
         return self._result(
             status=Status.OK,
-            summary="Discovered %d node(s), %d edge(s) from %d source(s)"
-                    % (nodes, counts.get("edges", 0), len(built)),
+            summary="Discovered %d node(s), %d edge(s) from %d source(s)%s"
+                    % (nodes, counts.get("edges", 0), len(built),
+                       " (%d live connection(s))" % len(conns) if conns
+                       else ""),
             evidence={"source_recognition": (recog, 2.0),
                       "graph_populated": (1.0 if nodes else 0.0, 1.0)},
             outputs={KEY_TWIN: twin,

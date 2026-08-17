@@ -11,8 +11,11 @@ from metabridge.engine import (
 
 # encoding is explicit: the console is UTF-8 and read_text() would otherwise
 # use the platform default, which fails collection outright on a cp1252 host
-CONSOLE = (Path(__file__).resolve().parent.parent / "web" / "templates" /
-           "console.html").read_text(encoding="utf-8")
+# CONSOLE is the shell markup + its JS bundle concatenated, since assertions
+# below check both (console.html:markup, console.js:JS symbols).
+_WEB = Path(__file__).resolve().parent.parent / "web"
+CONSOLE = ((_WEB / "templates" / "console.html").read_text(encoding="utf-8")
+           + (_WEB / "static" / "js" / "console.js").read_text(encoding="utf-8"))
 
 
 # ---------------------------------------------------------------------------

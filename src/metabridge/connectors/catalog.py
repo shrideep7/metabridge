@@ -130,7 +130,7 @@ registry.register(ConnectorSpec(
           "ABAP is analyzed and documented — never silently converted.",
 ))
 registry.register(ConnectorSpec(
-    key="sap_bw4", name="SAP BW/4HANA (metadata import)", category="sap",
+    key="sap_bw4", name="SAP BW/4HANA — metadata upload", category="sap",
     vendor="SAP", deployment="hybrid",
     notes="Upload BW metadata XML (InfoObjects, ADSOs, transformations, "
           "DTPs, process chains, queries). Routines are analyzed; "
@@ -187,7 +187,7 @@ registry.register(ConnectorSpec(
               "unit": "string", "lang": "string"}))
 
 registry.register(ConnectorSpec(
-    key="sap_bw", name="SAP BW/4HANA (InfoProviders)", category="sap", vendor="SAP",
+    key="sap_bw", name="SAP BW/4HANA — live connection", category="sap", vendor="SAP",
     dialect="", deployment="hybrid", regions=["on_prem"] + _GLOBAL,
     dbt_adapter="", idmc_type="SAP BW Reader", powercenter_dbtype="SAP BW",
     notes="ADSOs/CompositeProviders surface as IR sources.",
@@ -330,7 +330,7 @@ registry.register(ConnectorSpec(
     notes="Upload topic/subscription exports — ordering, DLQ and retry policies preserved.",
 ))
 registry.register(ConnectorSpec(
-    key="mqtt", name="MQTT Broker (Mosquitto/HiveMQ/EMQX)", category="events",
+    key="mqtt", name="MQTT Broker (generic)", category="events",
     vendor="Eclipse", deployment="hybrid",
     notes="Upload broker configs and topic definitions; QoS maps to delivery guarantees.",
 ))
