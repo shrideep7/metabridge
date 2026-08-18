@@ -1,4 +1,4 @@
-﻿
+
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -177,6 +177,24 @@
   </div>
   <div class="err" id="dashErr"></div>
   <div class="cards" id="dashCards"></div>
+
+  <!-- Command Center: Actionable Workspace Attention + High-level Telemetry Snapshots -->
+  <div class="dash-split-grid" id="dashSplitWrap">
+    <div class="panel" style="margin:0">
+      <div style="display:flex;align-items:center;justify-content:space-between">
+        <h2 style="margin:0">Needs attention</h2>
+        <span id="dashAttnCount" class="badge warn" style="display:none"></span>
+      </div>
+      <div style="color:var(--muted);font-size:12px;margin:4px 0 8px">Actionable workspace blockers — failed runs, unconfigured credentials, pending approvals, and manual review items.</div>
+      <div id="dashAttnList" class="dash-attn-list"></div>
+    </div>
+    <div class="panel" style="margin:0">
+      <h2 style="margin:0 0 4px">Operational &amp; validation snapshot</h2>
+      <div style="color:var(--muted);font-size:12px;margin-bottom:8px">High-level runtime state with direct links to full diagnostic and validation suites.</div>
+      <div id="dashSnapshots" class="dash-snapshots"></div>
+    </div>
+  </div>
+
   <!-- One panel, two views. The tables have different columns and different
        row sets (completed converts with a report vs. every job of every kind),
        so they are switched rather than merged — a union would leave the
@@ -867,6 +885,7 @@
       <div class="oh-sig" id="obsSignals"></div>
     </div>
     <div id="obsRibbon"></div>
+    <div id="obsScoreExpl"></div>
   </div>
 
   <!-- Zone 2 — what needs attention. One panel, not two: the alerts and the
@@ -912,72 +931,122 @@
   </div>
 </div>
 
-<!-- ======================= SYSTEM (command center) ======================= -->
 <div class="page" id="page-system">
   <div style="display:flex;align-items:flex-start;gap:16px;flex-wrap:wrap">
-    <div style="flex:1;min-width:300px"><h1 id="osName">System</h1>
-    <div class="sub" id="osTagline">Your workspace at a glance — platform health, what needs attention, and recent activity. Platform internals live at the bottom.</div></div>
+    <div style="flex:1;min-width:300px"><h1 id="osName">System &amp; Administration</h1>
+    <div class="sub" id="osTagline">Platform configuration, connectors, AI runtime, notification dispatch, platform engines, and workspace administration.</div></div>
     <button class="secondary" id="sysRefresh" style="margin-top:0">Refresh</button>
   </div>
   <div class="err" id="sysErr"></div>
 
-  <!-- health banner: one verdict + per-component readiness chips -->
+  <!-- Runtime Notice: Distinguishes Configuration from Observability -->
+  <div class="sys-runtime-notice">
+    <div><b>Operational Telemetry:</b> Live runtime performance, SLO monitoring, failure diagnostics, and latency trends are managed in <b>Observability</b>.</div>
+    <button type="button" class="secondary" style="margin:0;padding:4px 12px;font-size:12px;white-space:nowrap" onclick="document.querySelector('nav a[data-page=observability]').click()">Open Observability &rarr;</button>
+  </div>
+
+  <!-- Tier 1: Configuration Health & Component Readiness -->
   <div id="sysHealthBanner" class="panel" style="display:flex;align-items:center;gap:14px;flex-wrap:wrap;padding:14px 18px;margin:10px 0 14px">
     <div id="sysVerdict" style="display:flex;align-items:center;gap:10px;font-weight:700;font-size:15px">—</div>
     <div id="sysComponents" style="display:flex;gap:8px;flex-wrap:wrap;margin-left:auto"></div>
   </div>
 
-  <!-- usage insight cards -->
-  <div class="mkt-metrics" id="sysMetrics" style="margin:0 0 14px"></div>
+  <!-- Configuration issues / actionable admin items -->
+  <div id="sysConfigIssuesWrap" class="panel" style="display:none;margin-bottom:16px">
+    <h2 style="margin-bottom:4px">Configuration issues</h2>
+    <div style="color:var(--muted);font-size:12px;margin-bottom:8px">Items requiring administrator configuration before services can run.</div>
+    <div id="sysConfigIssues"></div>
+  </div>
 
-  <div style="display:flex;gap:16px;flex-wrap:wrap;align-items:flex-start">
-    <div class="panel" style="flex:1.2;min-width:340px">
-      <h2 style="margin-bottom:4px">Needs attention</h2>
-      <div style="color:var(--muted);font-size:12px;margin-bottom:8px">Actionable items assembled from live workspace state — fix them from here.</div>
-      <div id="sysAttention"></div>
+  <!-- Tier 2 & 3: Connections, AI Runtime, and Notification Transport Grid -->
+  <div class="sys-config-grid" style="margin-bottom:16px">
+    <!-- Connections Card -->
+    <div class="sys-config-card">
+      <div>
+        <div class="sys-config-card-hd">
+          <span class="sys-config-card-title">Connections &amp; Sources</span>
+          <span id="sysConnBadge" class="sev-badge"></span>
+        </div>
+        <div id="sysConnDetail" style="font-size:12.5px;color:var(--ink3);margin:6px 0 12px"></div>
+        <div id="sysConnList" style="font-size:12px;display:flex;flex-direction:column;gap:6px"></div>
+      </div>
+      <div style="margin-top:14px;padding-top:10px;border-top:1px solid var(--line);display:flex;justify-content:flex-end">
+        <button type="button" class="secondary" style="margin:0;padding:4px 12px;font-size:12px" onclick="document.querySelector('nav a[data-page=marketplace]').click()">Manage Integrations &rarr;</button>
+      </div>
     </div>
-    <div class="panel" style="flex:1;min-width:320px">
-      <h2 style="margin-bottom:4px">Recent activity</h2>
-      <div style="color:var(--muted);font-size:12px;margin-bottom:8px">Latest runs in this workspace — click one for its artifacts and reports.</div>
-      <div id="sysActivity"></div>
+
+    <!-- AI Runtime Card -->
+    <div class="sys-config-card">
+      <div>
+        <div class="sys-config-card-hd">
+          <span class="sys-config-card-title">AI Runtime</span>
+          <span id="sysAiBadge" class="sev-badge"></span>
+        </div>
+        <div id="sysAiDetail" style="font-size:12.5px;color:var(--ink3);margin:6px 0 12px"></div>
+        <div id="sysAiCapabilities" style="font-size:12px;display:flex;flex-direction:column;gap:6px"></div>
+      </div>
+      <div style="margin-top:14px;padding-top:10px;border-top:1px solid var(--line);display:flex;justify-content:flex-end">
+        <button type="button" class="secondary" style="margin:0;padding:4px 12px;font-size:12px" onclick="sysNavigate('settings','ai')">Configure AI &rarr;</button>
+      </div>
+    </div>
+
+    <!-- Notification Transport Card -->
+    <div class="sys-config-card">
+      <div>
+        <div class="sys-config-card-hd">
+          <span class="sys-config-card-title">Notification Dispatch</span>
+          <span id="sysNotifBadge" class="sev-badge"></span>
+        </div>
+        <div id="sysNotifDetail" style="font-size:12.5px;color:var(--ink3);margin:6px 0 12px"></div>
+        <div id="sysNotifSummary" style="font-size:12px;display:flex;flex-direction:column;gap:6px"></div>
+      </div>
+      <div style="margin-top:14px;padding-top:10px;border-top:1px solid var(--line);display:flex;justify-content:flex-end">
+        <button type="button" class="secondary" style="margin:0;padding:4px 12px;font-size:12px" onclick="sysNavigate('settings','notifications')">Notification settings &rarr;</button>
+      </div>
     </div>
   </div>
 
-  <!-- platform internals: the engine/service/model manifest, for admins -->
-  <details id="sysInternals" style="margin-top:18px">
-    <summary style="cursor:pointer;font-weight:700;font-size:14px;padding:10px 4px;color:var(--ink2)">
-      Platform internals <span style="color:var(--muted);font-weight:400;font-size:12.5px">— engines, services, canonical models, feature flags &amp; versions</span>
-    </summary>
-    <div class="mkt-metrics" id="sysOsMetrics" style="margin:10px 0 14px"></div>
-    <div class="sec-head"><h2>Core engines</h2><span class="cnt" id="sysEngCount"></span></div>
+  <!-- Tier 4: Platform Engines & Kernel Services -->
+  <div class="panel" style="margin-bottom:16px">
+    <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:8px">
+      <div>
+        <h2 style="margin:0">Platform engines</h2>
+        <div style="color:var(--muted);font-size:12px">Sixteen core deterministic engines composed over shared canonical models.</div>
+      </div>
+      <span class="cnt" id="sysEngCount"></span>
+    </div>
     <div id="sysEngines"></div>
 
-    <div style="display:flex;gap:16px;flex-wrap:wrap;margin-top:8px">
-      <div class="panel" style="flex:1;min-width:320px">
-        <h2 style="margin-bottom:8px">Common platform services</h2>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(320px, 1fr));gap:16px;margin-top:16px">
+      <div>
+        <h3 style="margin:0 0 8px;font-size:13.5px">Platform services</h3>
         <div id="sysServices"></div>
       </div>
-      <div class="panel" style="flex:1;min-width:320px">
-        <h2 style="margin-bottom:8px">Shared canonical models</h2>
-        <div style="color:var(--muted);font-size:12px;margin-bottom:8px">Engines compose over these, not point-to-point.</div>
+      <div>
+        <h3 style="margin:0 0 4px;font-size:13.5px">Shared canonical models</h3>
+        <div style="color:var(--muted);font-size:12px;margin-bottom:8px">Engines compose over these shared models.</div>
         <div id="sysCanonical"></div>
       </div>
     </div>
+  </div>
 
-    <div style="display:flex;gap:16px;flex-wrap:wrap">
-      <div class="panel" style="flex:1;min-width:320px">
-        <h2 style="margin-bottom:8px">Feature flags</h2>
-        <div style="color:var(--muted);font-size:12px;margin-bottom:8px">Deterministic gating (enable · role · rollout). Toggling needs Settings-manage rights.</div>
-        <div id="sysFlags"></div>
-      </div>
-      <div class="panel" style="flex:1;min-width:320px">
-        <h2 style="margin-bottom:8px">Component versions</h2>
-        <table id="sysVersions"></table>
-        <h2 style="margin:14px 0 8px">Notifications <span id="sysNotifCount" style="font-size:12px;color:var(--muted)"></span></h2>
-        <div id="sysNotifs" style="font-size:12.5px;max-height:200px;overflow-y:auto"></div>
+  <!-- Tier 5: Feature Flags, Component Versions & Workspace Admin -->
+  <div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(320px, 1fr));gap:16px;margin-bottom:16px">
+    <div class="panel" style="margin:0">
+      <h2 style="margin-bottom:4px">Feature flags</h2>
+      <div style="color:var(--muted);font-size:12px;margin-bottom:8px">Deterministic gating (role · rollout). Toggling requires Settings-manage rights.</div>
+      <div id="sysFlags"></div>
+    </div>
+    <div class="panel" style="margin:0">
+      <h2 style="margin-bottom:4px">Workspace &amp; versions</h2>
+      <div style="color:var(--muted);font-size:12px;margin-bottom:8px">Active workspace configuration and platform components.</div>
+      <div id="sysWsInfo" style="margin-bottom:12px"></div>
+      <table id="sysVersions"></table>
+      <div style="margin-top:14px;padding-top:10px;border-top:1px solid var(--line);display:flex;justify-content:flex-end">
+        <button type="button" class="secondary" style="margin:0;padding:4px 12px;font-size:12px" onclick="sysNavigate('settings','workspace')">Workspace settings &rarr;</button>
       </div>
     </div>
-  </details>
+  </div>
 </div>
 
 <!-- ======================= CONVERT ======================= -->

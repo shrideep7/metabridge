@@ -911,7 +911,6 @@ def _render_node(t: Transformation, m: Mapping, tx_by_name, upstream_cte,
             cond_src = _strip_join_prefixes(cond_src, lp, rp)
         cond = _qualify_join_condition(cond_src, "l", "r")
 
-        cols = ", ".join(p.name for p in t.ports) or "*"
         if lp or rp:
             proj = []
             for alias, name, pfx in (("l", left_name, lp), ("r", right_name, rp)):
@@ -925,6 +924,32 @@ def _render_node(t: Transformation, m: Mapping, tx_by_name, upstream_cte,
             return ("select\n    %s\nfrom %s as l\n%s %s as r\n    on %s"
                     % (cols, rel(left_name), jt, rel(right_name),
                        cond or "1 = 1"))
+
+        # A joiner almost always joins on a shared key, so an unqualified port
+        # name that exists on BOTH inputs is ambiguous and the target rejects
+        # the model. Each side's ports say where a column came from, so qualify
+        # from that and fall back to the bare name only when a side cannot be
+        # resolved — guessing an alias is worse than leaving it to the engine.
+        left_ports = getattr(tx_by_name.get(left_name), "ports", None) or []
+        right_ports = getattr(tx_by_name.get(right_name), "ports", None) or []
+        left_cols = {p.name.lower() for p in left_ports}
+        right_cols = {p.name.lower() for p in right_ports}
+        # a RIGHT join preserves its right input, so a shared key has to be
+        # read from that side; every other join type preserves the left
+        shared = "r" if jt == "right join" else "l"
+
+        def qualified(name):
+            low = name.lower()
+            in_left, in_right = low in left_cols, low in right_cols
+            if in_left and in_right:
+                return "%s.%s" % (shared, name)
+            if in_left:
+                return "l.%s" % name
+            if in_right:
+                return "r.%s" % name
+            return name
+
+        cols = ", ".join(qualified(p.name) for p in t.ports) or "*"
         return ("select %s\nfrom %s as l\n%s %s as r\n    on %s"
                 % (cols, rel(left_name), jt, rel(right_name), cond or "1 = 1"))
 

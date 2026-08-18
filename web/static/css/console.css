@@ -1,4 +1,4 @@
-﻿  :root {
+  :root {
     /* surfaces */
     --navy:#0E1A2B; --navy2:#1B3050; --navy-line:#1C2C44; --navy-txt:#B9C7DA; --navy-mut:#5B7089;
     --bg:#F4F6F9; --surface:#FFFFFF;
@@ -233,10 +233,10 @@
   }
   /* metric cards + steps + status */
   .mcard { background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); box-shadow:var(--shadow);
-           padding:12px 14px; min-width:0; flex:1 1 0; }
+           padding:12px 14px; min-width:0; display:flex; flex-direction:column; justify-content:space-between; }
   .mcard .n { font-size:22px; font-weight:600; font-family:var(--mono); letter-spacing:-.02em; color:var(--ink); margin-top:4px; }
-  .mcard .l { font-size:10.5px; color:var(--muted); text-transform:uppercase; font-weight:600; letter-spacing:.04em; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-  .mcard .d { font-size:11.5px; color:var(--muted); margin-top:3px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .mcard .l { font-size:11px; color:var(--muted); text-transform:uppercase; font-weight:600; letter-spacing:.04em; white-space:normal; line-height:1.35; word-break:break-word; min-height:28px; }
+  .mcard .d { font-size:11.5px; color:var(--muted); margin-top:4px; white-space:normal; line-height:1.35; }
   /* ---- run stepper (Modernize) ------------------------------------------
      Five inert labels that scrolled off screen before the first field. It is
      now the page's status bar: pinned under the topbar so it survives the
@@ -1058,10 +1058,10 @@
   button:disabled { opacity:0.55; cursor:not-allowed; }
   button.secondary:disabled { background:var(--surface); color:var(--muted2); border-color:#dfe3ea; opacity:0.5; cursor:not-allowed; }
   button.secondary:disabled:hover { background:var(--surface); border-color:#dfe3ea; cursor:not-allowed; }
-  .cards { display:flex; gap:10px; flex-wrap:nowrap; margin:6px 0 16px; width:100%; }
-  .card { background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); padding:12px 14px; min-width:0; flex:1 1 0; box-shadow:var(--shadow); }
+  .cards { display:grid; grid-template-columns:repeat(auto-fit, minmax(180px, 1fr)); gap:12px; margin:8px 0 18px; width:100%; }
+  .card { background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); padding:12px 14px; min-width:0; display:flex; flex-direction:column; justify-content:space-between; box-shadow:var(--shadow); }
   .card .n { font-size:22px; font-weight:600; font-family:var(--mono); letter-spacing:-.02em; }
-  .card .l { font-size:10.5px; color:var(--muted); text-transform:uppercase; font-weight:600; letter-spacing:.04em; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .card .l { font-size:11px; color:var(--muted); text-transform:uppercase; font-weight:600; letter-spacing:.04em; white-space:normal; line-height:1.35; word-break:break-word; min-height:28px; }
   table { border-collapse:collapse; width:100%; background:var(--surface); font-size:13px; }
   th { background:var(--header-bg); text-align:left; padding:8px 12px; font-size:11px; font-weight:600;
        text-transform:uppercase; letter-spacing:.05em; color:var(--ink3); border-bottom:1px solid var(--border); }
@@ -1923,3 +1923,64 @@
   .dlg .dlg-ic.info { background:var(--accent-soft); color:var(--accent); border:1px solid var(--accent-line); }
   .dlg .dlg-hd { display:flex; align-items:flex-start; gap:12px; }
   @media (max-width:640px) { .modal { width:100%; max-width:none; } .mkt-actions input[type=search] { width:100%; } }
+
+  /* ==========================================================================
+     Enterprise Information Architecture & Severity Styles
+     ========================================================================== */
+
+  /* Standardized Severity Badges */
+  .sev-badge { display:inline-flex; align-items:center; gap:5px; padding:2px 8px; border-radius:4px;
+               font-size:11px; font-weight:600; text-transform:uppercase; letter-spacing:.04em; }
+  .sev-badge.critical, .sev-critical { color:var(--red); background:var(--red-bg); border:1px solid var(--red-line); }
+  .sev-badge.warning,  .sev-warning  { color:var(--amber); background:var(--amber-bg); border:1px solid var(--amber-line); }
+  .sev-badge.healthy,  .sev-healthy, .sev-badge.success, .sev-success { color:var(--green); background:var(--green-bg); border:1px solid var(--green-line); }
+  .sev-badge.info,     .sev-info     { color:var(--accent); background:var(--accent-soft); border:1px solid var(--accent-line); }
+
+  /* Dashboard Command Center: Needs Attention + Operational/Validation Snapshot */
+  .dash-split-grid { display:grid; grid-template-columns:1.15fr 1fr; gap:16px; margin:0 0 16px; align-items:stretch; }
+  @media (max-width:960px) { .dash-split-grid { grid-template-columns:1fr; } }
+  
+  .dash-attn-list { display:flex; flex-direction:column; gap:8px; margin-top:10px; }
+  .dash-attn-item { display:flex; align-items:center; gap:12px; padding:10px 12px; background:var(--surface);
+                    border:1px solid var(--border); border-radius:var(--radius-sm); transition:border-color .15s ease; }
+  .dash-attn-item:hover { border-color:var(--accent-line); }
+  .dash-attn-body { flex:1; min-width:0; }
+  .dash-attn-title { font-size:13px; font-weight:600; color:var(--ink); }
+  .dash-attn-desc { font-size:12px; color:var(--ink3); margin-top:2px; }
+  .dash-attn-action { flex:none; margin:0; padding:4px 12px; font-size:12px; }
+
+  .dash-snapshots { display:flex; flex-direction:column; gap:12px; margin-top:10px; }
+  .dash-snapshot-card { background:var(--surface); border:1px solid var(--border); border-radius:var(--radius-sm);
+                        padding:12px 14px; display:flex; align-items:center; justify-content:space-between; gap:14px; }
+  .dash-snapshot-card:hover { border-color:var(--accent-line); }
+  .dash-snapshot-left { display:flex; align-items:center; gap:12px; }
+  .dash-snapshot-icon { width:38px; height:38px; border-radius:8px; display:flex; align-items:center;
+                        justify-content:center; flex:none; }
+  .dash-snapshot-title { font-size:13px; font-weight:600; color:var(--ink); }
+  .dash-snapshot-sub { font-size:12px; color:var(--muted); margin-top:2px; }
+  .dash-snapshot-right { display:flex; align-items:center; gap:12px; text-align:right; }
+
+  /* Observability Score Explanation */
+  .obs-formula-box { background:var(--surface); border:1px solid var(--border); border-radius:var(--radius);
+                     padding:14px 16px; margin:12px 0 0; }
+  .obs-formula-header { display:flex; align-items:center; justify-content:space-between; cursor:pointer; user-select:none; }
+  .obs-formula-header h3 { margin:0; font-size:13.5px; font-weight:600; color:var(--ink); display:flex; align-items:center; gap:8px; }
+  .obs-formula-grid { display:grid; grid-template-columns:repeat(auto-fit, minmax(200px, 1fr)); gap:10px; margin-top:12px; }
+  .obs-formula-card { background:var(--header-bg); border:1px solid var(--border); border-radius:var(--radius-sm); padding:10px 12px; }
+  .obs-formula-card-top { display:flex; align-items:center; justify-content:space-between; margin-bottom:4px; }
+  .obs-formula-card-name { font-size:12px; font-weight:600; color:var(--ink); }
+  .obs-formula-card-weight { font-size:11px; color:var(--muted); font-family:var(--mono); }
+  .obs-formula-card-val { font-size:18px; font-weight:700; font-family:var(--mono); color:var(--ink); }
+  .obs-formula-card-sub { font-size:11px; color:var(--muted); margin-top:3px; }
+
+  /* System Configuration Tiers */
+  .sys-runtime-notice { display:flex; align-items:center; justify-content:space-between; gap:14px;
+                        background:var(--accent-soft); border:1px solid var(--accent-line); border-radius:var(--radius);
+                        padding:10px 16px; margin:6px 0 14px; font-size:13px; color:var(--ink); }
+  .sys-config-section { margin-bottom:18px; }
+  .sys-config-grid { display:grid; grid-template-columns:repeat(auto-fit, minmax(320px, 1fr)); gap:14px; margin-top:10px; }
+  .sys-config-card { background:var(--surface); border:1px solid var(--border); border-radius:var(--radius);
+                     padding:14px 16px; display:flex; flex-direction:column; justify-content:space-between; }
+  .sys-config-card-hd { display:flex; align-items:center; justify-content:space-between; margin-bottom:8px; }
+  .sys-config-card-title { font-size:13.5px; font-weight:600; color:var(--ink); }
+

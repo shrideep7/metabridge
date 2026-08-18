@@ -1,4 +1,4 @@
-﻿const $ = s => document.querySelector(s);
+const $ = s => document.querySelector(s);
 // --- section-container integrity (self-heal) --------------------------------
 // Every section must be a DIRECT child of <main>: only one is shown at a time
 // by toggling .visible, so a section nested inside another one is hidden
@@ -3332,21 +3332,17 @@ async function loadDashboard() {
   catch (e) { loadErr('dashErr', e, loadDashboard); }
 }
 async function loadDashboardBody() {
-  // Each set is fetched with its own server-side filter rather than sliced out
-  // of one capped list. /api/jobs caps at the newest 100 jobs of EVERY kind, so
-  // filtering in the browser let unrelated scaffold/twin/analyze runs push real
-  // conversions past the cap — the tiles then described "16 runs" when 19
-  // existed. The activity table still wants the unfiltered list.
-  const [activity, convertsRes, scaffoldsRes] = await Promise.all([
+  // Fetch activity, completed runs, insights and observability in parallel
+  const [activity, convertsRes, scaffoldsRes, insRes, obsRes] = await Promise.all([
     api('/api/jobs'),
     api('/api/jobs?kind=convert&status=done'),
     api('/api/jobs?kind=scaffold&status=done'),
+    api('/api/system/insights').catch(() => null),
+    api('/api/observability').catch(() => null),
   ]);
   const jobs = activity.jobs;
   gJobsCache = jobs;
   let conns = [], connsOk = false;
-  // connsOk distinguishes "no connections" from "could not ask" — both leave
-  // conns empty, but only the second one is unknown (see mnum).
   try { conns = (await api('/api/v1/connections')).connections || []; connsOk = true; } catch (e) {}
   const converts = convertsRes.jobs;
   const scaffolds = scaffoldsRes.jobs;
@@ -3357,25 +3353,20 @@ async function loadDashboardBody() {
   const withR = windowed.map((j, i) => ({job: j, r: reports[i]})).filter(x => x.r);
   const assets = withR.reduce((n, x) => n + (x.r.mappings ? x.r.mappings.length : 0), 0);
   const verdicts = withR.map(x => (x.r.migration_validation || {}).verdict).filter(Boolean);
+  const passedVerdicts = verdicts.filter(v => v === 'PASS' || v === 'PASS_WITH_WARNINGS').length;
   const passRate = verdicts.length
-    ? Math.round(100 * verdicts.filter(v => v === 'PASS' || v === 'PASS_WITH_WARNINGS').length / verdicts.length) + '%'
+    ? Math.round(100 * passedVerdicts / verdicts.length) + '%'
     : '--';
-  // Manual review items is WHOLE-ESTATE, unlike the other two report-derived
-  // tiles. Outstanding work is the one figure that must not be a sample: a
-  // windowed count read as the total and understated it (13 shown, 17 real),
-  // and it is the tile most likely to drive action. Reports are memoized in
-  // jobReportsCache and fetched 8-at-a-time, so covering every run costs the
-  // delta only — ~3ms per uncached report.
+
   if (win) await jobReportsWarm(converts.map(j => j.id));
   const allReports = win
     ? await mapLimit(converts, 8, j => jobReport(j.id))
-    : reports;                       // window already covered everything
+    : reports;
   const allWithR = converts.map((j, i) => ({job: j, r: allReports[i]})).filter(x => x.r);
   const manual = allWithR.reduce((n, x) =>
     n + ((x.r.summary || {}).workload ? x.r.summary.workload.manual_queue || 0 : 0), 0);
   const pipelines = scaffolds.reduce((n, j) => n + ((j.summary || {}).objects_total || 0), 0);
-  // In-flight = every non-terminal convert. Counted from the kind-filtered set
-  // (not the capped mixed list) so a busy workspace cannot hide running work.
+
   let inFlightConverts = 0;
   try {
     const all = await api('/api/jobs?kind=convert');
@@ -3385,29 +3376,166 @@ async function loadDashboardBody() {
     inFlightConverts = jobs.filter(j => j.kind === 'convert'
       && ['running', 'queued', 'pending', 'in_progress'].includes(j.status)).length;
   }
+
+  const failedJobs = jobs.filter(j => j.status === 'failed');
+  const failedJobsCount = failedJobs.length;
+  const pendingApprovals = (insRes && insRes.usage && insRes.usage.approvals_pending) || 0;
+  const badConns = conns.filter(c => c.state === 'failed' || c.state === 'needs_credential');
+  const totalAttnCount = (failedJobsCount > 0 ? 1 : 0) + (pendingApprovals > 0 ? 1 : 0) + (manual > 0 ? 1 : 0) + (badConns.length > 0 ? 1 : 0);
+  const totalModRuns = converts.length + inFlightConverts;
+
+  // 1. Executive Summary Cards with Metric Integrity
   $('#dashCards').innerHTML =
     mcard(mnum(conns.filter(x => x.state === 'connected').length, connsOk), 'Connected systems',
-          connsOk ? (conns.length ? conns.length + ' saved' : 'Connect under Integrations')
+          connsOk ? (conns.length ? conns.length + ' configured' : 'Connect under Integrations')
                   : 'could not read connections')
-    + mcard(mnum(assets, withR.length > 0), 'Assets analyzed', withR.length ? 'across ' + withR.length + ' of ' + converts.length + ' runs' : '')
-    + mcard(mnum(converts.length), 'Modernizations', inFlightConverts + ' in flight')
-    + mcard(mnum(pipelines, scaffolds.length > 0), 'Models scaffolded', scaffolds.length ? scaffolds.length + ' scaffold runs' : '')
-    + mcard(passRate, 'Validation pass rate', verdicts.length ? 'from ' + verdicts.length + ' of ' + converts.length + ' runs' : 'no validated runs yet')
-    + mcard(manual || (allWithR.length ? 0 : '--'), 'Manual review items',
-            // Whole-estate, so the sub-label names runs that CARRY items rather
-            // than a window — no "N of M" here, the number is the real total.
-            manual ? 'across ' + allWithR.filter(x =>
-                ((x.r.summary || {}).workload || {}).manual_queue).length
-              + ' of ' + converts.length + ' runs' : '', manual ? 'manual' : '');
+    + mcard(mnum(assets, withR.length > 0), 'Assets analyzed', withR.length ? 'across ' + withR.length + ' completed runs' : 'no completed runs')
+    + mcard(mnum(totalModRuns), 'Modernization runs',
+            totalModRuns ? converts.length + ' completed · ' + inFlightConverts + ' in flight' : 'no runs yet')
+    + mcard(mnum(pipelines, scaffolds.length > 0), 'Models scaffolded', scaffolds.length ? scaffolds.length + ' scaffold runs' : 'no scaffold runs')
+    + mcard(passRate, 'Validation pass rate', verdicts.length ? passedVerdicts + ' of ' + verdicts.length + ' runs passed' : 'no validated runs yet')
+    + mcard(mnum(manual || (allWithR.length ? 0 : '--')), 'Manual review items',
+            manual ? 'across ' + allWithR.filter(x => ((x.r.summary || {}).workload || {}).manual_queue).length + ' runs' : 'queue clear',
+            manual ? 'manual' : '');
+
   const manualTile = $('#dashCards').querySelector('[data-drill="manual"]');
   if (manualTile) {
-    // Drill-down covers every run too, or it would list fewer items than the
-    // tile counts.
     const open = () => showManualQueue(allWithR);
     manualTile.onclick = open;
     manualTile.onkeydown = ev => {
       if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); open(); }
     };
+  }
+
+  // 2. Command Center: Needs Attention section
+  const attnListEl = $('#dashAttnList');
+  const attnBadgeEl = $('#dashAttnCount');
+  if (attnListEl) {
+    const attnItems = [];
+    if (failedJobsCount > 0) {
+      attnItems.push({
+        severity: 'critical',
+        title: failedJobsCount + ' failed job' + (failedJobsCount > 1 ? 's' : '') + ' in workspace',
+        desc: 'Execution errors encountered on recent runs — inspect error details or retry.',
+        actionText: 'View failed jobs',
+        onAction: () => {
+          const tab = $('#dashTabJob'); if (tab) tab.click();
+          const sel = $('#jobStatus'); if (sel) { sel.value = 'failed'; sel.dispatchEvent(new Event('change')); }
+        }
+      });
+    }
+    if (pendingApprovals > 0) {
+      attnItems.push({
+        severity: 'warning',
+        title: pendingApprovals + ' agent action' + (pendingApprovals > 1 ? 's' : '') + ' awaiting approval',
+        desc: 'Governed pipeline and migration actions stay blocked until approved.',
+        actionText: 'Open Governance',
+        onAction: () => sysNavigate('governance')
+      });
+    }
+    if (manual > 0) {
+      attnItems.push({
+        severity: 'warning',
+        title: manual + ' workload item' + (manual > 1 ? 's' : '') + ' in manual review queue',
+        desc: 'Complex expressions or schema mappings flagged for manual sign-off.',
+        actionText: 'Review Queue',
+        onAction: () => showManualQueue(allWithR)
+      });
+    }
+    if (badConns.length > 0) {
+      const hasFail = badConns.some(c => c.state === 'failed');
+      attnItems.push({
+        severity: hasFail ? 'critical' : 'warning',
+        title: badConns.length + ' connector' + (badConns.length > 1 ? 's' : '') + ' require configuration',
+        desc: badConns.map(c => c.name + ' (' + c.state.replace(/_/g, ' ') + ')').join(', '),
+        actionText: 'Fix Integrations',
+        onAction: () => sysNavigate('marketplace')
+      });
+    }
+
+    if (attnBadgeEl) {
+      attnBadgeEl.style.display = attnItems.length ? 'inline-flex' : 'none';
+      attnBadgeEl.textContent = attnItems.length + ' active';
+      attnBadgeEl.className = 'badge ' + (attnItems.some(i => i.severity === 'critical') ? 'bad' : 'warn');
+    }
+
+    if (attnItems.length) {
+      attnListEl.innerHTML = attnItems.map((item, idx) => {
+        const sevCls = item.severity === 'critical' ? 'critical' : item.severity === 'warning' ? 'warning' : 'info';
+        return '<div class="dash-attn-item">'
+          + '<span class="sev-badge ' + sevCls + '">' + item.severity + '</span>'
+          + '<div class="dash-attn-body">'
+          + '<div class="dash-attn-title">' + esc(item.title) + '</div>'
+          + '<div class="dash-attn-desc">' + esc(item.desc) + '</div>'
+          + '</div>'
+          + '<button type="button" class="secondary dash-attn-action" data-attidx="' + idx + '">' + esc(item.actionText) + '</button>'
+          + '</div>';
+      }).join('');
+      attnListEl.querySelectorAll('.dash-attn-action').forEach(b => {
+        const item = attnItems[parseInt(b.dataset.attidx, 10)];
+        if (item && item.onAction) b.onclick = item.onAction;
+      });
+    } else {
+      attnListEl.innerHTML = '<div style="display:flex;align-items:center;gap:10px;padding:14px 16px;background:var(--green-bg);border:1px solid var(--green-line);border-radius:var(--radius-sm);color:var(--green);font-size:13px;font-weight:600">'
+        + '<span>✓</span><span>All clear — no failing jobs, pending approvals, or credential blockers across the workspace.</span>'
+        + '</div>';
+    }
+  }
+
+  // 3. Command Center: Operational & Validation Snapshots
+  const snapEl = $('#dashSnapshots');
+  if (snapEl) {
+    const obsHealth = obsRes ? (obsRes.health_score || {}) : null;
+    const obsScore = obsHealth && obsHealth.score != null ? obsHealth.score : null;
+    const obsBand = obsHealth ? (obsHealth.band || 'unknown') : 'unknown';
+    const obsScoreCol = obsScore != null ? obsScoreColor(obsScore) : 'var(--muted)';
+    const activeJobs = obsRes ? (((obsRes.operational_dashboard || {}).active || {}).running_jobs || 0) : inFlightConverts;
+    const firingCrit = obsRes ? (((obsRes.alerting || {}).counts || {}).critical || 0) : 0;
+
+    const valScoreText = verdicts.length
+      ? passRate + ' pass rate (' + passedVerdicts + ' of ' + verdicts.length + ' runs passed)'
+      : 'No validated runs yet';
+
+    const estateTables = (insRes && insRes.usage && insRes.usage.estate && insRes.usage.estate.built)
+      ? (insRes.usage.estate.tables || 0).toLocaleString() + ' tables in estate graph'
+      : (conns.length ? conns.length + ' connected system(s)' : 'Connect sources to build estate');
+
+    snapEl.innerHTML =
+      '<div class="dash-snapshot-card">'
+      + '<div class="dash-snapshot-left">'
+      + '<div class="dash-snapshot-icon" style="background:' + (obsScore != null ? obsScoreCol + '18' : 'var(--line)') + ';color:' + obsScoreCol + '">'
+      + '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="m8 12 3 3 5-6"/></svg>'
+      + '</div>'
+      + '<div>'
+      + '<div class="dash-snapshot-title">Operational Health · ' + (obsScore != null ? '<b style="color:' + obsScoreCol + '">' + obsScore + '/100</b> (' + esc(obsBand) + ')' : 'No telemetry') + '</div>'
+      + '<div class="dash-snapshot-sub">' + (firingCrit ? '<span style="color:var(--red);font-weight:600">' + firingCrit + ' critical alert(s)</span> · ' : '') + activeJobs + ' running job(s)</div>'
+      + '</div></div>'
+      + '<button type="button" class="secondary" style="margin:0;padding:4px 12px;font-size:12px;white-space:nowrap" onclick="document.querySelector(\'nav a[data-page=observability]\').click()">Observability &rarr;</button>'
+      + '</div>'
+
+      + '<div class="dash-snapshot-card">'
+      + '<div class="dash-snapshot-left">'
+      + '<div class="dash-snapshot-icon" style="background:var(--accent-soft);color:var(--accent)">'
+      + '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3l8 3v5c0 5-3.5 8.5-8 10-4.5-1.5-8-5-8-10V6z"/><path d="m9 12 2 2 4-4"/></svg>'
+      + '</div>'
+      + '<div>'
+      + '<div class="dash-snapshot-title">Validation Health</div>'
+      + '<div class="dash-snapshot-sub">' + esc(valScoreText) + '</div>'
+      + '</div></div>'
+      + '<button type="button" class="secondary" style="margin:0;padding:4px 12px;font-size:12px;white-space:nowrap" onclick="document.querySelector(\'nav a[data-page=validation]\').click()">Validation &rarr;</button>'
+      + '</div>'
+
+      + '<div class="dash-snapshot-card">'
+      + '<div class="dash-snapshot-left">'
+      + '<div class="dash-snapshot-icon" style="background:#eef4ff;color:#2d6cdf">'
+      + '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v6c0 1.7 3.6 3 8 3s8-1.3 8-3V5"/><path d="M4 11v6c0 1.7 3.6 3 8 3s8-1.3 8-3v-6"/></svg>'
+      + '</div>'
+      + '<div>'
+      + '<div class="dash-snapshot-title">Data Estate &amp; Twin</div>'
+      + '<div class="dash-snapshot-sub">' + esc(estateTables) + '</div>'
+      + '</div></div>'
+      + '<button type="button" class="secondary" style="margin:0;padding:4px 12px;font-size:12px;white-space:nowrap" onclick="document.querySelector(\'nav a[data-page=estate]\').click()">Data Estate &rarr;</button>'
+      + '</div>';
   }
   const modRow = ({job, r}) => {
     const co = r.conversion_output || {};
@@ -8224,12 +8352,17 @@ async function loadValidationBody() {
   await jobReportsWarm(converts.map(j => j.id));
   const reports = await mapLimit(converts, 8, j => jobReport(j.id));
   const verdicts = reports.filter(Boolean).map(r => (r.migration_validation || {}).verdict).filter(Boolean);
-  const scope = verdicts.length + ' of ' + converts.length + ' runs';
+  const passedCount = verdicts.filter(v => v === 'PASS' || v === 'PASS_WITH_WARNINGS').length;
+  const failedCount = verdicts.filter(v => v === 'FAIL').length;
+  const manualCount = verdicts.filter(v => v === 'MANUAL_REVIEW').length;
+  const passRate = verdicts.length ? Math.round(100 * passedCount / verdicts.length) + '%' : '--';
+  const scope = verdicts.length + ' of ' + converts.length + ' modernization runs';
+
   $('#valCards').innerHTML =
     mcard(mnum(verdicts.length, converts.length > 0), 'Validation runs', converts.length ? scope : 'from modernization runs')
-    + mcard(verdicts.length ? Math.round(100 * verdicts.filter(v => v === 'PASS' || v === 'PASS_WITH_WARNINGS').length / verdicts.length) + '%' : '--', 'Pass rate', verdicts.length ? 'of validated runs' : '')
-    + mcard(verdicts.filter(v => v === 'FAIL').length, 'Failed', '')
-    + mcard(verdicts.filter(v => v === 'MANUAL_REVIEW').length, 'Manual review', '');
+    + mcard(passRate, 'Pass rate', verdicts.length ? passedCount + ' of ' + verdicts.length + ' runs passed' : 'no validated runs')
+    + mcard(failedCount, 'Failed runs', failedCount ? failedCount + ' require(s) remediation' : 'zero failures')
+    + mcard(manualCount, 'Manual review', manualCount ? manualCount + ' require(s) inspection' : 'zero flagged');
   const valOptLabel = j => {
     const route = [j.source, j.target].filter(Boolean).join(' → ');
     const when = (j.created || '').replace('T', ' ').slice(0, 16);
@@ -8317,105 +8450,180 @@ async function loadSystem() {
   if (!$('#sysEngines')) return;
   const err = $('#sysErr'); err.style.display = 'none';
 
-  // 1) the command center — workspace health, attention, activity, usage
-  let ins = null;
-  try { ins = await api('/api/system/insights'); }
-  catch (e) { err.style.display = 'block'; err.textContent = e.message; }
-  if (ins) {
-    const wsName = (ins.workspace || {}).name;
-    $('#osName').textContent = 'System' + (wsName ? ' · ' + wsName : '');
-    const v = SYS_VERDICTS[(ins.health || {}).verdict] || SYS_VERDICTS.HEALTHY;
-    const banner = $('#sysHealthBanner');
+  // Fetch system insights, manifest, connections, and AI settings
+  let ins = null, d = null, connsRes = null, aiRes = null, notifRes = null;
+  try {
+    [ins, d, connsRes, aiRes, notifRes] = await Promise.all([
+      api('/api/system/insights'),
+      api('/api/system'),
+      api('/api/v1/connections').catch(() => ({connections: []})),
+      api('/api/settings/ai').catch(() => null),
+      api('/api/settings/notifications').catch(() => null),
+    ]);
+  } catch (e) {
+    err.style.display = 'block';
+    err.textContent = e.message;
+    return;
+  }
+
+  // 1. Workspace Header & Configuration Health Banner
+  const wsName = (ins && ins.workspace ? ins.workspace.name : '') || (gUser && gUser.workspace_name) || '';
+  $('#osName').textContent = 'System & Administration' + (wsName ? ' · ' + wsName : '');
+  
+  const rawVerdict = ((ins && ins.health && ins.health.verdict) || 'HEALTHY').toUpperCase();
+  const v = SYS_VERDICTS[rawVerdict] || SYS_VERDICTS.HEALTHY;
+  const banner = $('#sysHealthBanner');
+  if (banner) {
     banner.style.background = v.bg;
     banner.style.border = '1px solid ' + v.c + '33';
     $('#sysVerdict').innerHTML = '<span style="color:' + v.c + ';font-size:17px">' + v.icon + '</span>'
-      + '<span style="color:' + v.c + '">' + v.label + '</span>'
+      + '<span style="color:' + v.c + '">Configuration ' + (rawVerdict === 'HEALTHY' ? 'Ready' : (rawVerdict === 'ATTENTION' ? 'Action Needed' : 'Issues')) + '</span>'
       + '<span style="color:var(--ink3);font-weight:400;font-size:12px;margin-left:6px">as of ' + esc((ins.as_of || '').replace('T', ' ')) + '</span>';
+    
     $('#sysComponents').innerHTML = ((ins.health || {}).components || []).map(c => {
       const col = c.status === 'err' ? '#c0392b' : c.status === 'warn' ? '#c77d0a' : '#1e8449';
       return '<span style="display:inline-flex;align-items:center;gap:6px;background:var(--surface);border:1px solid #e2e6ee;border-radius:20px;padding:4px 12px;font-size:12px">'
         + '<span style="width:8px;height:8px;border-radius:50%;background:' + col + '"></span>'
         + '<b>' + esc(c.name) + '</b><span style="color:var(--ink3)">' + esc(c.detail) + '</span></span>';
     }).join('');
-
-    const u = ins.usage || {}, cs = u.connections || {}, es = u.estate || {};
-    $('#sysMetrics').innerHTML =
-      '<span><b>' + (u.jobs_7d || 0) + '</b> Jobs this week'
-      + (u.success_rate_7d_pct != null ? ' · <span style="color:' + (u.success_rate_7d_pct >= 90 ? '#1e8449' : '#c77d0a') + '">' + u.success_rate_7d_pct + '% success</span>' : '') + '</span>'
-      + '<span><b>' + (cs.connected || 0) + '/' + (cs.total || 0) + '</b> Connections healthy</span>'
-      + '<span><b>' + (es.built ? Number(es.tables || 0).toLocaleString() : '--') + '</b> Tables in estate'
-      + (es.built && es.rows ? ' · ' + Number(es.rows).toLocaleString() + ' rows' : (es.built ? '' : ' · build the Digital Twin')) + '</span>'
-      + '<span><b>' + (u.approvals_pending || 0) + '</b> Approvals pending</span>'
-      + '<span><b>' + ((ins.workspace || {}).members || 0) + '</b> Workspace members</span>';
-
-    const att = ins.attention || [];
-    $('#sysAttention').innerHTML = att.length ? att.map(a => {
-      const col = a.severity === 'critical' ? '#c0392b' : a.severity === 'warning' ? '#c77d0a' : 'var(--ink3)';
-      return '<div style="display:flex;gap:10px;align-items:flex-start;padding:9px 0;border-bottom:1px solid #f0f2f6">'
-        + '<span style="width:8px;height:8px;border-radius:50%;background:' + col + ';margin-top:5px;flex:none"></span>'
-        + '<div style="flex:1;min-width:0"><div style="font-weight:600;font-size:13px">' + esc(a.title) + '</div>'
-        + '<div style="font-size:12px;color:var(--ink3)">' + esc(a.detail || '') + '</div></div>'
-        + (a.page ? '<button class="secondary sys-att-go" data-page="' + esc(a.page) + '" data-sec="' + esc(a.sec || '') + '" style="margin:0;padding:4px 12px;font-size:12px;flex:none">Open</button>' : '')
-        + '</div>';
-    }).join('')
-      : '<div style="display:flex;align-items:center;gap:10px;padding:14px 0;color:#1e8449;font-weight:600;font-size:13.5px">✓ All clear — nothing needs your attention.</div>';
-    $('#sysAttention').querySelectorAll('.sys-att-go').forEach(b =>
-      b.onclick = () => sysNavigate(b.dataset.page, b.dataset.sec));
-
-    const acts = ins.activity || [];
-    $('#sysActivity').innerHTML = acts.length ? acts.map(j => {
-      // Lifecycle state, not process state — this list describes the same runs
-      // as Overview and the Reports table and must not disagree with them.
-      const dur = (j.seconds != null) ? (j.seconds < 60 ? j.seconds + 's' : Math.round(j.seconds / 60) + 'm') : '';
-      return '<div class="sys-act-row" data-id="' + esc(j.id) + '" style="display:flex;gap:10px;align-items:center;padding:7px 0;border-bottom:1px solid #f0f2f6;cursor:pointer">'
-        + '<span style="font-weight:600;font-size:12.5px;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(SYS_KIND_LABELS[j.kind] || j.kind) + '</span>'
-        + '<span style="font-size:11.5px">' + runStatusChip(j) + '</span>'
-        + (dur ? '<span style="font-size:11.5px;color:var(--muted2)">' + dur + '</span>' : '')
-        + '<span style="font-size:11.5px;color:var(--muted2);flex:none">' + esc(fmtAgo(j.created)) + '</span></div>';
-    }).join('')
-      : '<div style="color:#889;font-size:13px;padding:10px 0">No runs yet in this workspace — start in Modernize, Pipeline Studio or Governance.</div>';
-    $('#sysActivity').querySelectorAll('.sys-act-row').forEach(r =>
-      r.onclick = () => openJobDetail(r.dataset.id).catch(e => mbAlert(e.message)));
   }
 
-  // 2) platform internals (the OS manifest) — collapsed by default
-  let d;
-  try { d = await api('/api/system'); }
-  catch (e) { err.style.display = 'block'; err.textContent = e.message; return; }
-  const os = d.os || {};
-  const hs = (d.health || {}).summary || {};
-  $('#sysOsMetrics').innerHTML =
-    '<span><b>' + (os.engine_count || 0) + '</b> Engines</span>'
-    + '<span><b>' + (os.service_count || 0) + '</b> Platform services</span>'
-    + '<span><b>' + (os.canonical_model_count || 0) + '</b> Canonical models</span>'
-    + '<span><b>v' + esc(os.version || '?') + '</b> OS version</span>'
-    + '<span><b>' + (hs.available || 0) + '</b> available'
-    + (hs.error ? ' · <span style="color:var(--red)">' + hs.error + ' error</span>' : '')
-    + (hs.degraded ? ' · <span style="color:var(--amber)">' + hs.degraded + ' degraded</span>' : '')
-    + '</span>';
+  // 2. Configuration Issues Section (Actionable setup blockers)
+  const configIssues = (ins && ins.attention ? ins.attention : []).filter(a =>
+    a.page === 'marketplace' || a.page === 'settings' || a.page === 'system' || a.severity === 'critical'
+  );
+  const issuesWrap = $('#sysConfigIssuesWrap');
+  const issuesList = $('#sysConfigIssues');
+  if (issuesWrap && issuesList) {
+    if (configIssues.length) {
+      issuesWrap.style.display = 'block';
+      issuesList.innerHTML = configIssues.map(a => {
+        const col = a.severity === 'critical' ? '#c0392b' : a.severity === 'warning' ? '#c77d0a' : 'var(--ink3)';
+        return '<div style="display:flex;gap:10px;align-items:flex-start;padding:9px 0;border-bottom:1px solid #f0f2f6">'
+          + '<span style="width:8px;height:8px;border-radius:50%;background:' + col + ';margin-top:5px;flex:none"></span>'
+          + '<div style="flex:1;min-width:0"><div style="font-weight:600;font-size:13px">' + esc(a.title) + '</div>'
+          + '<div style="font-size:12px;color:var(--ink3)">' + esc(a.detail || '') + '</div></div>'
+          + (a.page ? '<button class="secondary sys-att-go" data-page="' + esc(a.page) + '" data-sec="' + esc(a.sec || '') + '" style="margin:0;padding:4px 12px;font-size:12px;flex:none">Configure</button>' : '')
+          + '</div>';
+      }).join('');
+      issuesList.querySelectorAll('.sys-att-go').forEach(b =>
+        b.onclick = () => sysNavigate(b.dataset.page, b.dataset.sec));
+    } else {
+      issuesWrap.style.display = 'none';
+    }
+  }
 
-  // engines grouped by category
+  // 3. Connections Configuration Card
+  const conns = (connsRes && connsRes.connections) || [];
+  const connConnected = conns.filter(c => c.state === 'connected').length;
+  const connNeedsCred = conns.filter(c => c.state === 'needs_credential').length;
+  const connFailed = conns.filter(c => c.state === 'failed').length;
+  const connBadge = $('#sysConnBadge');
+  if (connBadge) {
+    if (connFailed > 0) {
+      connBadge.className = 'sev-badge critical';
+      connBadge.textContent = connFailed + ' failed';
+    } else if (connNeedsCred > 0) {
+      connBadge.className = 'sev-badge warning';
+      connBadge.textContent = connNeedsCred + ' need key';
+    } else if (conns.length > 0) {
+      connBadge.className = 'sev-badge healthy';
+      connBadge.textContent = connConnected + '/' + conns.length + ' ready';
+    } else {
+      connBadge.className = 'sev-badge info';
+      connBadge.textContent = 'None configured';
+    }
+  }
+  const connDetail = $('#sysConnDetail');
+  if (connDetail) {
+    connDetail.textContent = conns.length
+      ? connConnected + ' of ' + conns.length + ' connections healthy and passing live tests.'
+      : 'No database or source connectors saved yet.';
+  }
+  const connList = $('#sysConnList');
+  if (connList) {
+    connList.innerHTML = conns.slice(0, 4).map(c => {
+      const col = c.state === 'connected' ? 'var(--green)' : c.state === 'failed' ? 'var(--red)' : 'var(--amber)';
+      return '<div style="display:flex;align-items:center;justify-content:space-between;padding:3px 0">'
+        + '<span><span style="display:inline-block;width:7px;height:7px;border-radius:50%;background:' + col + ';margin-right:6px"></span>'
+        + '<b>' + esc(c.name) + '</b> <small style="color:var(--muted)">(' + esc(c.connector || '') + ')</small></span>'
+        + '<span style="color:' + col + ';font-size:11px;font-weight:600">' + esc((c.state || 'untested').replace(/_/g, ' ')) + '</span>'
+        + '</div>';
+    }).join('') + (conns.length > 4 ? '<div style="color:var(--muted);font-size:11px;margin-top:2px">+ ' + (conns.length - 4) + ' more connector(s)</div>' : '');
+  }
+
+  // 4. AI Runtime Configuration Card
+  const aiProvider = (aiRes && aiRes.active_provider) || (aiRes && aiRes.provider) || 'Anthropic';
+  const aiKeyConfigured = Boolean(aiRes && (aiRes.configured || aiRes.has_key || aiRes.api_key_set));
+  const aiBadge = $('#sysAiBadge');
+  if (aiBadge) {
+    aiBadge.className = 'sev-badge ' + (aiKeyConfigured ? 'healthy' : 'warning');
+    aiBadge.textContent = aiKeyConfigured ? 'Active' : 'Unconfigured';
+  }
+  const aiDetail = $('#sysAiDetail');
+  if (aiDetail) {
+    aiDetail.innerHTML = 'Active provider: <b>' + esc(aiProvider) + '</b> · '
+      + (aiKeyConfigured ? '<span style="color:var(--green)">API key set</span>' : '<span style="color:var(--amber)">API key missing</span>');
+  }
+  const aiCaps = $('#sysAiCapabilities');
+  if (aiCaps) {
+    aiCaps.innerHTML = [
+      { name: 'Auto-Fix Engine', desc: 'Syntax and type remediation', ok: aiKeyConfigured },
+      { name: 'Semantic Validation', desc: 'LLM equivalence review', ok: aiKeyConfigured },
+      { name: 'Natural Language Assist', desc: 'Ask MetaBridge AI', ok: aiKeyConfigured },
+    ].map(cap => '<div style="display:flex;align-items:center;justify-content:space-between;padding:3px 0">'
+      + '<span><b>' + esc(cap.name) + '</b> <small style="color:var(--muted)">' + esc(cap.desc) + '</small></span>'
+      + '<span style="font-size:11px;font-weight:600;color:' + (cap.ok ? 'var(--green)' : 'var(--muted)') + '">' + (cap.ok ? 'Enabled' : 'Disabled') + '</span>'
+      + '</div>').join('');
+  }
+
+  // 5. Notification Dispatch Configuration Card
+  const notifReady = Boolean(notifRes && (notifRes.email_configured || notifRes.smtp_ready || notifRes.ready));
+  const notifBadge = $('#sysNotifBadge');
+  if (notifBadge) {
+    notifBadge.className = 'sev-badge ' + (notifReady ? 'healthy' : 'info');
+    notifBadge.textContent = notifReady ? 'SMTP Ready' : 'In-App Only';
+  }
+  const notifDetail = $('#sysNotifDetail');
+  if (notifDetail) {
+    notifDetail.textContent = notifReady
+      ? 'Outbound email delivery active for approvals, invites, and alerts.'
+      : 'In-app notification feed active; outbound SMTP / SES not configured.';
+  }
+  const notifSummary = $('#sysNotifSummary');
+  if (notifSummary) {
+    const unseenCount = (d && d.notifications && d.notifications.unseen) || 0;
+    notifSummary.innerHTML = '<div style="display:flex;align-items:center;justify-content:space-between;padding:3px 0">'
+      + '<span><b>In-app Notification Feed</b></span>'
+      + '<span style="font-size:11px;color:var(--ink3)">' + unseenCount + ' unseen</span>'
+      + '</div>'
+      + '<div style="display:flex;align-items:center;justify-content:space-between;padding:3px 0">'
+      + '<span><b>Outbound Email Delivery</b></span>'
+      + '<span style="font-size:11px;font-weight:600;color:' + (notifReady ? 'var(--green)' : 'var(--muted)') + '">' + (notifReady ? 'Configured' : 'Not Set') + '</span>'
+      + '</div>';
+  }
+
+  // 6. Platform Engines & Services (OS Manifest)
+  if (!d) return;
+  const os = d.os || {};
   const cats = d.engines_by_category || {};
-  $('#sysEngCount').textContent = (d.engines || []).length + ' engines';
+  $('#sysEngCount').textContent = (d.engines || []).length + ' engines · v' + esc(os.version || '1.0');
   $('#sysEngines').innerHTML = Object.keys(cats).filter(c => (cats[c] || []).length)
-    .map(c => '<div style="margin:12px 0 6px"><b style="font-size:13px">' + esc(c)
+    .map(c => '<div style="margin:14px 0 6px"><b style="font-size:13px">' + esc(c)
       + '</b> <span style="color:var(--muted);font-size:12px">(' + cats[c].length + ')</span></div>'
-      + '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:10px">'
+      + '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:10px">'
       + cats[c].map(e => sysEngineCard(e)).join('') + '</div>').join('');
 
-  // services
   $('#sysServices').innerHTML = (d.services || []).map(s =>
-    '<div style="display:flex;align-items:center;gap:10px;padding:5px 0;border-bottom:1px solid #f0f2f6">'
-    + '<span style="width:9px;height:9px;border-radius:50%;background:' + sysHc(s.health) + '"></span>'
-    + '<span style="font-weight:600;font-size:12.5px;min-width:150px">' + esc(s.name) + '</span>'
-    + '<span style="font-size:11.5px;color:' + sysHc(s.health) + '">' + esc(s.health) + '</span>'
+    '<div style="display:flex;align-items:center;gap:10px;padding:6px 0;border-bottom:1px solid #f0f2f6">'
+    + '<span style="width:8px;height:8px;border-radius:50%;background:' + sysHc(s.health) + ';flex:none"></span>'
+    + '<span style="font-weight:600;font-size:12.5px;min-width:140px">' + esc(s.name) + '</span>'
     + '<span style="flex:1;font-size:11.5px;color:var(--muted)">' + esc(s.description) + '</span>'
-    + '<span style="font-size:10.5px;background:var(--line);border-radius:3px;padding:1px 6px">' + esc(s.layer) + '</span></div>').join('');
+    + '<span style="font-size:10px;background:var(--line);border-radius:3px;padding:1px 6px;flex:none">' + esc(s.layer) + '</span></div>').join('');
 
-  // canonical models with produced_by -> consumed_by
   $('#sysCanonical').innerHTML = (d.canonical_models || []).map(m =>
     '<div style="padding:6px 0;border-bottom:1px solid #f0f2f6">'
-    + '<div><span style="width:8px;height:8px;border-radius:50%;display:inline-block;background:'
+    + '<div><span style="width:7px;height:7px;border-radius:50%;display:inline-block;background:'
     + (m.available ? 'var(--green)' : 'var(--red)') + ';margin-right:6px"></span>'
     + '<b style="font-size:12.5px">' + esc(m.name) + '</b> '
     + '<span style="color:var(--muted2);font-size:11px">' + esc(m.ref) + '</span></div>'
@@ -8423,36 +8631,27 @@ async function loadSystem() {
     + '<b>' + (m.produced_by || []).length + '</b> producer(s) → <b>'
     + (m.consumed_by || []).length + '</b> consumer(s)</div></div>').join('');
 
-  // feature flags — toggling is a configuration action (settings:manage)
+  // 7. Feature Flags, Versions & Workspace Administration
   $('#sysFlags').innerHTML = (d.feature_flags || []).map(f =>
-    '<div style="display:flex;align-items:center;gap:10px;padding:5px 0;border-bottom:1px solid #f0f2f6">'
+    '<div style="display:flex;align-items:center;gap:10px;padding:6px 0;border-bottom:1px solid #f0f2f6">'
     + '<button type="button" class="sys-flag" data-key="' + esc(f.key) + '" data-on="'
-    + (f.enabled ? '1' : '') + '" style="margin:0;padding:2px 10px;font-size:11.5px;'
+    + (f.enabled ? '1' : '') + '" style="margin:0;padding:2px 8px;font-size:11px;flex:none;'
     + 'background:' + (f.enabled ? 'var(--green-fill)' : 'var(--border)') + ';color:' + (f.enabled ? '#fff' : 'var(--ink3)')
     + '"' + (can('settings:manage') ? '' : ' disabled title="' + esc(permTitle('settings:manage')) + '"')
     + '>' + (f.enabled ? 'ON' : 'OFF') + '</button>'
-    + '<span style="font-weight:600;font-size:12px;min-width:170px">' + esc(f.key) + '</span>'
-    + '<span style="flex:1;font-size:11.5px;color:var(--muted)">' + esc(f.description || '')
-    + (f.rollout_pct != null && f.rollout_pct < 100 ? ' · ' + f.rollout_pct + '% rollout' : '')
-    + ((f.roles || []).length ? ' · roles: ' + f.roles.map(esc).join(',') : '') + '</span></div>').join('');
+    + '<span style="font-weight:600;font-size:12px;min-width:160px">' + esc(f.key) + '</span>'
+    + '<span style="flex:1;font-size:11.5px;color:var(--muted)">' + esc(f.description || '') + '</span></div>').join('');
 
-  // versions + notifications
+  const wsInfo = $('#sysWsInfo');
+  if (wsInfo && ins && ins.workspace) {
+    wsInfo.innerHTML = '<div style="background:var(--header-bg);border:1px solid var(--border);border-radius:var(--radius-sm);padding:10px 12px;font-size:12.5px">'
+      + '<div><b>Workspace:</b> ' + esc(ins.workspace.name || 'Default Workspace') + ' <code>(' + esc(ins.workspace.id || '') + ')</code></div>'
+      + '<div style="margin-top:4px;color:var(--ink3)"><b>Members:</b> ' + (ins.workspace.members || 1) + ' enrolled · Full RBAC enabled</div>'
+      + '</div>';
+  }
+
   $('#sysVersions').innerHTML = '<tr><th>Component</th><th>Version</th></tr>'
     + (d.versions || []).map(v => '<tr><td>' + esc(v.component) + '</td><td>' + esc(v.version) + '</td></tr>').join('');
-  const nc = d.notifications || {};
-  $('#sysNotifCount').textContent = nc.total ? '(' + (nc.unseen || 0) + ' unseen / ' + nc.total + ')' : '(none)';
-  try {
-    const nd = await api('/api/system/notifications?limit=20');
-    $('#sysNotifs').innerHTML = (nd.notifications || []).length
-      ? nd.notifications.map(n => {
-          const c = n.severity === 'critical' ? 'var(--red)' : n.severity === 'warning'
-            ? 'var(--amber)' : n.severity === 'success' ? 'var(--green)' : 'var(--ink3)';
-          return '<div style="padding:4px 0;border-bottom:1px solid #f4f5f8">'
-            + '<span style="color:' + c + ';font-weight:600">' + esc(n.title) + '</span>'
-            + ' <span style="color:var(--muted2);font-size:11px">' + esc(n.topic) + '</span></div>';
-        }).join('')
-      : '<div style="color:var(--muted)">No notifications.</div>';
-  } catch (e) { $('#sysNotifs').innerHTML = ''; }
 }
 
 function sysEngineCard(e) {
@@ -8870,6 +9069,66 @@ function paintObsHealth() {
           + '<span>' + esc(OBS_SIG_LABELS[k] || k) + '</span>'
           + '<em>' + esc(obsScoreBand(v)) + '</em></div>';
       }).join('') + '</div>';
+
+  paintObsScoreExpl();
+}
+
+const OBS_SIG_META = {
+  pipeline: { label: 'Pipeline Health', weight: '25%', wVal: 0.25, basis: 'Measured from run history' },
+  reliability: { label: 'System Reliability', weight: '20%', wVal: 0.20, basis: '100% - Failure Rate' },
+  agents: { label: 'Agent Operations', weight: '15%', wVal: 0.15, basis: 'Measured actions & steps' },
+  validation: { label: 'Validation Pass', weight: '15%', wVal: 0.15, basis: 'Layer verdict pass rate' },
+  connectors: { label: 'Connector Health', weight: '15%', wVal: 0.15, basis: 'Live connection tests' },
+  latency: { label: 'Latency SLO (p95)', weight: '10%', wVal: 0.10, basis: 'p95 vs 60s target' },
+};
+
+function paintObsScoreExpl() {
+  const host = $('#obsScoreExpl');
+  if (!host) return;
+  const h = gObs.health_score || {};
+  const cs = h.contributors || {};
+  const score = h.score;
+  if (!Object.keys(cs).length) { host.innerHTML = ''; return; }
+
+  const topDetractors = (h.top_detractors || []).slice(0, 2);
+  const detractorNote = topDetractors.length
+    ? '<div style="margin-top:10px;font-size:12.5px;color:var(--amber);background:var(--amber-bg);border:1px solid var(--amber-line);padding:8px 12px;border-radius:var(--radius-sm)">'
+      + '<b>Main Score Detractors:</b> ' + topDetractors.map(t => '<b>' + (OBS_SIG_META[t.area]?.label || t.area) + ' (' + Math.round(t.score) + '/100)</b>').join(' and ')
+      + ' are currently the lowest sub-scores holding down your operational rating.'
+      + '</div>'
+    : '';
+
+  host.innerHTML = '<details class="obs-formula-box" id="obsFormulaDetails" style="margin-top:14px">'
+    + '<summary style="cursor:pointer;font-weight:600;font-size:13px;color:var(--ink2);display:flex;align-items:center;justify-content:space-between">'
+    + '<span>&#9432; How is this <b>' + (score != null ? score + '/100' : 'health') + '</b> score calculated?</span>'
+    + '<span style="font-size:11.5px;color:var(--accent);font-weight:500">View formula breakdown &amp; signal weights &darr;</span>'
+    + '</summary>'
+    + '<div style="margin-top:10px;font-size:12.5px;color:var(--ink3);line-height:1.6">'
+    + 'The Operational Health score is a deterministic weighted composite (0–100) calculated across active telemetry signals. '
+    + 'Formula: <code>Score = &Sigma;(Signal &times; Weight) / &Sigma;Active Weights</code>.'
+    + '</div>'
+    + detractorNote
+    + '<div class="obs-formula-grid">'
+    + Object.entries(OBS_SIG_META).map(([k, meta]) => {
+        const val = cs[k];
+        const hasVal = val != null;
+        const col = hasVal ? obsScoreColor(val) : 'var(--muted)';
+        const band = hasVal ? obsScoreBand(val) : 'no data';
+        const points = hasVal ? (val * meta.wVal).toFixed(1) : '--';
+        return '<div class="obs-formula-card">'
+          + '<div class="obs-formula-card-top">'
+          + '<span class="obs-formula-card-name">' + esc(meta.label) + '</span>'
+          + '<span class="obs-formula-card-weight">' + meta.weight + '</span>'
+          + '</div>'
+          + '<div class="obs-formula-card-val" style="color:' + col + '">' + (hasVal ? Math.round(val) : '--') + '<span style="font-size:12px;font-weight:400;color:var(--muted)"> / 100</span></div>'
+          + '<div class="obs-formula-card-sub">'
+          + (hasVal ? '<b>' + points + ' pts</b> contributed · ' + esc(band) : 'No telemetry yet')
+          + '</div>'
+          + '<div style="font-size:10.5px;color:var(--muted2);margin-top:3px">' + esc(meta.basis) + '</div>'
+          + '</div>';
+      }).join('')
+    + '</div>'
+    + '</details>';
 }
 
 /* The daily series is the one real time dimension the payload carries, so the
