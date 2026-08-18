@@ -363,7 +363,18 @@ def _ingest_procedural_unit(unit, filename: str, dialect: str,
             continue
         try:
             parsed = sqlglot.parse_one(st["sql"], read=dialect or None)
-        except Exception:  # noqa: BLE001
+        except Exception as e:  # noqa: BLE001
+            # A statement CLASSIFIED as a transformation and then dropped
+            # without a word is the worst outcome available here: the review
+            # pack said "no set-based statement converted cleanly" and never
+            # said that one of them had failed to PARSE. Vendor syntax with no
+            # sqlglot dialect behind it — SAP HANA's REPLACE_REGEXPR, say —
+            # lands exactly here, and silence turns a known parser gap into an
+            # unexplained empty result.
+            pipeline.metadata.setdefault("procedure_unparsed", []).append({
+                "procedure": deco["object_name"], "source": filename,
+                "reason": " ".join(str(e).split())[:200],
+                "sql": st["sql"][:2000]})
             continue
         if isinstance(parsed, (exp.Insert, exp.Create, exp.Merge)):
             from ..sqlx.legacy_normalize import normalize_legacy_statement

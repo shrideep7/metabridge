@@ -694,3 +694,139 @@ def test_write_logic_pack_states_what_was_skipped(tmp_path):
     # and the pipeline itself carries the finding, so the conversion report
     # cannot show a clean sheet
     assert any(i.code == "PROCEDURE_NOT_CONVERTED" for i in pipeline.issues)
+
+
+# ---------------------------------------------------------------------------
+# SAP HANA: SQLScript bodies, and vendor syntax no parser models
+# ---------------------------------------------------------------------------
+
+HANA_BUILD_SILVER = """CREATE PROCEDURE RAW_SCHEMA.SP_BUILD_SILVER ( )
+LANGUAGE SQLSCRIPT
+AS
+BEGIN
+    DELETE FROM SILVER_SCHEMA.DIM_CUSTOMER;
+
+    INSERT INTO SILVER_SCHEMA.DIM_CUSTOMER (CUSTOMER_ID, FULL_NAME, GENDER)
+    SELECT
+        CUSTOMER_ID,
+        FIRST_NAME || ' ' || LAST_NAME,
+        CASE WHEN UPPER(SUBSTRING(GENDER,1,1)) = 'M' THEN 'M' ELSE 'F' END
+    FROM RAW_SCHEMA.CUSTOMERS
+    WHERE EMAIL IS NOT NULL;
+
+    DELETE FROM SILVER_SCHEMA.FCT_TRANSACTION;
+
+    INSERT INTO SILVER_SCHEMA.FCT_TRANSACTION (TXN_ID, AMOUNT)
+    SELECT TXN_ID, AMOUNT
+    FROM RAW_SCHEMA.TRANSACTIONS
+    WHERE UPPER(STATUS) = 'SUCCESS';
+END;"""
+
+
+def _hana_pipeline():
+    from metabridge.connectors.base import get_registry
+    from metabridge.scaffold import build_pipeline
+    tables = [
+        {"name": "CUSTOMERS", "schema": "RAW_SCHEMA",
+         "columns": [{"name": "CUSTOMER_ID", "type": "INTEGER"},
+                     {"name": "FIRST_NAME", "type": "NVARCHAR(60)"},
+                     {"name": "LAST_NAME", "type": "NVARCHAR(60)"},
+                     {"name": "EMAIL", "type": "NVARCHAR(120)"},
+                     {"name": "PHONE", "type": "NVARCHAR(30)"},
+                     {"name": "GENDER", "type": "NVARCHAR(10)"}]},
+        {"name": "TRANSACTIONS", "schema": "RAW_SCHEMA",
+         "columns": [{"name": "TXN_ID", "type": "INTEGER"},
+                     {"name": "AMOUNT", "type": "DECIMAL(15,2)"},
+                     {"name": "STATUS", "type": "NVARCHAR(20)"}]},
+    ]
+    return build_pipeline("hana", get_registry().get("sap_hana"), tables)
+
+
+def test_a_case_expression_does_not_cut_the_procedure_in_half():
+    """The splitter counted BEGIN as the only opener and every END as a closer,
+    so the END of a `CASE WHEN ... END` inside a SELECT ended the procedure
+    MID-STATEMENT. Everything after it became an orphan fragment: here, the
+    entire second half of a silver build."""
+    from metabridge.parsers.legacy_script import split_legacy_script
+    (unit,) = split_legacy_script(HANA_BUILD_SILVER, "").units
+    assert unit.kind == "procedural"
+    assert "FCT_TRANSACTION" in unit.text          # the half that was lost
+
+    pipeline = _hana_pipeline()
+    merge_procedure_logic(
+        pipeline, [{"name": "SP_BUILD_SILVER", "schema": "RAW_SCHEMA",
+                    "language": "SQLSCRIPT",
+                    "definition": HANA_BUILD_SILVER}], dialect="")
+    names = {m.name for m in pipeline.mappings}
+    assert {"DIM_CUSTOMER", "FCT_TRANSACTION"} <= names
+
+
+def test_end_if_and_end_loop_do_not_close_the_procedure():
+    """They close constructs whose openers are deliberately not counted."""
+    from metabridge.parsers.legacy_script import split_legacy_script
+    body = """CREATE PROCEDURE p ( ) LANGUAGE SQLSCRIPT AS
+BEGIN
+    IF 1 = 1 THEN
+        INSERT INTO t (a) SELECT a FROM s;
+    END IF;
+    INSERT INTO t2 (b) SELECT b FROM s2;
+END;"""
+    (unit,) = split_legacy_script(body, "").units
+    assert "t2" in unit.text
+
+
+def test_hana_replace_regexpr_is_rewritten_so_it_parses():
+    """SAP HANA writes regex replacement in a shape sqlglot models in NO
+    dialect (it has no HANA dialect at all), so the statement holding it was
+    lost entirely — and in a real estate that statement is the customer
+    cleansing INSERT."""
+    import sqlglot
+    from metabridge.procedures import normalize_vendor_syntax
+    hana = ("SELECT RIGHT(REPLACE_REGEXPR('[^0-9]' IN PHONE WITH '' "
+            "OCCURRENCE ALL), 10) FROM T")
+    with pytest.raises(Exception):
+        sqlglot.parse_one(hana)
+    out, applied = normalize_vendor_syntax(hana)
+    assert "REGEXP_REPLACE(PHONE, '[^0-9]', '')" in out
+    assert applied and "REPLACE_REGEXPR" in applied[0]
+    assert sqlglot.parse_one(out) is not None
+
+
+def test_a_transformation_statement_that_cannot_be_parsed_is_reported():
+    """Classified as a transformation, then dropped without a word: the pack
+    said "no set-based statement converted cleanly" and never said one had
+    FAILED TO PARSE. The two are not the same finding."""
+    body = """CREATE PROCEDURE p ( ) LANGUAGE SQLSCRIPT AS
+BEGIN
+    INSERT INTO SILVER_SCHEMA.DIM_CUSTOMER (CUSTOMER_ID, PHONE)
+    SELECT CUSTOMER_ID,
+           REPLACE_REGEXPR('[0-9]' FLAG 'i' IN PHONE WITH 'x')
+    FROM RAW_SCHEMA.CUSTOMERS;
+END;"""
+    pipeline = _hana_pipeline()
+    summary = merge_procedure_logic(
+        pipeline, [{"name": "P", "schema": "RAW_SCHEMA",
+                    "language": "SQLSCRIPT", "definition": body}], dialect="")
+    assert summary["unparsed_statements"] == 1
+    (proc,) = summary["procedures"]
+    assert proc["models"] == []
+    assert proc["unparsed"] and "Expecting" in proc["unparsed"][0]["reason"]
+    assert any(i.code == "PROCEDURE_STATEMENT_UNPARSED"
+               for i in pipeline.issues)
+
+
+def test_the_pack_says_a_statement_failed_to_parse(tmp_path):
+    body = """CREATE PROCEDURE p ( ) LANGUAGE SQLSCRIPT AS
+BEGIN
+    INSERT INTO SILVER_SCHEMA.DIM_CUSTOMER (CUSTOMER_ID, PHONE)
+    SELECT CUSTOMER_ID, REPLACE_REGEXPR('[0-9]' FLAG 'i' IN PHONE WITH 'x')
+    FROM RAW_SCHEMA.CUSTOMERS;
+END;"""
+    procs = [{"name": "P", "schema": "RAW_SCHEMA", "language": "SQLSCRIPT",
+              "definition": body}]
+    summary = merge_procedure_logic(_hana_pipeline(), procs, dialect="")
+    write_logic_pack(summary, str(tmp_path), procs)
+    md = (tmp_path / "procedures" / "PROCEDURE_LOGIC.md").read_text(
+        encoding="utf-8")
+    assert "did NOT parse" in md
+    assert "REPLACE_REGEXPR" in md

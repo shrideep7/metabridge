@@ -95,6 +95,12 @@ _NAME_AFTER = re.compile(r'^[\s]*(?:"([^"]+)"|\[([^\]]+)\]|([\w.$#]+))')
 
 _BEGIN = re.compile(r"\bBEGIN\b", re.IGNORECASE)
 _END = re.compile(r"\bEND\b", re.IGNORECASE)
+_CASE = re.compile(r"\bCASE\b", re.IGNORECASE)
+_END_CASE = re.compile(r"\bEND\s+CASE\b", re.IGNORECASE)
+# an END that closes a construct we DID count as an opener; END IF /
+# END LOOP / END WHILE / END FOR close ones we deliberately do not.
+_END_CLOSER = re.compile(r"\bEND\b(?!\s+(?:IF|LOOP|WHILE|FOR)\b)",
+                         re.IGNORECASE)
 # tokens that open an implicit block counted against END
 _BLOCK_OPENERS = re.compile(r"\b(BEGIN|CASE|LOOP|IF|FOR|WHILE)\b",
                             re.IGNORECASE)
@@ -225,11 +231,21 @@ def split_legacy_script(text: str, dialect: str) -> ScriptSplit:
         buf.append(line)
 
         if in_proc:
-            # track BEGIN/END nesting to find the block end (t-sql and
-            # teradata procedures end at final END; oracle usually at '/')
+            # Track block nesting to find where the procedure ENDS (t-sql
+            # and teradata end at their final END; oracle usually at '/').
+            # BEGIN used to be the only opener counted while EVERY `END`
+            # closed one — so the END of a `CASE WHEN ... END` inside a SELECT
+            # terminated the procedure MID-STATEMENT, and everything after it
+            # became an orphan fragment that parses as nothing. A CASE in
+            # cleansing logic is not an edge case: this cut real procedures in
+            # half on every dialect but Oracle, which does not use this branch.
             stripped = re.sub(r"--.*", "", line)
-            depth += len(_BEGIN.findall(stripped))
-            ends = len(_END.findall(stripped))
+            # `END CASE` closes a CASE exactly as a bare END does; folding it
+            # first stops that word being read as another CASE opening.
+            counting = _END_CASE.sub("END", stripped)
+            depth += len(_BEGIN.findall(counting)) + \
+                len(_CASE.findall(counting))
+            ends = len(_END_CLOSER.findall(counting))
             if ends and depth > 0:
                 depth -= ends
                 if depth <= 0 and dialect != "oracle":

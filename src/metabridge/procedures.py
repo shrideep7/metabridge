@@ -157,13 +157,49 @@ def ensure_create_header(proc: dict) -> str:
 # Conversion
 # ---------------------------------------------------------------------------
 
+# SAP HANA writes regex replacement in a shape no SQL parser models:
+#
+#   REPLACE_REGEXPR('<pattern>' IN <column> WITH '<replacement>' OCCURRENCE ALL)
+#
+# sqlglot has no HANA dialect at all, so this fails to parse in EVERY dialect —
+# and the failure takes the whole statement with it. In a real HANA estate that
+# statement is the customer-cleansing INSERT, i.e. the entire silver layer. The
+# ANSI form is the same function with its arguments in the ordinary order, so
+# the rewrite is a reordering, not a reinterpretation.
+_HANA_REPLACE_REGEXPR = re.compile(
+    r"REPLACE_REGEXPR\s*\(\s*('(?:[^']|'')*')\s+IN\s+(.+?)\s+WITH\s+"
+    r"('(?:[^']|'')*')\s*(?:OCCURRENCE\s+\w+|FROM\s+\d+)*\s*\)",
+    re.IGNORECASE | re.DOTALL)
+
+
+def normalize_vendor_syntax(sql: str) -> Tuple[str, List[str]]:
+    """-> (text a SQL parser can read, the rewrites applied).
+
+    Pre-parse and text-level ON PURPOSE: the AST rewrites in
+    `sqlx.legacy_normalize` all run on a parsed statement, which is no help for
+    syntax that cannot be parsed in the first place.
+    """
+    applied: List[str] = []
+
+    def _replace_regexpr(m) -> str:
+        applied.append("REPLACE_REGEXPR -> REGEXP_REPLACE (SAP HANA)")
+        return "REGEXP_REPLACE(%s, %s, %s)" % (m.group(2).strip(), m.group(1),
+                                               m.group(3))
+
+    out = _HANA_REPLACE_REGEXPR.sub(_replace_regexpr, sql)
+    return out, sorted(set(applied))
+
+
 def convert_procedures(procedures: List[dict], dialect: str,
                        sources: Optional[Dict[str, SourceTable]] = None,
                        project: str = "procedure_logic") -> Pipeline:
     """Procedure bodies -> a Pipeline of transformation mappings."""
     from .parsers.sql_parser import parse_sql_documents
-    documents = [(p["qualified"], ensure_create_header(p))
-                 for p in procedures]
+    documents = []
+    for p in procedures:
+        text, applied = normalize_vendor_syntax(ensure_create_header(p))
+        p["vendor_rewrites"] = applied
+        documents.append((p["qualified"], text))
     return parse_sql_documents(documents, project,
                                format_name=dialect or "sql", dialect=dialect,
                                sources=sources, procedural=True)
@@ -364,6 +400,10 @@ def merge_procedure_logic(pipeline: Pipeline, procedures: List[dict],
     by_label: Dict[str, List[dict]] = {}
     for d in decos:
         by_label.setdefault(str(d.get("file", "")), []).append(d)
+    # statements that classified as transformations and then failed to parse
+    unparsed_by_label: Dict[str, List[dict]] = {}
+    for u in logic.metadata.get("procedure_unparsed") or []:
+        unparsed_by_label.setdefault(str(u.get("source", "")), []).append(u)
     models_by_label: Dict[str, List[str]] = {}
     for entry in summary["models"]:
         models_by_label.setdefault(entry["source"], []).append(entry["model"])
@@ -395,7 +435,22 @@ def merge_procedure_logic(pipeline: Pipeline, procedures: List[dict],
                 obj=p["qualified"],
                 suggestion="Export the full source and pass it with "
                            "--procedures to convert the whole body."))
+        unparsed = unparsed_by_label.get(p["qualified"], [])
+        for u in unparsed:
+            pipeline.issues.append(ConversionIssue(
+                severity=IssueSeverity.MANUAL,
+                code="PROCEDURE_STATEMENT_UNPARSED",
+                message="A transformation statement in %s %s could not be "
+                        "parsed, so no model was generated from it — %s"
+                        % (p["kind"], p["qualified"], u["reason"]),
+                obj=p["qualified"], detail=u["sql"][:400],
+                suggestion="Vendor syntax with no parser support. Rewrite that "
+                           "statement in portable SQL on the source, or port "
+                           "it by hand on the target."))
+        summary["unparsed_statements"] =             summary.get("unparsed_statements", 0) + len(unparsed)
         summary["procedures"].append({
+            "unparsed": unparsed,
+            "vendor_rewrites": list(p.get("vendor_rewrites") or []),
             "name": p["name"], "schema": p["schema"], "kind": p["kind"],
             "qualified": p["qualified"], "language": p["language"],
             "shape": "/".join(sorted(set(s for s in shapes if s)))
@@ -476,6 +531,16 @@ def write_logic_pack(summary: dict, out_dir: str,
                 sorted((r.get("detections") or {}).items()) if v))
         if r.get("recommendation"):
             lines.append("Target pattern (dbt): %s" % r["recommendation"])
+        if r.get("vendor_rewrites"):
+            lines.append("Rewritten to parse: %s"
+                         % "; ".join(r["vendor_rewrites"]))
+        for u in r.get("unparsed") or []:
+            # the difference between "there was nothing to convert" and "there
+            # was, and the parser could not read it" — a reader cannot act on
+            # the first and must act on the second
+            lines += ["", "**A transformation statement here did NOT parse**, "
+                      "so no model came from it — `%s`:" % u["reason"],
+                      "", "```sql", u["sql"].strip()[:1500], "```"]
         body = bodies.get(r["qualified"], "")
         if body:
             lines += ["", "<details><summary>Original body</summary>", "",
