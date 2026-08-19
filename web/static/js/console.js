@@ -955,7 +955,7 @@ function showPage(key, push) {
   document.querySelector('main').classList.toggle('wide',
     ['estate', 'validation', 'reports', 'observability', 'system'].includes(key));
   // Every sub-tab that used to live only in localStorage (Reports' tool,
-  // Overview's table view, Observability's monitor filter) now travels in the
+  // Dashboard's table view, Observability's monitor filter) now travels in the
   // hash like Settings' sub-section already did — so a link to any of them is
   // shareable and shows the same screen to whoever opens it, instead of each
   // visitor's own browser silently overriding it.
@@ -2492,7 +2492,7 @@ async function openJobFindings(jobId, filter) {
   showFindings(report, filter || null);
 }
 
-// Cross-job MANUAL drill-down. The Overview "Manual review items" tile aggregates
+// Cross-job MANUAL drill-down. The Dashboard "Manual review items" tile aggregates
 // workload.manual_queue over recent convert runs, but showFindings() is per-report,
 // so this is the only view that lists every outstanding manual item together.
 // `runs` is the same [{job, r}] shape loadDashboard() already assembled — reusing it
@@ -2684,7 +2684,7 @@ function fmtBytes(n) {
 // artifacts (each a job-scoped download link), report links and actions.
 async function openJobDetail(jobId) {
   /* The overlay had no route at all: no URL represented it, so a job could not
-     be linked, reloaded or restored. `#dashboard/job` is the Overview TAB
+     be linked, reloaded or restored. `#dashboard/job` is the Dashboard TAB
      route (dashView), so the job id becomes a third segment under it. */
   setHash('dashboard/job/' + encodeURIComponent(jobId));
   gOpenJobId = jobId;
@@ -2975,7 +2975,7 @@ const RUN_KIND_GENERATES = {convert:1, govern:1, scaffold:1, events:1,
 // run is unfinished. Once it finishes, only the migration lifecycle is shown —
 // so a converted-but-never-validated run reads GENERATED, in neutral grey.
 // Three call sites used to answer this question independently and disagree:
-// job detail and the Overview row both rendered a green `done` badge, while the
+// job detail and the Dashboard row both rendered a green `done` badge, while the
 // Reports table rendered a neutral `Generated` chip for the very same run. Green
 // is the strongest signal in the UI and it was being spent on runs nobody had
 // checked — the exact misread the STATUS comment above was written to prevent.
@@ -3021,7 +3021,7 @@ async function jobReport(id) {
   }
   return jobReportsCache[id];
 }
-/* Warm the cache for many jobs in ONE request. The Overview summarises N recent
+/* Warm the cache for many jobs in ONE request. The Dashboard summarises N recent
    conversions, which used to mean N separate /report.json calls on every load
    (~20 on a populated workspace) just to paint six tiles. Callers still go
    through jobReport() afterwards, so a batch failure degrades to the old
@@ -3058,9 +3058,9 @@ function mcard(n, l, d, click) {
     + (d ? '<div class="d">' + d + '</div>' : '') + '</div>';
 }
 
-/* ---- Overview summary window ----------------------------------------
+/* ---- Dashboard summary window ----------------------------------------
    How many of the most recent COMPLETED modernizations are opened and
-   summarized on the Overview. Only the report-derived figures depend on
+   summarized on the Dashboard. Only the report-derived figures depend on
    it (assets analyzed, validation pass rate, manual review items, and
    the Active-modernizations table) — the whole-estate counts
    (connected systems, modernizations, models scaffolded) always cover
@@ -3170,7 +3170,7 @@ function pagerHtml(id) {
     + '</div>';
 }
 
-/* ---- Overview table view -------------------------------------------
+/* ---- Dashboard table view -------------------------------------------
    'mod' = completed modernizations (conversion metrics), 'job' = all
    activity (every kind & status). One panel shows one of them, so the
    page has a single table region instead of two stacked ones. Each view
@@ -7055,7 +7055,7 @@ async function estateSelect(id) {
     return;
   }
   if (id === 'all') {
-    $('#estateHint').textContent = 'Aggregate across all systems — pick a single system for live asset browsing.';
+    $('#estateHint').textContent = '';
     estateSummary = (stats && stats.systems) || [];
     renderEstateSummaryTable();
     return;
@@ -8347,7 +8347,7 @@ async function loadValidationBody() {
   // Every run, not a hardcoded first 8. These tiles COUNT PROBLEMS ("Failed",
   // "Manual review"), so a sample is not a defensible answer — 8 of 19 runs
   // could report 0 failures while a failure sat in run 12. Unrelated to the
-  // Overview's Summarize window, which never applied here. Reports are
+  // Dashboard's Summarize window, which never applied here. Reports are
   // memoized and throttled, so this costs the uncached delta only.
   await jobReportsWarm(converts.map(j => j.id));
   const reports = await mapLimit(converts, 8, j => jobReport(j.id));
@@ -8416,7 +8416,7 @@ function sysHc(s) { return SYS_HEALTH_COLOR[s] || 'var(--ink3)'; }
 
 /* The one display-name map for job kinds. It used to be SYS_KIND_LABELS, used
    only by the System page — so System said "Agent run" / "Object inventory"
-   while the Overview type filter, the Reports table, global search and the job
+   while the Dashboard type filter, the Reports table, global search and the job
    detail header all showed the raw storage slugs (`agents`, `objects`,
    `events_convert`, `orchestration_convert`). Reports even mixed both registers
    in one column. Everything now goes through jobKindLabel(). */
@@ -10595,7 +10595,7 @@ document.addEventListener('click', async (ev) => {
 
 /* ---------------- Reports tool picker ----------------------------------
    Seven upload-and-run tools plus the run history, switched instead of
-   stacked. Same shape as the Overview view toggle (`applyDashView`): only the
+   stacked. Same shape as the Dashboard view toggle (`applyDashView`): only the
    selected panel is in the DOM flow, and the choice persists per browser.
    Default is the history — the common visit is "find the report I already
    generated", which should not open behind seven forms. Lives in the hash
@@ -10802,7 +10802,7 @@ async function loadGovernanceExtras() {
     // every completed run was labelled as needing review — 14 of 19 rows were
     // wrong on a real workspace, including a FAIL disguised as "manual review".
     // Read the run's own verdict instead; jobReport() memoizes and mapLimit()
-    // throttles, so this is the same machinery the Overview already uses.
+    // throttles, so this is the same machinery the Dashboard already uses.
     const reports = await mapLimit(converts, 8, j => jobReport(j.id));
     const runs = converts.map((job, i) => {
       const r = reports[i] || {};

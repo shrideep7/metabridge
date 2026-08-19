@@ -18,7 +18,7 @@
 </head>
 <body>
 <svg style="display:none" aria-hidden="true">
-  <symbol id="i-overview" viewBox="0 0 24 24"><rect x="3" y="3" width="8" height="8" rx="1.5"/><rect x="13" y="3" width="8" height="5" rx="1.5"/><rect x="13" y="10" width="8" height="11" rx="1.5"/><rect x="3" y="13" width="8" height="8" rx="1.5"/></symbol>
+  <symbol id="i-dashboard" viewBox="0 0 24 24"><rect x="3" y="3" width="8" height="8" rx="1.5"/><rect x="13" y="3" width="8" height="5" rx="1.5"/><rect x="13" y="10" width="8" height="11" rx="1.5"/><rect x="3" y="13" width="8" height="8" rx="1.5"/></symbol>
   <symbol id="i-estate" viewBox="0 0 24 24"><ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v6c0 1.7 3.6 3 8 3s8-1.3 8-3V5"/><path d="M4 11v6c0 1.7 3.6 3 8 3s8-1.3 8-3v-6"/></symbol>
   <symbol id="i-modernize" viewBox="0 0 24 24"><path d="M8 3 4 7l4 4"/><path d="M4 7h16"/><path d="m16 21 4-4-4-4"/><path d="M20 17H4"/></symbol>
   <symbol id="i-studio" viewBox="0 0 24 24"><rect x="3" y="3" width="6" height="6" rx="1.5"/><rect x="15" y="9" width="6" height="6" rx="1.5"/><rect x="3" y="15" width="6" height="6" rx="1.5"/><path d="M9 6h5a2 2 0 0 1 2 2v1M15 12H9M9 18h7a2 2 0 0 0 2-2v-1"/></symbol>
@@ -39,7 +39,7 @@
   <div class="tagline">DATA MODERNIZATION PLATFORM</div>
   <div class="nav-scroll">
   <div class="group lbl-g">WORKSPACE</div>
-  <a href="#dashboard" data-page="dashboard" class="active" title="Overview" aria-current="page"><svg fill="none" stroke-width="1.8"><use href="#i-overview"/></svg><span class="lbl">Overview</span></a>
+  <a href="#dashboard" data-page="dashboard" class="active" title="Dashboard" aria-current="page"><svg fill="none" stroke-width="1.8"><use href="#i-dashboard"/></svg><span class="lbl">Dashboard</span></a>
   <a href="#estate" data-page="estate" title="Data Estate"><svg fill="none" stroke-width="1.8"><use href="#i-estate"/></svg><span class="lbl">Data Estate</span></a>
   <a href="#convert" data-page="convert" title="Modernize"><svg fill="none" stroke-width="1.8"><use href="#i-modernize"/></svg><span class="lbl">Modernize</span></a>
   <a href="#scaffold" data-page="scaffold" title="Pipeline Studio"><svg fill="none" stroke-width="1.8"><use href="#i-studio"/></svg><span class="lbl">Pipeline Studio</span></a>
@@ -48,7 +48,7 @@
   <a href="#reports" data-page="reports" title="Reports"><svg fill="none" stroke-width="1.8"><use href="#i-reports"/></svg><span class="lbl">Reports</span></a>
   <a href="#observability" data-page="observability" title="Observability"><svg fill="none" stroke-width="1.8"><use href="#i-validate"/></svg><span class="lbl">Observability</span></a>
   <div class="group lbl-g">PLATFORM</div>
-  <a href="#system" data-page="system" title="System"><svg fill="none" stroke-width="1.8"><use href="#i-overview"/></svg><span class="lbl">System</span></a>
+  <a href="#system" data-page="system" title="System"><svg fill="none" stroke-width="1.8"><use href="#i-dashboard"/></svg><span class="lbl">System</span></a>
   <a href="#marketplace" data-page="marketplace" title="Integrations"><svg fill="none" stroke-width="1.8"><use href="#i-blocks"/></svg><span class="lbl">Integrations</span></a>
   <a href="#settings" data-page="settings" title="Settings"><svg fill="none" stroke-width="1.8"><use href="#i-settings"/></svg><span class="lbl">Settings</span></a>
   <button class="collapse-btn" id="navCollapse" aria-label="Collapse sidebar">&#171; <span class="lbl">Collapse</span></button>
@@ -89,7 +89,7 @@
     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor"
          stroke-width="2" aria-hidden="true"><path d="M3 6h18M3 12h18M3 18h18"/></svg>
   </button>
-  <span class="crumb" id="crumb">Workspace / <b>Overview</b></span>
+  <span class="crumb" id="crumb">Workspace / <b>Dashboard</b></span>
   <div id="wsSwitch" style="display:none;position:relative;margin-left:14px;height:100%;align-items:center;align-self:center">
     <button id="wsBtn" aria-haspopup="menu" aria-expanded="false" title="Switch workspace"
             style="display:inline-flex;align-items:center;justify-content:center;height:32px;box-sizing:border-box;margin:0;align-self:center;gap:7px;background:#f2f5fa;border:1px solid #dfe3ea;border-radius:9px;padding:0 11px;font-size:13px;font-weight:600;color:#123;cursor:pointer;max-width:230px">
@@ -161,11 +161,11 @@
   <div id="sectionErrBody" style="margin-top:4px;color:#8a3f34"></div>
 </div>
 
-<!-- ======================= OVERVIEW ======================= -->
+<!-- ======================= DASHBOARD ======================= -->
 <div class="page visible" id="page-dashboard">
   <div style="display:flex;align-items:flex-start;gap:16px;flex-wrap:wrap">
     <div style="flex:1;min-width:300px">
-      <h1>Overview</h1>
+      <h1>Dashboard</h1>
       <div class="sub">Monitor your data estate, modernization programs, pipelines, and validation health.</div>
     </div>
     <div style="display:flex;gap:8px;align-items:center">
@@ -181,16 +181,14 @@
   <!-- Command Center: Actionable Workspace Attention + High-level Telemetry Snapshots -->
   <div class="dash-split-grid" id="dashSplitWrap">
     <div class="panel" style="margin:0">
-      <div style="display:flex;align-items:center;justify-content:space-between">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
         <h2 style="margin:0">Needs attention</h2>
         <span id="dashAttnCount" class="badge warn" style="display:none"></span>
       </div>
-      <div style="color:var(--muted);font-size:12px;margin:4px 0 8px">Actionable workspace blockers — failed runs, unconfigured credentials, pending approvals, and manual review items.</div>
       <div id="dashAttnList" class="dash-attn-list"></div>
     </div>
     <div class="panel" style="margin:0">
-      <h2 style="margin:0 0 4px">Operational &amp; validation snapshot</h2>
-      <div style="color:var(--muted);font-size:12px;margin-bottom:8px">High-level runtime state with direct links to full diagnostic and validation suites.</div>
+      <h2 style="margin:0 0 8px">Operational &amp; validation snapshot</h2>
       <div id="dashSnapshots" class="dash-snapshots"></div>
     </div>
   </div>
@@ -256,8 +254,15 @@
 
 <!-- ======================= DATA ESTATE ======================= -->
 <div class="page" id="page-estate">
-  <h1>Data Estate</h1>
-  <div class="sub">Everything MetaBridge AI knows about your data landscape — systems, schemas, tables and transformation assets.</div>
+  <div class="ihead" style="margin-bottom:12px">
+    <h1 style="margin:0">Data Estate</h1>
+    <button type="button" class="ibtn" data-info="estateInfo" aria-expanded="false"
+            aria-controls="estateInfo" aria-label="About Data Estate"
+            title="What this does">i</button>
+  </div>
+  <div class="infobox" id="estateInfo" style="margin-bottom:14px">
+    <div>Everything MetaBridge AI knows about your data landscape — systems, schemas, tables and transformation assets.</div>
+  </div>
   <div class="err" id="estateErr"></div>
   <div class="cards" id="estateCards"></div>
   <div class="panel">
@@ -280,14 +285,14 @@
   </div>
 
   <div class="panel" id="twinPanel">
-    <div class="ihead">
+    <div class="ihead" style="margin-bottom:12px">
       <h2>Digital Twin</h2>
       <button type="button" class="ibtn" data-info="twinInfo" aria-expanded="false"
               aria-controls="twinInfo" aria-label="About the digital twin"
               title="What this does &amp; which files">i</button>
     </div>
-    <div class="sub" style="margin:5px 0 12px">One living graph of your complete estate. Upload is optional.</div>
-    <div class="infobox" id="twinInfo">
+    <div class="infobox" id="twinInfo" style="margin-bottom:14px">
+      <div>One living graph of your complete estate. Upload is optional.</div>
       <div>Applications, databases, pipelines, streaming, APIs, dashboards, domains, data products
         and owners — discovered from uploaded metadata, saved connections and prior analyses.</div>
       <div><b>Optional upload.</b> You can build with no files at all, straight from saved
@@ -388,7 +393,7 @@
   <!-- Seven upload-and-run tools used to sit stacked and expanded on this page,
        each opening with a 4-7 line paragraph, so ~40 lines of prose came before
        the first control. Nobody runs more than one at a time. They are switched
-       here instead, same idea as #dashViewSeg on Overview. "Report history"
+       here instead, same idea as #dashViewSeg on Dashboard. "Report history"
        leads and is the default: the most common visit is to find a report that
        already exists, and it lands on a compact table rather than a big form. -->
   <div class="toolseg" id="reportToolSeg" role="tablist" aria-label="Report tool">
@@ -857,17 +862,27 @@
 <!-- ======================= OBSERVABILITY ======================= -->
 <div class="page" id="page-observability">
   <div style="display:flex;align-items:flex-start;gap:16px;flex-wrap:wrap">
-    <div style="flex:1;min-width:300px"><h1>Observability</h1>
-    <div class="sub">Operational monitoring of MetaBridge's own run history — pipelines, migrations, validation,
-    agents, connectors, performance, latency and failures — plus modeled resource &amp; cloud figures.</div></div>
+    <div style="flex:1;min-width:300px">
+      <div class="ihead" style="margin-bottom:12px">
+        <h1 style="margin:0">Observability</h1>
+        <button type="button" class="ibtn" data-info="obsInfo" aria-expanded="false"
+                aria-controls="obsInfo" aria-label="About Observability"
+                title="What this does">i</button>
+      </div>
+      <div class="infobox" id="obsInfo" style="margin-bottom:14px">
+        <div>Operational monitoring of MetaBridge's own run history — pipelines, migrations, validation,
+        agents, connectors, performance, latency and failures — plus modeled resource &amp; cloud figures.</div>
+      </div>
+    </div>
     <div style="display:flex;gap:8px;margin-top:2px">
       <button class="secondary" id="obsRefresh" style="margin:0">Refresh</button>
       <a id="obsExport" class="btn secondary" href="#" style="margin:0;text-decoration:none">Export JSON</a>
     </div>
   </div>
-  <div style="color:var(--muted);font-size:12px;margin:2px 0 12px">Durations, success/failure and connection tests are
-    <b>measured</b> from real run history; resource utilization and cloud consumption are <b>modeled</b> from
-    estate topology (not live metering).</div>
+  <div style="background:var(--accent-soft);border:1px solid var(--accent-line);border-left:4px solid var(--accent);border-radius:var(--radius-sm);padding:10px 14px;margin:4px 0 16px;font-size:12.5px;color:var(--ink2);line-height:1.55">
+    <strong style="color:var(--accent-hover);display:block;margin-bottom:3px;font-size:12px;letter-spacing:0.02em;text-transform:uppercase">&#9432; Disclaimer</strong>
+    <b>Durations, success/failure and connection tests</b> are <b>measured</b> from real run history; <b>resource utilization and cloud consumption</b> are <b>modeled</b> from estate topology (not live metering).
+  </div>
   <div class="err" id="obsErr"></div>
 
   <!-- Zone 1 — the verdict. One number, the six signals behind it, and the
@@ -1052,8 +1067,17 @@
 <!-- ======================= CONVERT ======================= -->
 <div class="page" id="page-convert">
   <div style="display:flex;align-items:flex-start;gap:16px;flex-wrap:wrap">
-    <div style="flex:1;min-width:300px"><h1>Modernize</h1>
-    <div class="sub">Analyze and modernize legacy ETL, SQL, transformation projects, and data workloads across platforms.</div></div>
+    <div style="flex:1;min-width:300px">
+      <div class="ihead" style="margin-bottom:12px">
+        <h1 style="margin:0">Modernize</h1>
+        <button type="button" class="ibtn" data-info="modInfo" aria-expanded="false"
+                aria-controls="modInfo" aria-label="About Modernize"
+                title="What this does">i</button>
+      </div>
+      <div class="infobox" id="modInfo" style="margin-bottom:14px">
+        <div>Analyze and modernize legacy ETL, SQL, transformation projects, and data workloads across platforms.</div>
+      </div>
+    </div>
     <button class="secondary" id="askAiMod" style="margin-top:0">Ask MetaBridge AI</button>
   </div>
   <div class="err" id="convertErr"></div>
@@ -1298,15 +1322,14 @@
   </div>
 
   <div class="panel" id="evtPanel">
-    <div class="ihead">
+    <div class="ihead" style="margin-bottom:12px">
       <h2>Event &amp; streaming modernization</h2>
       <button type="button" class="ibtn" data-info="evtInfo" aria-expanded="false"
               aria-controls="evtInfo" aria-label="About event and streaming modernization"
               title="What this does &amp; which files">i</button>
     </div>
-    <div class="sub" style="margin:5px 0 12px">Everything flows through the Canonical Event
-      Representation. Platform is detected automatically.</div>
-    <div class="infobox" id="evtInfo">
+    <div class="infobox" id="evtInfo" style="margin-bottom:14px">
+      <div>Everything flows through the Canonical Event Representation. Platform is detected automatically.</div>
       <div>Import Kafka/Confluent configs, Schema Registry subjects, ksqlDB/Flink SQL, RabbitMQ
         definitions, IBM MQ MQSC, Kinesis/Event Hubs/Pub-Sub exports, MQTT &amp; IoT rules,
         NiFi templates, StreamSets pipelines, Debezium/GoldenGate CDC — everything is normalized
@@ -1394,14 +1417,12 @@
   </div>
 
   <div class="panel" id="objInvPanel">
-    <div class="ihead">
+    <div class="ihead" style="margin-bottom:12px">
       <h2>Object inventory &amp; migration feasibility</h2>
       <button type="button" class="ibtn" data-info="objInfo" aria-expanded="false"
               aria-controls="objInfo" aria-label="About object inventory"
               title="What this does &amp; what is counted">i</button>
     </div>
-    <div class="sub" style="margin:5px 0 10px">Enumerates every schema-level object in a connected
-      system and scores each one for the move. Read-only against the source.</div>
     <!-- The four outcomes are the whole output of this tool; naming them in
          prose meant reading a paragraph to learn what the table will say. -->
     <div class="legend">
@@ -1412,7 +1433,8 @@
     </div>
     <p class="exts" style="margin-bottom:14px">View conversions are proven by transpiling each
       definition, not assumed.</p>
-    <div class="infobox" id="objInfo">
+    <div class="infobox" id="objInfo" style="margin-bottom:14px">
+      <div>Enumerates every schema-level object in a connected system and scores each one for the move. Read-only against the source.</div>
       <div>Enumerates every schema-level object in a connected system — views, procedures,
         functions, tasks, streams, sequences, pipes, policies, grants, constraints — and reports,
         per object, whether the move to your target platform is <b>automated</b>,
@@ -1520,20 +1542,28 @@
 <!-- ======================= GOVERNANCE ======================= -->
 <div class="page" id="page-governance">
   <div style="display:flex;align-items:flex-start;gap:16px;flex-wrap:wrap">
-    <div style="flex:1;min-width:300px"><h1>Governance</h1>
-    <div class="sub">Approvals, AI recommendations, migration risks, policy compliance and audit trail.</div></div>
+    <div style="flex:1;min-width:300px">
+      <div class="ihead" style="margin-bottom:12px">
+        <h1 style="margin:0">Governance</h1>
+        <button type="button" class="ibtn" data-info="govInfo" aria-expanded="false"
+                aria-controls="govInfo" aria-label="About Governance"
+                title="What this does">i</button>
+      </div>
+      <div class="infobox" id="govInfo" style="margin-bottom:14px">
+        <div>Approvals, AI recommendations, migration risks, policy compliance and audit trail.</div>
+      </div>
+    </div>
     <button class="secondary" id="askAiGov" style="margin-top:0">Ask MetaBridge AI</button>
   </div>
   <div class="panel" id="agentApprovalsPanel">
-    <div class="ihead">
+    <div class="ihead" style="margin-bottom:12px">
       <h2>Agent approvals</h2>
       <button type="button" class="ibtn" data-info="aqInfo" aria-expanded="false"
               aria-controls="aqInfo" aria-label="About agent approvals"
               title="How approval works">i</button>
     </div>
-    <div class="sub" style="margin:5px 0 12px">A runner can never approve their own actions —
-      only withdraw them. Owners and admins approve or reject.</div>
-    <div class="infobox" id="aqInfo">
+    <div class="infobox" id="aqInfo" style="margin-bottom:14px">
+      <div>A runner can never approve their own actions — only withdraw them. Owners and admins approve or reject.</div>
       <div>Consequential agent actions are held here until a <b>different</b>, permissioned
         approver signs off. Read-only analysis commits on its own; anything that generates
         artifacts or changes a system waits for a decision.</div>
@@ -1554,9 +1584,15 @@
     <p class="exts" id="aqFoot"></p>
   </div>
   <div class="panel">
-    <h2 style="margin-bottom:4px">Approval queue &amp; AI recommendations</h2>
-    <div style="color:var(--ink3);font-size:13px;margin-bottom:8px">AI-proposed corrections are never applied automatically —
-    every proposal shows its evidence and requires an explicit approval.</div>
+    <div class="ihead" style="margin-bottom:12px">
+      <h2 style="margin:0">Approval queue &amp; AI recommendations</h2>
+      <button type="button" class="ibtn" data-info="govRecInfo" aria-expanded="false"
+              aria-controls="govRecInfo" aria-label="About approval queue and AI recommendations"
+              title="What this does">i</button>
+    </div>
+    <div class="infobox" id="govRecInfo" style="margin-bottom:14px">
+      <div>AI-proposed corrections are never applied automatically — every proposal shows its evidence and requires an explicit approval.</div>
+    </div>
     <!-- Defaults to runs that actually need a person. Listing every completed
          run made a queue of 19 where only 5 had anything to approve. -->
     <div class="tbar" style="margin-bottom:10px">
@@ -1603,14 +1639,27 @@
 
 <!-- ======================= SCAFFOLD ======================= -->
 <div class="page" id="page-scaffold">
-  <h1>Pipeline Studio</h1>
-  <div class="sub">Generate governed data pipelines from source metadata and semantic manifests —
-  from a connected source (Data Estate &rarr; Analyze), an analyzed modernization, or a YAML manifest.</div>
+  <div class="ihead" style="margin-bottom:12px">
+    <h1 style="margin:0">Pipeline Studio</h1>
+    <button type="button" class="ibtn" data-info="scaffoldInfo" aria-expanded="false"
+            aria-controls="scaffoldInfo" aria-label="About Pipeline Studio"
+            title="What this does">i</button>
+  </div>
+  <div class="infobox" id="scaffoldInfo" style="margin-bottom:14px">
+    <div>Generate governed data pipelines from source metadata and semantic manifests —
+    from a connected source (Data Estate &rarr; Analyze), an analyzed modernization, or a YAML manifest.</div>
+  </div>
   <div class="err" id="scaffoldErr"></div>
   <div class="panel">
-    <h2 style="margin-bottom:3px">Generate pipelines</h2>
-    <div class="sub" style="margin-bottom:16px">Build target-native extraction and load pipelines
-      from your source system.</div>
+    <div class="ihead" style="margin-bottom:12px">
+      <h2 style="margin:0">Generate pipelines</h2>
+      <button type="button" class="ibtn" data-info="scafGenInfo" aria-expanded="false"
+              aria-controls="scafGenInfo" aria-label="About generating pipelines"
+              title="What this does">i</button>
+    </div>
+    <div class="infobox" id="scafGenInfo" style="margin-bottom:14px">
+      <div>Build target-native extraction and load pipelines from your source system.</div>
+    </div>
     <form id="scafForm">
       <!-- The two inputs are the two halves of one decision — raw tables and
            the logic over them — so they sit side by side rather than stacked
@@ -1633,9 +1682,10 @@
           <span class="txt"><b>Drop transformation logic, or <span class="browse">browse</span></b>
           <span class="hint">optional · PowerCenter XML, IDMC export, DataStage, SSIS, Talend</span></span></div>
       </div>
-      <p class="exts">Without transformation logic you get the raw layer only. With it, the
-        mappings become this project's staging &rarr; intermediate &rarr; marts, and any table
-        the logic <em>builds</em> is not also copied across as raw data.</p>
+      <div style="background:var(--accent-soft);border:1px solid var(--accent-line);border-left:4px solid var(--accent);border-radius:var(--radius-sm);padding:10px 14px;margin:12px 0 16px;font-size:12.5px;color:var(--ink2);line-height:1.55">
+        <strong style="color:var(--accent-hover);display:block;margin-bottom:3px;font-size:12px;letter-spacing:0.02em;text-transform:uppercase">&#9432; Important Note</strong>
+        <b>Without transformation logic</b> you get the <b>raw layer only</b>. <b>With it</b>, the mappings become this project's <b>staging &rarr; intermediate &rarr; marts</b>, and any table the logic <b>builds</b> is <b>not also copied</b> across as raw data.
+      </div>
       <!-- The move, stated in one row: what it reads from, what it writes for.
            Below the inputs, because what you dropped decides what the source
            reasonably is — and above the manifest preview, which can run to a
@@ -1764,17 +1814,17 @@
   </div>
 
   <div class="panel" id="orchPanel">
-    <div class="ihead">
+    <div class="ihead" style="margin-bottom:12px">
       <h2>Orchestration modernization</h2>
       <button type="button" class="ibtn" data-info="orchInfo" aria-expanded="false"
               aria-controls="orchInfo" aria-label="About orchestration modernization"
               title="What this does &amp; which files">i</button>
     </div>
-    <div class="sub" style="margin:5px 0 12px">Import a scheduler's export, audit the execution graph, generate target-native orchestration.</div>
     <!-- This list keeps its per-file annotations rather than becoming a
          data-exts span: which extension means which platform is the whole
          point here, and a bare list of suffixes would drop it. -->
-    <div class="infobox" id="orchInfo">
+    <div class="infobox" id="orchInfo" style="margin-bottom:14px">
+      <div>Import a scheduler's export, audit the execution graph, generate target-native orchestration.</div>
       <div>Import Airflow DAGs, ADF/Fabric pipelines, Step Functions, Control-M, AutoSys JIL,
         IDMC taskflows, dbt Cloud jobs or crontabs — visualize the execution graph, adjust
         dependencies, audit runtime resilience, and generate target-native orchestration.</div>

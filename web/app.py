@@ -307,7 +307,7 @@ def _required_permission(path: str, method: str, perms: Optional[set] = None) ->
         return "jobs:read"
     # Batched report reads. POST only because the id list goes in the body (a
     # 20-id query string is fragile); it reads and writes nothing, so it must
-    # stay jobs:read or a viewer could not load the Overview at all.
+    # stay jobs:read or a viewer could not load the Dashboard at all.
     if _at(path, "/api/jobs/reports"):
         return "jobs:read"
     # workspaces: listing and switching your OWN active workspace are
@@ -5228,7 +5228,7 @@ def job_report_json(job_id: str):
 async def job_reports_batch(request: Request):
     """Several jobs' report.json in ONE request.
 
-    The Overview summarises N recent conversions, which meant N separate
+    The Dashboard summarises N recent conversions, which meant N separate
     /report.json round-trips on every load (~20 on a populated workspace) just
     to paint six tiles. Jobs with no report are returned as null rather than
     404-ing the batch, so one reportless run cannot fail the whole page.

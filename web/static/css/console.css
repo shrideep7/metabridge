@@ -372,7 +372,7 @@
                   border:1px solid var(--border); border-radius:3px; padding:0 4px; }
   .af-sec { font-size:11px; font-weight:600; letter-spacing:.06em; text-transform:uppercase;
             color:var(--muted); margin:16px 0 7px; }
-  /* ---- Table toolbar (Overview panel header) ----
+  /* ---- Table toolbar (Dashboard panel header) ----
      Tabs left, filters right. Anchoring the filter group to the RIGHT edge is
      what keeps the controls from jumping horizontally when you switch tabs —
      previously a flex spacer pushed them off the end of the tab strip, so a
@@ -406,7 +406,7 @@
     .fgrp { flex:1; min-width:150px; }
     .fgrp > select { flex:1; min-width:0; }
   }
-  /* Segmented control — switches which table the Overview panel shows.
+  /* Segmented control — switches which table the Dashboard panel shows.
      Buttons, not links: this changes what is rendered, not where you are. */
   .seg { display:inline-flex; border:1px solid var(--border); border-radius:var(--radius-sm);
          overflow:hidden; background:var(--header-bg); }

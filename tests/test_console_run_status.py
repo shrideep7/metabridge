@@ -1,7 +1,7 @@
 """One status vocabulary in the console.
 
 The console described the same runs with two different vocabularies. Job
-detail and the Overview row rendered a green ``done`` badge; the Reports
+detail and the Dashboard row rendered a green ``done`` badge; the Reports
 table rendered a neutral ``Generated`` chip for that very same run. Green is
 the strongest signal in the UI and it was being spent on runs nobody had
 validated — which is exactly what the ``GENERATED`` comment in the STATUS map
@@ -41,7 +41,7 @@ def test_no_surface_renders_a_finished_run_as_a_green_done():
 
 
 def test_every_run_status_rendering_goes_through_the_one_helper():
-    """Four surfaces render run status: Overview, job detail, the Reports
+    """Four surfaces render run status: Dashboard, job detail, the Reports
     table and System recent activity. All four must agree."""
     assert CONSOLE.count("runStatusChip(") >= 5   # 1 definition + 4 call sites
 
