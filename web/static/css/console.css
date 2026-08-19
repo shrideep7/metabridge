@@ -1546,7 +1546,26 @@
   .set-table-wrap { overflow-x:auto; border:1px solid var(--border); border-radius:var(--radius); }
   .set-table-wrap table { font-size:13px; }
   .rowmenu { position:relative; display:inline-block; }
-  .rowmenu .menu { top:26px; right:0; }
+  .rowmenu .menu {
+    top:26px; right:0; min-width:170px; padding:3px;
+    display:none; flex-direction:column; gap:1px;
+    box-shadow:0 4px 16px rgba(16,24,40,.12); border-radius:6px;
+  }
+  .rowmenu .menu button {
+    padding:5px 8px; font-size:12.5px; font-weight:400;
+    border-radius:4px; line-height:1.3; margin:0;
+    display:block; width:100%; text-align:left;
+  }
+  .rowmenu .menu button.signout,
+  .rowmenu .menu button[data-act="rm"],
+  .rowmenu .menu button[data-act="deactivate"] {
+    color:var(--red);
+  }
+  .rowmenu .menu button.signout:hover,
+  .rowmenu .menu button[data-act="rm"]:hover,
+  .rowmenu .menu button[data-act="deactivate"]:hover {
+    background:#fef2f2; color:var(--red);
+  }
   .mem-cell { display:flex; align-items:center; gap:10px; }
   .mem-cell .avatar { width:30px; height:30px; border-radius:var(--radius-sm); background:var(--navy2); color:#7FA8E4;
                       display:flex; align-items:center; justify-content:center; font-size:11px; font-weight:600;
@@ -1566,7 +1585,7 @@
   .set-nav button.active { background:var(--accent-soft); border-color:var(--accent-line); color:var(--accent-hover); font-weight:600; }
   .set-nav button:focus-visible { outline:2px solid var(--accent); outline-offset:-2px; }
   #setNavSel { display:none; margin-bottom:16px; }
-  .set-content { flex:1; min-width:0; max-width:900px; }
+  .set-content { flex:1; min-width:0; max-width:960px; }
   .set-sec { display:none; } .set-sec.visible { display:block; }
   .set-sec h2 { font-size:20px; font-weight:600; letter-spacing:-.01em; margin:0 0 4px; }
   .set-sec .shint { color:var(--ink3); font-size:13px; margin-bottom:20px; line-height:1.55; }
@@ -1578,6 +1597,95 @@
   .fld label { margin-top:0; }
   .ro { font-size:13px; color:var(--ink); padding:4px 0; }
   .fhint { font-size:12px; color:var(--muted); margin-top:6px; line-height:1.55; max-width:560px; }
+
+  /* settings 3-column & card components */
+  .set-layout-grid { display:flex; gap:24px; align-items:flex-start; }
+  .set-main-col { flex:1; min-width:0; }
+  .set-side-col { width:260px; flex:none; }
+  .set-card { background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); padding:20px; box-shadow:var(--shadow); }
+  .set-card-head { margin-bottom:16px; padding-bottom:12px; border-bottom:1px solid var(--line); }
+  .set-card-head h3 { font-size:15px; font-weight:600; color:var(--ink); margin:0 0 4px; letter-spacing:-.01em; }
+  .set-card-head p { font-size:12.5px; color:var(--ink3); margin:0; line-height:1.45; }
+  .set-side-card { background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); padding:16px; box-shadow:var(--shadow); }
+  .set-side-card h4 { font-size:13px; font-weight:600; color:var(--ink); margin:0 0 12px; padding-bottom:8px; border-bottom:1px solid var(--line); }
+  .set-side-dl { display:grid; grid-template-columns:auto 1fr; gap:8px 12px; font-size:12px; align-items:baseline; margin:0; }
+  .set-side-dl dt { color:var(--muted); font-weight:500; }
+  .set-side-dl dd { color:var(--ink); font-weight:600; margin:0; text-align:right; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-family:var(--mono); font-size:11.5px; }
+  .set-quick-actions { display:flex; flex-direction:column; gap:6px; }
+  .set-quick-btn { display:flex; align-items:center; justify-content:space-between; padding:8px 10px; font-size:12.5px; color:var(--ink2); background:var(--header-bg); border:1px solid var(--border); border-radius:var(--radius-sm); cursor:pointer; text-decoration:none; font-weight:500; margin:0; width:100%; transition:background .12s, border-color .12s, color .12s; }
+  .fld-input-btn-wrap { display:flex; align-items:center; justify-content:space-between; gap:12px; background:var(--header-bg); border:1px solid var(--border); border-radius:var(--radius-sm); padding:6px 12px; }
+  .ws-owner-card { display:flex; align-items:center; gap:14px; padding:12px 16px; background:var(--header-bg); border:1px solid var(--border); border-radius:var(--radius); max-width:420px; }
+  .ws-owner-avatar { width:38px; height:38px; border-radius:8px; background:#1b2a4a; color:#4f87ed; font-weight:700; font-size:13.5px; display:flex; align-items:center; justify-content:center; flex-shrink:0; letter-spacing:.02em; }
+  .ws-owner-info { display:flex; flex-direction:column; gap:2px; min-width:0; }
+  .ws-owner-name { font-size:14px; font-weight:600; color:var(--ink); line-height:1.3; }
+  .ws-owner-role { font-size:12.5px; color:var(--ink3); font-weight:400; line-height:1.3; }
+
+  /* Credentials Table Enterprise Styling */
+  #secTable { table-layout: fixed; width: 100%; border-collapse: separate; border-spacing: 0; }
+  #secTable th { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); padding: 8px 12px; border-bottom: 1px solid var(--line); text-align: left; }
+  #secTable td { padding: 12px 12px; vertical-align: middle; border-bottom: 1px solid var(--line); font-size: 13px; }
+  #secTable tr:last-child td { border-bottom: none; }
+  #secTable tr:hover td { background: var(--header-bg); }
+  .sec-logo-badge { width: 32px; height: 32px; border-radius: 6px; display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; overflow: hidden; background: var(--header-bg); border: 1px solid var(--border); }
+  .sec-logo-badge img.logo, .sec-logo-badge svg { width: 22px; height: 22px; object-fit: contain; display: block; }
+
+  /* Members Table Current-User Styling */
+  #memTable tr.me-row td { background: #f0f7ff; }
+  #memTable tr.me-row td:first-child { border-left: 3px solid var(--accent); }
+  .me-avatar-wrap { position: relative; display: inline-flex; flex-shrink: 0; }
+  .me-avatar-badge {
+    position: absolute; bottom: -2px; right: -2px;
+    width: 14px; height: 14px; border-radius: 50%;
+    background: var(--accent); color: #fff;
+    font-size: 9px; font-weight: 800;
+    display: flex; align-items: center; justify-content: center;
+    border: 1.5px solid #fff; box-shadow: 0 1px 2px rgba(0,0,0,0.15);
+  }
+
+  /* Roles & Permissions Console Styling */
+  .role-list-wrap { display: flex; flex-direction: column; gap: 6px; }
+  .role-item {
+    display: flex; flex-direction: column; gap: 4px; padding: 10px 12px;
+    border-radius: 6px; border: 1px solid var(--border); background: #fff;
+    cursor: pointer; transition: all 0.15s ease;
+  }
+  .role-item:hover { background: var(--header-bg); border-color: #cbd5e1; }
+  .role-item.active { background: #f0f7ff; border-color: var(--accent); }
+  .perm-code-badge {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    font-size: 11px; color: var(--ink3); background: var(--header-bg);
+    padding: 1px 6px; border-radius: 4px; border: 1px solid var(--line);
+    display: inline-block;
+  }
+  .perm-row {
+    display: flex; align-items: center; justify-content: space-between; gap: 12px;
+    padding: 10px 0; border-bottom: 1px solid var(--line);
+  }
+  .perm-row:last-child { border-bottom: none; }
+
+  /* Permission Matrix Table Styling */
+  .cap-icon-box {
+    width: 32px; height: 32px; border-radius: 6px;
+    background: #f1f5f9; border: 1px solid #e2e8f0;
+    display: inline-flex; align-items: center; justify-content: center;
+    flex-shrink: 0; color: #475569;
+  }
+  .cap-icon-box svg { width: 16px; height: 16px; display: block; fill: currentColor; }
+  #rolesMatrixTable { width: 100%; border-collapse: separate; border-spacing: 0; }
+  #rolesMatrixTable th {
+    font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em;
+    color: var(--muted); padding: 10px 12px; border-bottom: 1px solid var(--line);
+  }
+  #rolesMatrixTable td { padding: 12px 12px; vertical-align: middle; border-bottom: 1px solid var(--line); }
+  #rolesMatrixTable tr:last-child td { border-bottom: none; }
+  #rolesMatrixTable tr:hover td { background: var(--header-bg); }
+  .perm-check-yes { color: var(--green); font-size: 15px; font-weight: 700; text-align: center; }
+  .perm-check-no { color: var(--muted); font-size: 15px; font-weight: 500; text-align: center; }
+
+  @media (max-width:1024px) {
+    .set-layout-grid { flex-direction:column; gap:16px; }
+    .set-side-col { width:100%; }
+  }
 
   @media (max-width:980px) {
     .set-wrap { flex-direction:column; gap:0; }

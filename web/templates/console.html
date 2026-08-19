@@ -1914,247 +1914,957 @@
     <section class="set-sec visible" id="sec-workspace">
       <h2>Workspace</h2>
       <div class="shint">Workspace identity and defaults for this deployment.</div>
-      <form id="wsForm" class="set-form">
-        <div class="fld"><label for="wsName">Workspace name</label>
-          <input type="text" id="wsName" autocomplete="off"></div>
-        <div class="fld"><label>Workspace ID</label><div class="ro" id="wsId">—</div>
-          <div class="fhint">Generated from the workspace name when first saved, then permanent.</div></div>
-        <div class="fld"><label for="wsTz">Default timezone</label>
-          <select id="wsTz"></select></div>
-        <div class="fld"><label>Workspace owner</label><div class="ro" id="wsOwner">—</div></div>
-        <div class="fld"><label>Deployment mode</label><div class="ro">Self-hosted</div>
-          <div class="fhint">Determined by the server deployment and not editable here.</div></div>
-        <div class="facts">
-          <button type="submit" id="wsSave" disabled>Save changes</button>
-          <span class="dirty" id="wsDirty" hidden>Unsaved changes</span>
+
+      <div class="set-layout-grid">
+        <!-- CENTER COLUMN: Form Settings -->
+        <div class="set-main-col">
+          <form id="wsForm" class="set-form" style="max-width:100%">
+            <!-- Card 1: Workspace Information -->
+            <div class="set-card">
+              <div class="set-card-head">
+                <h3>Workspace Information</h3>
+                <p>Basic information and default settings for your workspace.</p>
+              </div>
+              <div class="fld" style="max-width:100%">
+                <label for="wsName">WORKSPACE NAME</label>
+                <input type="text" id="wsName" autocomplete="off" placeholder="First Workspace">
+              </div>
+              <div class="fld" style="max-width:100%">
+                <label>WORKSPACE ID</label>
+                <div class="fld-input-btn-wrap">
+                  <div class="ro" id="wsId" style="font-family:var(--mono);font-size:12.5px;flex:1;margin:0;border:none;padding:0;background:transparent">—</div>
+                  <button type="button" id="wsCopyBtn" class="secondary" style="margin:0;padding:4px 12px;font-size:12px;height:28px">Copy</button>
+                </div>
+                <div class="fhint">Generated when first saved and cannot be changed.</div>
+              </div>
+              <div class="fld" style="max-width:100%;margin-bottom:0">
+                <label for="wsTz">DEFAULT TIMEZONE</label>
+                <select id="wsTz"></select>
+              </div>
+            </div>
+
+            <!-- Card 2: Workspace Ownership & Deployment -->
+            <div class="set-card" style="margin-top:16px">
+              <div class="set-card-head">
+                <h3>Workspace Ownership &amp; Deployment</h3>
+                <p>Owner details and deployment configuration.</p>
+              </div>
+              <div class="fld" style="max-width:100%">
+                <label>WORKSPACE OWNER</label>
+                <div id="wsOwner">—</div>
+              </div>
+              <div class="fld" style="max-width:100%;margin-bottom:0">
+                <label>DEPLOYMENT MODE</label>
+                <div class="ro" style="font-weight:600">Self-hosted</div>
+                <div class="fhint">Determined by the server deployment and not editable here.</div>
+              </div>
+            </div>
+
+            <!-- Form Actions -->
+            <div class="facts" style="margin-top:16px">
+              <button type="submit" id="wsSave" disabled>Save changes</button>
+              <span class="dirty" id="wsDirty" hidden>Unsaved changes</span>
+            </div>
+            <div class="err" id="wsErr"></div>
+          </form>
         </div>
-        <div class="err" id="wsErr"></div>
-      </form>
+
+        <!-- RIGHT COLUMN: Contextual Summary & Quick Actions -->
+        <div class="set-side-col">
+          <!-- Workspace Summary Card -->
+          <div class="set-side-card">
+            <h4>Workspace Summary</h4>
+            <dl class="set-side-dl">
+              <dt>Workspace ID</dt>
+              <dd id="wsSumId">—</dd>
+              <dt>Owner</dt>
+              <dd id="wsSumOwner" style="font-family:inherit">—</dd>
+              <dt>Deployment</dt>
+              <dd>Self-hosted</dd>
+              <dt>Timezone</dt>
+              <dd id="wsSumTz" style="font-family:inherit">—</dd>
+            </dl>
+          </div>
+
+          <!-- Quick Actions Card -->
+          <div class="set-side-card" style="margin-top:16px">
+            <h4>Quick Actions</h4>
+            <div class="set-quick-actions">
+              <button type="button" class="set-quick-btn" onclick="document.querySelector('#setNav button[data-sec=members]').click()">
+                <span>Manage members</span>
+                <span aria-hidden="true">&rarr;</span>
+              </button>
+              <button type="button" class="set-quick-btn" onclick="document.querySelector('#setNav button[data-sec=roles]').click()">
+                <span>Roles &amp; permissions</span>
+                <span aria-hidden="true">&rarr;</span>
+              </button>
+              <button type="button" class="set-quick-btn" onclick="document.querySelector('#setNav button[data-sec=secrets]').click()">
+                <span>Manage connections</span>
+                <span aria-hidden="true">&rarr;</span>
+              </button>
+              <button type="button" class="set-quick-btn" onclick="document.querySelector('nav a[data-page=governance]').click()">
+                <span>Audit log &amp; governance</span>
+                <span aria-hidden="true">&rarr;</span>
+              </button>
+            </div>
+          </div>
+
+          <!-- Need help? Card -->
+          <div class="set-side-card" style="margin-top:16px">
+            <h4>Need help?</h4>
+            <div class="set-quick-actions">
+              <a href="/docs" target="_blank" class="set-quick-btn" style="text-decoration:none">
+                <span>View documentation</span>
+                <span aria-hidden="true">&nearr;</span>
+              </a>
+              <a href="mailto:support@metabridge.ai" class="set-quick-btn" style="text-decoration:none">
+                <span>Contact support</span>
+                <span aria-hidden="true">&nearr;</span>
+              </a>
+            </div>
+          </div>
+        </div>
+      </div>
     </section>
 
     <section class="set-sec" id="sec-profile">
       <h2>Profile</h2>
       <div class="shint">Your identity in this workspace.</div>
+
       <div id="profilePanel">
-      <h3 style="margin-top:0">Profile photo</h3>
-    <div style="display:flex;gap:14px;align-items:center">
-      <div class="acct-av" id="profAvWrap" style="width:64px;height:64px;font-size:20px;cursor:default" aria-hidden="true">
-        <span class="avslot" id="profAv"></span>
-      </div>
-      <div style="min-width:0">
-        <div style="font-weight:600;font-size:15px" id="profName"></div>
-        <div style="color:var(--muted);font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" id="profEmail"></div>
-      </div>
-    </div>
-    <div style="margin-top:16px;font-size:11.5px;letter-spacing:.6px;color:var(--ink3);font-weight:600">PROFILE PHOTO</div>
-    <div class="avopts">
-      <button class="avopt" id="avUseInitials"><span class="avopt-demo" id="avInitDemo"></span>Use initials</button>
-      <button class="avopt" id="avChoose"><span class="avopt-demo" style="background:none"><img src="/static/avatars/mb-1.svg" alt=""></span>Choose avatar</button>
-      <button class="avopt" id="avUpload"><span class="avopt-demo cam"><svg><use href="#i-camera"/></svg></span><span id="avUploadLbl">Upload photo</span></button>
-    </div>
-    <div style="margin-top:12px"><button class="secondary" id="avRemove" style="display:none">Remove photo</button></div>
-      <h3>Personal information</h3>
-      <form id="pnForm" class="set-form">
-        <div class="fld"><label for="pnName">Display name</label>
-          <input type="text" id="pnName" autocomplete="name"></div>
-        <div class="fld"><label>Email</label><div class="ro" id="pnEmail">—</div>
-          <div class="fhint">Email is the sign-in identity for this account and cannot be changed here.</div></div>
-        <div class="facts">
-          <button type="submit" id="pnSave" disabled>Save changes</button>
-          <span class="dirty" id="pnDirty" hidden>Unsaved changes</span>
-          <span id="pnOk" hidden style="color:var(--green);font-size:12.5px;font-weight:600">✓ Saved</span>
+        <div class="set-layout-grid">
+          <!-- CENTER COLUMN: Profile Configuration Cards -->
+          <div class="set-main-col">
+            <!-- Card 1: Profile Photo -->
+            <div class="set-card">
+              <div class="set-card-head">
+                <h3>Profile Photo</h3>
+                <p>Your visual identity across MetaBridge.</p>
+              </div>
+              <div style="display:flex;gap:16px;align-items:center;margin-bottom:16px">
+                <div class="acct-av" id="profAvWrap" style="width:64px;height:64px;font-size:20px;cursor:default;flex-shrink:0" aria-hidden="true">
+                  <span class="avslot" id="profAv"></span>
+                </div>
+                <div style="min-width:0">
+                  <div style="font-weight:600;font-size:15px;color:var(--ink)" id="profName"></div>
+                  <div style="color:var(--ink3);font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" id="profEmail"></div>
+                </div>
+              </div>
+              <div style="font-size:11px;letter-spacing:.08em;color:var(--muted);font-weight:600;margin-bottom:8px">AVATAR OPTIONS</div>
+              <div class="avopts">
+                <button class="avopt" id="avUseInitials"><span class="avopt-demo" id="avInitDemo"></span>Use initials</button>
+                <button class="avopt" id="avChoose"><span class="avopt-demo" style="background:none"><img src="/static/avatars/mb-1.svg" alt=""></span>Choose avatar</button>
+                <button class="avopt" id="avUpload"><span class="avopt-demo cam"><svg><use href="#i-camera"/></svg></span><span id="avUploadLbl">Upload photo</span></button>
+              </div>
+              <div style="margin-top:12px"><button class="secondary" id="avRemove" style="display:none">Remove photo</button></div>
+            </div>
+
+            <!-- Card 2: Personal Information -->
+            <div class="set-card" style="margin-top:16px">
+              <div class="set-card-head">
+                <h3>Personal Information</h3>
+                <p>Manage your display name and sign-in identity.</p>
+              </div>
+              <form id="pnForm" class="set-form" style="max-width:100%">
+                <div class="fld" style="max-width:100%">
+                  <label for="pnName">DISPLAY NAME</label>
+                  <input type="text" id="pnName" autocomplete="name">
+                </div>
+                <div class="fld" style="max-width:100%;margin-bottom:0">
+                  <label>EMAIL ADDRESS</label>
+                  <div class="ro" id="pnEmail" style="font-weight:600">—</div>
+                  <div class="fhint">Email is the sign-in identity for this account and cannot be changed here.</div>
+                </div>
+                <div class="facts" style="margin-top:16px">
+                  <button type="submit" id="pnSave" disabled>Save changes</button>
+                  <span class="dirty" id="pnDirty" hidden>Unsaved changes</span>
+                  <span id="pnOk" hidden style="color:var(--green);font-size:12.5px;font-weight:600">✓ Saved</span>
+                </div>
+                <div class="err" id="pnErr"></div>
+              </form>
+            </div>
+
+            <!-- Card 3: Appearance -->
+            <div class="set-card" style="margin-top:16px">
+              <div class="set-card-head">
+                <h3>Appearance</h3>
+                <p>Customize your theme and visual interface.</p>
+              </div>
+              <div class="set-form" style="max-width:100%">
+                <div class="fld" style="max-width:100%;margin-bottom:0">
+                  <label for="themeSel">INTERFACE THEME</label>
+                  <select id="themeSel">
+                    <option value="system">Match my system</option>
+                    <option value="light">Light</option>
+                    <option value="dark">Dark</option>
+                  </select>
+                  <div class="fhint">Applies to this browser only. "Match my system" follows your OS light/dark setting.</div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- RIGHT COLUMN: Contextual Summary & Quick Actions -->
+          <div class="set-side-col">
+            <!-- Profile Summary Card -->
+            <div class="set-side-card">
+              <h4>Profile Summary</h4>
+              <dl class="set-side-dl">
+                <dt>Name</dt>
+                <dd id="profSumName" style="font-family:inherit">—</dd>
+                <dt>Email</dt>
+                <dd id="profSumEmail" style="font-family:inherit">—</dd>
+                <dt>Role</dt>
+                <dd id="profSumRole" style="font-family:inherit">—</dd>
+                <dt>Status</dt>
+                <dd><span class="stat"><i style="background:var(--green)"></i>Active</span></dd>
+              </dl>
+            </div>
+
+            <!-- Quick Actions Card -->
+            <div class="set-side-card" style="margin-top:16px">
+              <h4>Quick Actions</h4>
+              <div class="set-quick-actions">
+                <button type="button" class="set-quick-btn" onclick="document.querySelector('#setNav button[data-sec=workspace]').click()">
+                  <span>Workspace settings</span>
+                  <span aria-hidden="true">&rarr;</span>
+                </button>
+                <button type="button" class="set-quick-btn" onclick="document.querySelector('#setNav button[data-sec=roles]').click()">
+                  <span>Roles &amp; permissions</span>
+                  <span aria-hidden="true">&rarr;</span>
+                </button>
+                <button type="button" class="set-quick-btn" onclick="document.querySelector('#setNav button[data-sec=members]').click()">
+                  <span>Manage members</span>
+                  <span aria-hidden="true">&rarr;</span>
+                </button>
+                <button type="button" class="set-quick-btn" onclick="fetch('/auth/logout',{method:'POST'}).then(()=>location.href='/')">
+                  <span>Sign out</span>
+                  <span aria-hidden="true">&rarr;</span>
+                </button>
+              </div>
+            </div>
+
+            <!-- Need help? Card -->
+            <div class="set-side-card" style="margin-top:16px">
+              <h4>Need help?</h4>
+              <div class="set-quick-actions">
+                <a href="/docs" target="_blank" class="set-quick-btn" style="text-decoration:none">
+                  <span>View documentation</span>
+                  <span aria-hidden="true">&nearr;</span>
+                </a>
+                <a href="mailto:support@metabridge.ai" class="set-quick-btn" style="text-decoration:none">
+                  <span>Contact support</span>
+                  <span aria-hidden="true">&nearr;</span>
+                </a>
+              </div>
+            </div>
+          </div>
         </div>
-        <div class="err" id="pnErr"></div>
-      </form>
-      <h3>Appearance</h3>
-      <div class="set-form">
-        <div class="fld"><label for="themeSel">Theme</label>
-          <select id="themeSel">
-            <option value="system">Match my system</option>
-            <option value="light">Light</option>
-            <option value="dark">Dark</option>
-          </select>
-          <div class="fhint">Applies to this browser only. "Match my system"
-            follows your OS light/dark setting.</div></div>
-      </div>
       </div>
     </section>
 
     <section class="set-sec" id="sec-ai">
       <h2>AI Runtime</h2>
       <div class="shint">Configure the AI runtime used for semantic review, migration analysis, and assisted modernization.</div>
-      <h3 style="margin-top:0">AI provider</h3>
-      <div class="fhint">Choose how MetaBridge AI accesses an approved language model.</div>
-      <div class="prov-cards" role="radiogroup" aria-label="AI provider">
-        <button type="button" class="prov" data-prov="bedrock" role="radio" aria-checked="false">
-          <b>Amazon Bedrock</b>
-          <span>Use an approved model through your AWS environment. Recommended for AWS-hosted enterprise deployments.</span>
-        </button>
-        <button type="button" class="prov" data-prov="anthropic" role="radio" aria-checked="false">
-          <b>Anthropic API</b>
-          <span>Connect MetaBridge AI directly using an Anthropic API credential.</span>
-        </button>
-        <button type="button" class="prov" data-prov="" role="radio" aria-checked="false">
-          <b>Off</b>
-          <span>Disable MetaBridge AI assistance for this workspace.</span>
-        </button>
-      </div>
-      <div id="aiCfg">
-        <h3>Runtime configuration</h3>
-        <div id="aiBedrockCfg">
-          <div class="fld"><label for="aiRegion">AWS Region</label>
-            <input type="text" id="aiRegion" placeholder="ap-south-1" autocomplete="off"></div>
-          <div class="fld"><label>Authentication</label>
-            <div>
-              <label class="radio"><input type="radio" name="bedauth" value="iam" checked> Server IAM role</label>
-              <label class="radio"><input type="radio" name="bedauth" value="key"> Bedrock API key</label>
+
+      <div class="set-layout-grid">
+        <!-- CENTER COLUMN: AI Runtime Configuration Cards -->
+        <div class="set-main-col">
+          <!-- Card 1: AI Provider -->
+          <div class="set-card">
+            <div class="set-card-head">
+              <h3>AI Provider</h3>
+              <p>Choose how MetaBridge AI accesses an approved language model.</p>
             </div>
-            <div class="fhint" id="bedIamHint">MetaBridge uses the AWS credentials configured for this deployment.</div>
+            <div class="prov-cards" role="radiogroup" aria-label="AI provider">
+              <button type="button" class="prov" data-prov="bedrock" role="radio" aria-checked="false">
+                <b>Amazon Bedrock</b>
+                <span>Use an approved model through your AWS environment. Recommended for AWS-hosted enterprise deployments.</span>
+              </button>
+              <button type="button" class="prov" data-prov="anthropic" role="radio" aria-checked="false">
+                <b>Anthropic API</b>
+                <span>Connect MetaBridge AI directly using an Anthropic API credential.</span>
+              </button>
+              <button type="button" class="prov" data-prov="" role="radio" aria-checked="false">
+                <b>Off</b>
+                <span>Disable MetaBridge AI assistance for this workspace.</span>
+              </button>
+            </div>
           </div>
-          <div class="fld" id="bedKeyFld" hidden><label for="aiToken">Bedrock API key</label>
-            <div class="pw-wrap"><input type="password" id="aiToken" autocomplete="new-password"
-                   data-1p-ignore data-lpignore="true" data-form-type="other">
-              <button type="button" class="pw-eye" aria-pressed="false" aria-label="Show password" title="Show password"></button>
-            </div></div>
+
+          <!-- Card 2: Runtime Configuration -->
+          <div class="set-card" style="margin-top:16px">
+            <div id="aiCfg">
+              <div class="set-card-head">
+                <h3>Runtime Configuration</h3>
+                <p>Configure model parameters, credentials, and region settings.</p>
+              </div>
+              <div id="aiBedrockCfg">
+                <div class="fld" style="max-width:100%"><label for="aiRegion">AWS REGION</label>
+                  <input type="text" id="aiRegion" placeholder="ap-south-1" autocomplete="off"></div>
+                <div class="fld" style="max-width:100%"><label>AUTHENTICATION</label>
+                  <div>
+                    <label class="radio"><input type="radio" name="bedauth" value="iam" checked> Server IAM role</label>
+                    <label class="radio"><input type="radio" name="bedauth" value="key"> Bedrock API key</label>
+                  </div>
+                  <div class="fhint" id="bedIamHint">MetaBridge uses the AWS credentials configured for this deployment.</div>
+                </div>
+                <div class="fld" id="bedKeyFld" style="max-width:100%" hidden><label for="aiToken">BEDROCK API KEY</label>
+                  <div class="pw-wrap"><input type="password" id="aiToken" autocomplete="new-password"
+                         data-1p-ignore data-lpignore="true" data-form-type="other">
+                    <button type="button" class="pw-eye" aria-pressed="false" aria-label="Show password" title="Show password"></button>
+                  </div></div>
+              </div>
+              <div id="aiAnthCfg">
+                <div class="fld" style="max-width:100%"><label for="aiKey">ANTHROPIC API KEY</label>
+                  <div class="pw-wrap"><input type="password" id="aiKey" placeholder="sk-ant-…" autocomplete="new-password"
+                         data-1p-ignore data-lpignore="true" data-form-type="other">
+                    <button type="button" class="pw-eye" aria-pressed="false" aria-label="Show password" title="Show password"></button>
+                  </div></div>
+              </div>
+              <div class="fld" style="max-width:100%"><label for="aiModelSel">MODEL</label>
+                <select id="aiModelSel"></select></div>
+              <details class="adv" id="aiAdv"><summary>Advanced model configuration</summary>
+                <div class="fld" style="max-width:100%"><label for="aiModel">MODEL ID</label>
+                  <input type="text" id="aiModel" autocomplete="off">
+                  <div class="fhint">Use a model identifier available to this deployment and region.</div></div>
+              </details>
+              <details class="adv"><summary>Model setup help</summary>
+                <div class="fhint">Amazon Bedrock models must be enabled for your AWS account and region before they can
+                be used. If Test connection reports the model is unavailable, enable it for this region in your AWS
+                account or enter the exact model identifier under Advanced model configuration. Anthropic API models
+                are available to any valid API credential.</div>
+              </details>
+            </div>
+          </div>
+
+          <!-- Card 3: Runtime Status & Actions -->
+          <div class="set-card" style="margin-top:16px">
+            <div class="set-card-head">
+              <h3>Runtime Status &amp; Actions</h3>
+              <p>Test connectivity and save runtime configuration.</p>
+            </div>
+            <div class="ai-status" id="aiRt">—</div>
+            <div class="facts" style="margin-top:16px">
+              <button id="aiSave" disabled>Save configuration</button>
+              <button type="button" class="secondary" id="aiTest">Test connection</button>
+              <span class="dirty" id="aiDirty" hidden>Unsaved changes</span>
+            </div>
+            <div class="err" id="aiErr"></div>
+            <div class="fhint" style="margin-top:14px">Credentials are stored server-side and are never returned in full after configuration.</div>
+          </div>
         </div>
-        <div id="aiAnthCfg">
-          <div class="fld"><label for="aiKey">Anthropic API key</label>
-            <div class="pw-wrap"><input type="password" id="aiKey" placeholder="sk-ant-…" autocomplete="new-password"
-                   data-1p-ignore data-lpignore="true" data-form-type="other">
-              <button type="button" class="pw-eye" aria-pressed="false" aria-label="Show password" title="Show password"></button>
-            </div></div>
+
+        <!-- RIGHT COLUMN: Contextual Summary & Quick Actions -->
+        <div class="set-side-col">
+          <!-- AI Runtime Summary Card -->
+          <div class="set-side-card">
+            <h4>AI Runtime Summary</h4>
+            <dl class="set-side-dl">
+              <dt>Provider</dt>
+              <dd id="aiSumProv" style="font-family:inherit">—</dd>
+              <dt>Region</dt>
+              <dd id="aiSumRegion" style="font-family:inherit">—</dd>
+              <dt>Model</dt>
+              <dd id="aiSumModel" style="font-family:inherit">—</dd>
+              <dt>Status</dt>
+              <dd id="aiSumStatus"><span class="stat"><i style="background:var(--muted)"></i>Not set</span></dd>
+            </dl>
+          </div>
+
+          <!-- Quick Actions Card -->
+          <div class="set-side-card" style="margin-top:16px">
+            <h4>Quick Actions</h4>
+            <div class="set-quick-actions">
+              <button type="button" class="set-quick-btn" onclick="document.querySelector('#setNav button[data-sec=secrets]').click()">
+                <span>Manage connections</span>
+                <span aria-hidden="true">&rarr;</span>
+              </button>
+              <button type="button" class="set-quick-btn" onclick="document.querySelector('#setNav button[data-sec=system]').click()">
+                <span>System configuration</span>
+                <span aria-hidden="true">&rarr;</span>
+              </button>
+              <button type="button" class="set-quick-btn" onclick="document.querySelector('nav a[data-page=governance]').click()">
+                <span>Audit log &amp; governance</span>
+                <span aria-hidden="true">&rarr;</span>
+              </button>
+            </div>
+          </div>
+
+          <!-- Need help? Card -->
+          <div class="set-side-card" style="margin-top:16px">
+            <h4>Need help?</h4>
+            <div class="set-quick-actions">
+              <a href="/docs" target="_blank" class="set-quick-btn" style="text-decoration:none">
+                <span>View documentation</span>
+                <span aria-hidden="true">&nearr;</span>
+              </a>
+              <a href="mailto:support@metabridge.ai" class="set-quick-btn" style="text-decoration:none">
+                <span>Contact support</span>
+                <span aria-hidden="true">&nearr;</span>
+              </a>
+            </div>
+          </div>
         </div>
-        <h3>Model</h3>
-        <div class="fld"><label for="aiModelSel">Model</label>
-          <select id="aiModelSel"></select></div>
-        <details class="adv" id="aiAdv"><summary>Advanced model configuration</summary>
-          <div class="fld"><label for="aiModel">Model ID</label>
-            <input type="text" id="aiModel" autocomplete="off">
-            <div class="fhint">Use a model identifier available to this deployment and region.</div></div>
-        </details>
-        <details class="adv"><summary>Model setup help</summary>
-          <div class="fhint">Amazon Bedrock models must be enabled for your AWS account and region before they can
-          be used. If Test connection reports the model is unavailable, enable it for this region in your AWS
-          account or enter the exact model identifier under Advanced model configuration. Anthropic API models
-          are available to any valid API credential.</div>
-        </details>
       </div>
-      <h3>Runtime status</h3>
-      <div class="ai-status" id="aiRt">—</div>
-      <div class="facts">
-        <button id="aiSave" disabled>Save configuration</button>
-        <button type="button" class="secondary" id="aiTest">Test connection</button>
-        <span class="dirty" id="aiDirty" hidden>Unsaved changes</span>
-      </div>
-      <div class="err" id="aiErr"></div>
-      <div class="fhint" style="margin-top:14px">Credentials are stored server-side and are never returned in full after configuration.</div>
     </section>
 
     <section class="set-sec" id="sec-secrets">
-      <h2>Connections &amp; Secrets</h2>
-      <div class="shint">Credential references and health for this workspace. Secret values are never displayed;
-      configuration happens inside each integration.</div>
-      <div class="set-table-wrap"><table id="secTable"></table></div>
-      <div id="secTablePager" style="display:none;align-items:center;gap:12px;margin-top:12px;flex-wrap:wrap">
-        <button type="button" class="secondary" id="secTablePrev" style="margin:0;padding:5px 12px">&larr; Previous</button>
-        <span id="secTablePageInfo" style="font-size:12.5px;color:var(--ink3)" role="status" aria-live="polite"></span>
-        <button type="button" class="secondary" id="secTableNext" style="margin:0;padding:5px 12px">Next &rarr;</button>
+      <h2>Connections &amp; Credentials</h2>
+      <div class="shint">Manage connection credentials and storage status for integrations.</div>
+
+      <div class="set-layout-grid">
+        <!-- CENTER COLUMN: Connections & Credentials Management Center -->
+        <div class="set-main-col">
+          <div class="set-card">
+            <div class="set-card-head" style="display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap">
+              <div>
+                <h3>Connections &amp; Credentials</h3>
+                <p>Active credential references and storage status for integrations.</p>
+              </div>
+              <div class="sec-search-wrap">
+                <input type="text" id="secSearch" placeholder="Search connections or credentials…" style="width:240px;padding:6px 12px;font-size:12.5px;border-radius:var(--radius-sm);border:1px solid var(--border);background:var(--header-bg)">
+              </div>
+            </div>
+            <div class="set-table-wrap" style="margin-top:12px"><table id="secTable"></table></div>
+            <div id="secTablePager" style="display:none;align-items:center;gap:12px;margin-top:16px;flex-wrap:wrap">
+              <button type="button" class="secondary" id="secTablePrev" style="margin:0;padding:5px 12px">&larr; Previous</button>
+              <span id="secTablePageInfo" style="font-size:12.5px;color:var(--ink3)" role="status" aria-live="polite"></span>
+              <button type="button" class="secondary" id="secTableNext" style="margin:0;padding:5px 12px">Next &rarr;</button>
+            </div>
+            <div class="set-info-notice" style="display:flex;gap:12px;align-items:flex-start;background:var(--header-bg);border:1px solid var(--border);border-radius:var(--radius-sm);padding:12px 14px;margin-top:18px">
+              <span style="font-size:15px;color:var(--accent);line-height:1;margin-top:2px">ⓘ</span>
+              <div style="font-size:12px;color:var(--ink2);line-height:1.5">
+                <b style="color:var(--ink);display:block;margin-bottom:2px">Credential Storage Policy</b>
+                Connection credentials are stored on this server only when saving them was explicitly chosen. Secret values are never displayed or returned to the client; credentials are securely resolved server-side or from deployment environment variables at execution time.
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- RIGHT COLUMN: Contextual Summary & Quick Actions -->
+        <div class="set-side-col">
+          <!-- Connections Summary Card -->
+          <div class="set-side-card">
+            <h4>Connections Summary</h4>
+            <dl class="set-side-dl">
+              <dt>Total Credentials</dt>
+              <dd id="secSumTotal" style="font-family:inherit">—</dd>
+              <dt>Configured</dt>
+              <dd id="secSumConfigured" style="font-family:inherit">—</dd>
+              <dt>Storage Mode</dt>
+              <dd style="font-size:11px">Server-side</dd>
+              <dt>Status</dt>
+              <dd><span class="stat"><i style="background:var(--green)"></i>Active</span></dd>
+            </dl>
+          </div>
+
+          <!-- Credential Storage Card -->
+          <div class="set-side-card" style="margin-top:16px">
+            <h4>Credential Storage</h4>
+            <div style="font-size:12px;color:var(--ink3);line-height:1.5">
+              <div style="display:flex;align-items:center;gap:6px;margin-bottom:6px;color:var(--ink);font-weight:600">
+                <span style="color:var(--green);font-size:12px">●</span> Encrypted Server-side
+              </div>
+              <div style="display:flex;align-items:center;gap:6px;color:var(--ink);font-weight:600">
+                <span style="color:var(--green);font-size:12px">●</span> Secret Masking Active
+              </div>
+            </div>
+          </div>
+
+          <!-- Quick Actions Card -->
+          <div class="set-side-card" style="margin-top:16px">
+            <h4>Quick Actions</h4>
+            <div class="set-quick-actions">
+              <button type="button" class="set-quick-btn" onclick="document.querySelector('nav a[data-page=marketplace]').click()">
+                <span>Manage integrations</span>
+                <span aria-hidden="true">&rarr;</span>
+              </button>
+              <button type="button" class="set-quick-btn" onclick="document.querySelector('#setNav button[data-sec=ai]').click()">
+                <span>AI Runtime settings</span>
+                <span aria-hidden="true">&rarr;</span>
+              </button>
+              <button type="button" class="set-quick-btn" onclick="document.querySelector('#setNav button[data-sec=system]').click()">
+                <span>System configuration</span>
+                <span aria-hidden="true">&rarr;</span>
+              </button>
+            </div>
+          </div>
+
+          <!-- Need help? Card -->
+          <div class="set-side-card" style="margin-top:16px">
+            <h4>Need help?</h4>
+            <div class="set-quick-actions">
+              <a href="/docs" target="_blank" class="set-quick-btn" style="text-decoration:none">
+                <span>View documentation</span>
+                <span aria-hidden="true">&nearr;</span>
+              </a>
+              <a href="mailto:support@metabridge.ai" class="set-quick-btn" style="text-decoration:none">
+                <span>Contact support</span>
+                <span aria-hidden="true">&nearr;</span>
+              </a>
+            </div>
+          </div>
+        </div>
       </div>
-      <div class="fhint" style="margin-top:12px">Connection credentials are stored on this server only when saving
-      them was explicitly chosen; otherwise they are resolved from server environment variables at use time.</div>
     </section>
 
     <section class="set-sec" id="sec-notifications">
       <h2>Notifications</h2>
-      <div class="shint">Outbound email for account, approval and operational events. Delivered over SMTP — point it at Amazon SES (<code>email-smtp.&lt;region&gt;.amazonaws.com</code>) for production.</div>
-      <h3 style="margin-top:0">Delivery status</h3>
-      <div id="notifStatus" class="ai-status nf-status" role="status" aria-live="polite">Loading…</div>
+      <div class="shint">Manage how and when outbound email notifications and operational alerts are delivered for your workspace.</div>
 
-      <h3>SMTP relay</h3>
-      <div class="fhint">Where MetaBridge submits outbound mail. For Amazon SES use the SMTP
-      endpoint for your region and an SES SMTP credential — not your AWS access key.</div>
-      <div class="fld"><label for="nfHost">SMTP host</label>
-        <input type="text" id="nfHost" placeholder="email-smtp.ap-south-1.amazonaws.com" autocomplete="off">
-        <div class="fhint" id="nfHostHint" hidden></div></div>
-      <div class="fld"><label for="nfPort">Port</label>
-        <input type="number" id="nfPort" min="1" max="65535" placeholder="587" autocomplete="off" style="max-width:140px">
-        <div class="fhint">587 for STARTTLS (recommended), 465 for implicit TLS.</div></div>
-      <div class="fld"><label for="nfUser">SMTP username</label>
-        <input type="text" id="nfUser" autocomplete="off" placeholder="SES SMTP username"></div>
-      <div class="fld"><label for="nfPass">SMTP password</label>
-        <div class="pw-wrap"><input type="password" id="nfPass" autocomplete="new-password"
-               data-1p-ignore data-lpignore="true" data-form-type="other">
-          <button type="button" class="pw-eye" aria-pressed="false" aria-label="Show password" title="Show password"></button>
-        </div></div>
-
-      <h3>Sender identity</h3>
-      <div class="fld"><label for="nfFrom">From address</label>
-        <input type="email" id="nfFrom" placeholder="no-reply@your-domain.com" autocomplete="off"
-               aria-describedby="nfFromHint">
-        <div class="fhint" id="nfFromHint">Must be an address under a domain you have verified with your provider.</div>
-        <div class="fhint" id="nfFromErr" role="alert" hidden
-             style="color:var(--red);font-weight:600"></div></div>
-      <div class="fld"><label for="nfFromName">Display name</label>
-        <input type="text" id="nfFromName" placeholder="MetaBridge" autocomplete="off"></div>
-
-      <details class="adv" id="nfAdv"><summary>Advanced transport options</summary>
-        <div class="fld"><label>Transport security</label>
-          <div>
-            <label class="radio"><input type="radio" name="nftls" value="starttls" checked> STARTTLS (port 587)</label>
-            <label class="radio"><input type="radio" name="nftls" value="ssl"> Implicit TLS / SMTPS (port 465)</label>
-            <label class="radio"><input type="radio" name="nftls" value="none"> None — plaintext</label>
+      <div class="set-layout-grid">
+        <!-- CENTER COLUMN: Notification & SMTP Settings Cards -->
+        <div class="set-main-col">
+          <!-- Card 1: Delivery Status -->
+          <div class="set-card">
+            <div class="set-card-head">
+              <h3>Delivery Status</h3>
+              <p>Current outbound mail transport status and active configuration.</p>
+            </div>
+            <div id="notifStatus" class="ai-status nf-status" role="status" aria-live="polite">Loading…</div>
           </div>
-          <div class="fhint" id="nfTlsHint">Use plaintext only for a local mail sink in development.</div></div>
-        <div class="fld"><label class="radio" for="nfEnabled"><input type="checkbox" id="nfEnabled" checked>
-          Send outbound email</label>
-          <div class="fhint">Turn off to silence all email while keeping this configuration.
-          Events still appear in the in-app notification feed.</div></div>
-      </details>
 
-      <div class="facts">
-        <button id="nfSave" disabled>Save configuration</button>
-        <button type="button" class="secondary" id="notifTest">Send test email to me</button>
-        <span class="dirty" id="nfDirty" hidden>Unsaved changes</span>
-        <span id="notifTestMsg" style="font-size:12.5px" role="status" aria-live="polite"></span>
-      </div>
-      <div class="err" id="nfErr" role="alert" aria-live="assertive"></div>
-      <div class="fhint" style="margin-top:14px">
-        The SMTP password is stored server-side and is never displayed again after saving.
-        These settings can also be set as server environment variables
-        (<code>METABRIDGE_SMTP_HOST</code>, <code>METABRIDGE_SMTP_PORT</code>,
-        <code>METABRIDGE_SMTP_USER</code>, <code>METABRIDGE_SMTP_PASSWORD</code>,
-        <code>METABRIDGE_SMTP_FROM</code>) — <b>an environment variable always wins</b> and its
-        field is shown read-only here. Set <code>METABRIDGE_PUBLIC_URL</code> so links in emails
-        are absolute. If your SES account is still in the sandbox, mail only reaches verified
-        recipients.
+          <!-- Card 2: SMTP Relay & Transport -->
+          <div class="set-card" style="margin-top:16px">
+            <div class="set-card-head">
+              <h3>SMTP Relay &amp; Transport</h3>
+              <p>Configure where MetaBridge submits outbound mail (e.g. Amazon SES endpoint).</p>
+            </div>
+            <div class="fld" style="max-width:100%"><label for="nfHost">SMTP HOST</label>
+              <input type="text" id="nfHost" placeholder="email-smtp.ap-south-1.amazonaws.com" autocomplete="off">
+              <div class="fhint" id="nfHostHint" hidden></div></div>
+            <div class="fld" style="max-width:100%"><label for="nfPort">PORT</label>
+              <input type="number" id="nfPort" min="1" max="65535" placeholder="587" autocomplete="off" style="max-width:140px">
+              <div class="fhint">587 for STARTTLS (recommended), 465 for implicit TLS.</div></div>
+            <div class="fld" style="max-width:100%"><label for="nfUser">SMTP USERNAME</label>
+              <input type="text" id="nfUser" autocomplete="off" placeholder="SES SMTP username"></div>
+            <div class="fld" style="max-width:100%"><label for="nfPass">SMTP PASSWORD</label>
+              <div class="pw-wrap"><input type="password" id="nfPass" autocomplete="new-password"
+                     data-1p-ignore data-lpignore="true" data-form-type="other">
+                <button type="button" class="pw-eye" aria-pressed="false" aria-label="Show password" title="Show password"></button>
+              </div></div>
+            <div class="fld" style="max-width:100%"><label>TRANSPORT SECURITY</label>
+              <div>
+                <label class="radio"><input type="radio" name="nftls" value="starttls" checked> STARTTLS (port 587)</label>
+                <label class="radio"><input type="radio" name="nftls" value="ssl"> Implicit TLS / SMTPS (port 465)</label>
+                <label class="radio"><input type="radio" name="nftls" value="none"> None — plaintext</label>
+              </div>
+              <div class="fhint" id="nfTlsHint">Use plaintext only for a local mail sink in development.</div></div>
+          </div>
+
+          <!-- Card 3: Sender Identity -->
+          <div class="set-card" style="margin-top:16px">
+            <div class="set-card-head">
+              <h3>Sender Identity</h3>
+              <p>Configure how outbound emails appear to recipients.</p>
+            </div>
+            <div class="fld" style="max-width:100%"><label for="nfFrom">FROM ADDRESS</label>
+              <input type="email" id="nfFrom" placeholder="no-reply@your-domain.com" autocomplete="off"
+                     aria-describedby="nfFromHint">
+              <div class="fhint" id="nfFromHint">Must be an address under a domain you have verified with your provider.</div>
+              <div class="fhint" id="nfFromErr" role="alert" hidden
+                   style="color:var(--red);font-weight:600"></div></div>
+            <div class="fld" style="max-width:100%"><label for="nfFromName">DISPLAY NAME</label>
+              <input type="text" id="nfFromName" placeholder="MetaBridge" autocomplete="off"></div>
+            <div class="fld" style="max-width:100%;margin-bottom:0"><label class="radio" for="nfEnabled"><input type="checkbox" id="nfEnabled" checked>
+              Send outbound email</label>
+              <div class="fhint">Turn off to silence all email while keeping this configuration. Events still appear in the in-app notification feed.</div></div>
+          </div>
+
+          <!-- Card 4: Actions & Verification -->
+          <div class="set-card" style="margin-top:16px">
+            <div class="set-card-head">
+              <h3>Save &amp; Test Configuration</h3>
+              <p>Verify delivery and save SMTP preferences.</p>
+            </div>
+            <div class="facts">
+              <button id="nfSave" disabled>Save configuration</button>
+              <button type="button" class="secondary" id="notifTest">Send test email to me</button>
+              <span class="dirty" id="nfDirty" hidden>Unsaved changes</span>
+              <span id="notifTestMsg" style="font-size:12.5px" role="status" aria-live="polite"></span>
+            </div>
+            <div class="err" id="nfErr" role="alert" aria-live="assertive"></div>
+            <div class="fhint" style="margin-top:14px">
+              The SMTP password is stored server-side and is never displayed again after saving. Settings can also be set via environment variables (<code>METABRIDGE_SMTP_HOST</code>, <code>METABRIDGE_SMTP_PORT</code>, etc.).
+            </div>
+          </div>
+        </div>
+
+        <!-- RIGHT COLUMN: Contextual Summary & Quick Actions -->
+        <div class="set-side-col">
+          <!-- Notification Summary Card -->
+          <div class="set-side-card">
+            <h4>Notification Summary</h4>
+            <dl class="set-side-dl">
+              <dt>Outbound</dt>
+              <dd id="notifSumEnabled" style="font-family:inherit">—</dd>
+              <dt>Relay Host</dt>
+              <dd id="notifSumHost" style="font-family:inherit">—</dd>
+              <dt>Transport</dt>
+              <dd id="notifSumTls" style="font-family:inherit">—</dd>
+              <dt>Status</dt>
+              <dd id="notifSumStatus"><span class="stat"><i style="background:var(--green)"></i>Active</span></dd>
+            </dl>
+          </div>
+
+          <!-- Quick Actions Card -->
+          <div class="set-side-card" style="margin-top:16px">
+            <h4>Quick Actions</h4>
+            <div class="set-quick-actions">
+              <button type="button" class="set-quick-btn" onclick="document.querySelector('#setNav button[data-sec=system]').click()">
+                <span>System configuration</span>
+                <span aria-hidden="true">&rarr;</span>
+              </button>
+              <button type="button" class="set-quick-btn" onclick="document.querySelector('#setNav button[data-sec=secrets]').click()">
+                <span>Connections &amp; secrets</span>
+                <span aria-hidden="true">&rarr;</span>
+              </button>
+              <button type="button" class="set-quick-btn" onclick="document.querySelector('#setNav button[data-sec=members]').click()">
+                <span>Manage members</span>
+                <span aria-hidden="true">&rarr;</span>
+              </button>
+            </div>
+          </div>
+
+          <!-- Need help? Card -->
+          <div class="set-side-card" style="margin-top:16px">
+            <h4>Need help?</h4>
+            <div class="set-quick-actions">
+              <a href="/docs" target="_blank" class="set-quick-btn" style="text-decoration:none">
+                <span>View documentation</span>
+                <span aria-hidden="true">&nearr;</span>
+              </a>
+              <a href="mailto:support@metabridge.ai" class="set-quick-btn" style="text-decoration:none">
+                <span>Contact support</span>
+                <span aria-hidden="true">&nearr;</span>
+              </a>
+            </div>
+          </div>
+        </div>
       </div>
     </section>
 
     <section class="set-sec" id="sec-system">
       <h2>System</h2>
-      <div class="shint">Deployment and runtime information for this MetaBridge AI instance.</div>
-      <div id="sysList">—</div>
-      <div class="facts">
-        <button type="button" class="secondary" id="sysCopy">Copy diagnostics</button>
-        <span id="sysCopied" style="font-size:12.5px;color:var(--green)" hidden>Copied</span>
+      <div class="shint">Manage platform-level configuration and deployment information for this MetaBridge AI instance.</div>
+
+      <div class="set-layout-grid">
+        <!-- CENTER COLUMN: Platform Administration Cards -->
+        <div class="set-main-col">
+          <!-- Card 1: System Overview -->
+          <div class="set-card">
+            <div class="set-card-head">
+              <h3>System Overview</h3>
+              <p>Current platform deployment, version, and operational status.</p>
+            </div>
+            <div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(160px, 1fr));gap:14px;margin-bottom:4px">
+              <div style="background:var(--header-bg);border:1px solid var(--border);border-radius:var(--radius-sm);padding:12px">
+                <div style="font-size:11px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:0.05em;margin-bottom:4px">Deployment</div>
+                <div id="sysSumDeployment" style="font-size:13.5px;font-weight:600;color:var(--ink)">Self-hosted</div>
+              </div>
+              <div style="background:var(--header-bg);border:1px solid var(--border);border-radius:var(--radius-sm);padding:12px">
+                <div style="font-size:11px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:0.05em;margin-bottom:4px">Version</div>
+                <div id="sysSumVersion" style="font-size:13.5px;font-weight:600;color:var(--ink)">—</div>
+              </div>
+              <div style="background:var(--header-bg);border:1px solid var(--border);border-radius:var(--radius-sm);padding:12px">
+                <div style="font-size:11px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:0.05em;margin-bottom:4px">System Status</div>
+                <div><span class="stat"><i style="background:var(--green)"></i>Operational</span></div>
+              </div>
+              <div style="background:var(--header-bg);border:1px solid var(--border);border-radius:var(--radius-sm);padding:12px">
+                <div style="font-size:11px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:0.05em;margin-bottom:4px">System Mode</div>
+                <div id="sysSumMode" style="font-size:12.5px;font-weight:600;color:var(--ink)">—</div>
+              </div>
+              <div style="background:var(--header-bg);border:1px solid var(--border);border-radius:var(--radius-sm);padding:12px">
+                <div style="font-size:11px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:0.05em;margin-bottom:4px">API Automation</div>
+                <div id="sysSumApi" style="font-size:12.5px;font-weight:600;color:var(--ink)">—</div>
+              </div>
+              <div style="background:var(--header-bg);border:1px solid var(--border);border-radius:var(--radius-sm);padding:12px">
+                <div style="font-size:11px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:0.05em;margin-bottom:4px">MetaBridge AI</div>
+                <div id="sysSumAi" style="font-size:12.5px;font-weight:600;color:var(--ink)">—</div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Card 2: System Information -->
+          <div class="set-card" style="margin-top:16px">
+            <div class="set-card-head">
+              <h3>System Information</h3>
+              <p>Deployment and runtime properties for this MetaBridge instance.</p>
+            </div>
+            <div id="sysList">—</div>
+          </div>
+
+          <!-- Card 3: Diagnostics & Troubleshooting -->
+          <div class="set-card" style="margin-top:16px">
+            <div class="set-card-head">
+              <h3>Diagnostics &amp; Troubleshooting</h3>
+              <p>Export system diagnostic payload for support or auditing.</p>
+            </div>
+            <div class="facts">
+              <button type="button" class="secondary" id="sysCopy">Copy diagnostics</button>
+              <span id="sysCopied" style="font-size:12.5px;color:var(--green);font-weight:600" hidden>✓ Copied to clipboard</span>
+            </div>
+            <div class="fhint" style="margin-top:14px">
+              System diagnostic payloads include version, build stamp, active features, and connection counts. No secret keys or passwords are exported.
+            </div>
+          </div>
+        </div>
+
+        <!-- RIGHT COLUMN: Contextual Summary & Quick Actions -->
+        <div class="set-side-col">
+          <!-- System Summary Card -->
+          <div class="set-side-card">
+            <h4>System Summary</h4>
+            <dl class="set-side-dl">
+              <dt>Deployment</dt>
+              <dd id="sysSideDeployment" style="font-family:inherit">Self-hosted</dd>
+              <dt>Version</dt>
+              <dd id="sysSideVersion" style="font-family:inherit">—</dd>
+              <dt>Console Build</dt>
+              <dd id="sysSideBuild" style="font-family:inherit">—</dd>
+              <dt>Status</dt>
+              <dd><span class="stat"><i style="background:var(--green)"></i>Operational</span></dd>
+            </dl>
+          </div>
+
+          <!-- Quick Actions Card -->
+          <div class="set-side-card" style="margin-top:16px">
+            <h4>Quick Actions</h4>
+            <div class="set-quick-actions">
+              <button type="button" class="set-quick-btn" onclick="document.querySelector('#setNav button[data-sec=secrets]').click()">
+                <span>Manage connections</span>
+                <span aria-hidden="true">&rarr;</span>
+              </button>
+              <button type="button" class="set-quick-btn" onclick="document.querySelector('#setNav button[data-sec=ai]').click()">
+                <span>AI Runtime settings</span>
+                <span aria-hidden="true">&rarr;</span>
+              </button>
+              <button type="button" class="set-quick-btn" onclick="document.querySelector('#setNav button[data-sec=notifications]').click()">
+                <span>Notifications</span>
+                <span aria-hidden="true">&rarr;</span>
+              </button>
+            </div>
+          </div>
+
+          <!-- Need help? Card -->
+          <div class="set-side-card" style="margin-top:16px">
+            <h4>Need help?</h4>
+            <div class="set-quick-actions">
+              <a href="/docs" target="_blank" class="set-quick-btn" style="text-decoration:none">
+                <span>View documentation</span>
+                <span aria-hidden="true">&nearr;</span>
+              </a>
+              <a href="mailto:support@metabridge.ai" class="set-quick-btn" style="text-decoration:none">
+                <span>Contact support</span>
+                <span aria-hidden="true">&nearr;</span>
+              </a>
+            </div>
+          </div>
+        </div>
       </div>
     </section>
 
     <section class="set-sec" id="sec-members">
-      <div class="sec-head">
-        <div><h2>Members</h2><div class="shint">Manage who can access this workspace.</div></div>
-        <button id="memAddBtn" style="display:none">Add member</button>
+      <h2>Members</h2>
+      <div class="shint">Manage who can access this workspace and configure user role permissions.</div>
+
+      <div class="set-layout-grid">
+        <!-- CENTER COLUMN: Members Card & Table -->
+        <div class="set-main-col">
+          <div class="set-card">
+            <div class="set-card-head" style="display:flex;align-items:center;justify-space:between;justify-content:space-between;gap:12px;margin-bottom:16px">
+              <div>
+                <h3 style="margin:0">Workspace Members</h3>
+                <p style="margin:4px 0 0">Manage team members, roles and access permissions.</p>
+              </div>
+              <button id="memAddBtn" style="display:none;white-space:nowrap">+ Add member</button>
+            </div>
+            <div id="memBody"></div>
+            <div class="err" id="teamErr"></div>
+          </div>
+        </div>
+
+        <!-- RIGHT COLUMN: Contextual Summary & Quick Actions -->
+        <div class="set-side-col">
+          <!-- Workspace Members Summary Card -->
+          <div class="set-side-card">
+            <h4>Workspace Members</h4>
+            <dl class="set-side-dl">
+              <dt>Total Members</dt>
+              <dd id="memSumTotal" style="font-family:inherit">—</dd>
+              <dt>Active Members</dt>
+              <dd id="memSumActive" style="font-family:inherit">—</dd>
+              <dt>Owners</dt>
+              <dd id="memSumOwners" style="font-family:inherit">—</dd>
+              <dt>Admins</dt>
+              <dd id="memSumAdmins" style="font-family:inherit">—</dd>
+            </dl>
+            <div style="border-top:1px solid var(--line);margin-top:14px;padding-top:14px">
+              <div style="font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:0.05em;margin-bottom:8px">You</div>
+              <div style="display:flex;align-items:center;gap:10px">
+                <span class="avatar" id="memSumYouAvatar"></span>
+                <div style="display:flex;flex-direction:column;gap:1px;min-width:0">
+                  <b id="memSumYouName" style="font-size:13px;color:var(--ink);font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">—</b>
+                  <span id="memSumYouRole" style="font-size:11.5px;color:var(--ink3)">—</span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Quick Actions Card -->
+          <div class="set-side-card" style="margin-top:16px">
+            <h4>Quick Actions</h4>
+            <div class="set-quick-actions">
+              <button type="button" class="set-quick-btn" onclick="document.querySelector('#setNav button[data-sec=roles]').click()">
+                <span>Roles &amp; permissions</span>
+                <span aria-hidden="true">&rarr;</span>
+              </button>
+              <button type="button" class="set-quick-btn" onclick="document.querySelector('#setNav button[data-sec=workspace]').click()">
+                <span>Workspace settings</span>
+                <span aria-hidden="true">&rarr;</span>
+              </button>
+              <button type="button" class="set-quick-btn" onclick="document.querySelector('#setNav button[data-sec=secrets]').click()">
+                <span>Connections &amp; secrets</span>
+                <span aria-hidden="true">&rarr;</span>
+              </button>
+            </div>
+          </div>
+
+          <!-- Need help? Card -->
+          <div class="set-side-card" style="margin-top:16px">
+            <h4>Need help?</h4>
+            <div class="set-quick-actions">
+              <a href="/docs" target="_blank" class="set-quick-btn" style="text-decoration:none">
+                <span>View documentation</span>
+                <span aria-hidden="true">&nearr;</span>
+              </a>
+              <a href="mailto:support@metabridge.ai" class="set-quick-btn" style="text-decoration:none">
+                <span>Contact support</span>
+                <span aria-hidden="true">&nearr;</span>
+              </a>
+            </div>
+          </div>
+        </div>
       </div>
-      <div id="memBody"></div>
-      <div class="err" id="teamErr"></div>
     </section>
 
     <section class="set-sec" id="sec-roles">
       <h2>Roles &amp; Permissions</h2>
       <div class="shint">What each role can do in this workspace.</div>
-      <div class="set-table-wrap"><table class="matrix" id="rolesMatrix"></table></div>
-      <div class="fhint" style="margin-top:12px">Permissions are enforced by the MetaBridge server. API automation
-      with a server-configured API key can run and read pipelines but cannot manage members or settings.</div>
+
+      <div class="set-layout-grid">
+        <!-- MAIN CONTENT COLUMN: Permission Matrix Card (70% Width) -->
+        <div class="set-main-col">
+          <div class="set-card">
+            <!-- Card Header -->
+            <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:16px;padding-bottom:12px;border-bottom:1px solid var(--line)">
+              <div>
+                <div style="display:flex;align-items:center;gap:8px">
+                  <span style="color:var(--accent);display:inline-flex">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+                  </span>
+                  <h3 style="margin:0;font-size:16px">Permission Matrix</h3>
+                </div>
+                <p style="margin:4px 0 0;font-size:12.5px;color:var(--ink3)">Permissions are based on roles. Assign roles to members to control what they can do.</p>
+              </div>
+              <button type="button" class="set-quick-btn" onclick="document.querySelector('#setNav button[data-sec=members]').click()" style="width:auto;padding:5px 10px;font-size:12px;white-space:nowrap">View role assignments &rarr;</button>
+            </div>
+
+            <!-- Permission Matrix Table -->
+            <div class="set-table-wrap">
+              <table id="rolesMatrixTable">
+                <thead>
+                  <tr>
+                    <th style="width:52%;text-align:left">CAPABILITY</th>
+                    <th style="width:12%;text-align:center">OWNER</th>
+                    <th style="width:12%;text-align:center">ADMIN</th>
+                    <th style="width:12%;text-align:center">ENGINEER</th>
+                    <th style="width:12%;text-align:center">VIEWER</th>
+                  </tr>
+                </thead>
+                <tbody id="rolesMatrixBody"></tbody>
+              </table>
+            </div>
+
+            <!-- Blue Security / Informational Note -->
+            <div style="background:#f0f7ff;border:1px solid #bfdbfe;border-radius:6px;padding:12px 14px;display:flex;align-items:flex-start;gap:10px;margin-top:16px">
+              <span style="color:var(--accent);font-size:14px;font-weight:700;line-height:1.2">ⓘ</span>
+              <div style="font-size:12px;color:var(--ink2);line-height:1.4">
+                <b>Permissions are enforced by the MetaBridge server.</b> API automation with a server-configured API key can run and read pipelines but cannot manage members or settings.
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- RIGHT SIDEBAR: Role Overview & Quick Actions (30% Width) -->
+        <div class="set-side-col">
+          <!-- Role Overview Card -->
+          <div class="set-side-card">
+            <h4>Role Overview</h4>
+            <div style="display:flex;flex-direction:column;gap:12px;margin-top:10px">
+              <div>
+                <div style="display:flex;align-items:center;gap:6px;margin-bottom:2px">
+                  <span class="badge" style="background:#101d33;color:#fff;font-size:10.5px">Owner</span>
+                </div>
+                <div style="font-size:11.5px;color:var(--ink3);line-height:1.3">Full access to all workspace settings, members, integrations, and operations. Cannot be removed.</div>
+              </div>
+              <div>
+                <div style="display:flex;align-items:center;gap:6px;margin-bottom:2px">
+                  <span class="badge" style="background:var(--accent);color:#fff;font-size:10.5px">Admin</span>
+                </div>
+                <div style="font-size:11.5px;color:var(--ink3);line-height:1.3">Manage workspace settings, members, runtimes, and most operations.</div>
+              </div>
+              <div>
+                <div style="display:flex;align-items:center;gap:6px;margin-bottom:2px">
+                  <span class="badge" style="background:var(--green);color:#fff;font-size:10.5px">Engineer</span>
+                </div>
+                <div style="font-size:11.5px;color:var(--ink3);line-height:1.3">Build and run pipelines, view metrics, execute modernizations, and manage integrations.</div>
+              </div>
+              <div>
+                <div style="display:flex;align-items:center;gap:6px;margin-bottom:2px">
+                  <span class="badge" style="background:var(--muted);color:#fff;font-size:10.5px">Viewer</span>
+                </div>
+                <div style="font-size:11.5px;color:var(--ink3);line-height:1.3">Read-only access to dashboards, governance, reports, and downloads for auditing.</div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Quick Actions Card -->
+          <div class="set-side-card" style="margin-top:16px">
+            <h4>Quick Actions</h4>
+            <div class="set-quick-actions">
+              <button type="button" class="set-quick-btn" onclick="document.querySelector('#setNav button[data-sec=members]').click()">
+                <span>Manage members</span>
+                <span aria-hidden="true">&rarr;</span>
+              </button>
+              <button type="button" class="set-quick-btn" onclick="document.querySelector('#setNav button[data-sec=workspace]').click()">
+                <span>Workspace settings</span>
+                <span aria-hidden="true">&rarr;</span>
+              </button>
+              <button type="button" class="set-quick-btn" onclick="document.querySelector('#setNav button[data-sec=system]').click()">
+                <span>System configuration</span>
+                <span aria-hidden="true">&rarr;</span>
+              </button>
+            </div>
+          </div>
+
+          <!-- Need help? Card -->
+          <div class="set-side-card" style="margin-top:16px">
+            <h4>Need help?</h4>
+            <div class="set-quick-actions">
+              <a href="/docs" target="_blank" class="set-quick-btn" style="text-decoration:none">
+                <span>View documentation</span>
+                <span aria-hidden="true">&nearr;</span>
+              </a>
+              <a href="mailto:support@metabridge.ai" class="set-quick-btn" style="text-decoration:none">
+                <span>Contact support</span>
+                <span aria-hidden="true">&nearr;</span>
+              </a>
+            </div>
+          </div>
+        </div>
+      </div>
     </section>
 
     </div><!-- /set-content -->

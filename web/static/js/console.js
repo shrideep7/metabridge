@@ -301,6 +301,9 @@ async function loadUser() {
       $('#topMenuEmail').title = d.user.email;
       $('#profName').textContent = dispName;
       $('#profEmail').textContent = d.user.email;
+      if ($('#profSumName')) $('#profSumName').textContent = dispName;
+      if ($('#profSumEmail')) $('#profSumEmail').textContent = d.user.email;
+      if ($('#profSumRole')) $('#profSumRole').textContent = ROLE_LABEL[d.user.role] || d.user.role;
       $('#avInitDemo').textContent = getUserInitials(dispName);
       const hasPhoto = d.user.avatar && d.user.avatar.type === 'PHOTO';
       $('#avRemove').style.display = hasPhoto ? '' : 'none';
@@ -1305,7 +1308,32 @@ async function loadWorkspace() {
     wsNameCache = d.name || '';
     $('#wsId').textContent = d.workspace_id || 'Assigned on first save';
     sel.value = d.timezone || '';
-    $('#wsOwner').textContent = d.owner ? getUserDisplayName(d.owner) + ' · ' + d.owner.email : '—';
+    if (d.owner) {
+      const name = getUserDisplayName(d.owner);
+      const initials = getUserInitials(name);
+      $('#wsOwner').innerHTML = '<div class="ws-owner-card">'
+        + '<div class="ws-owner-avatar">' + esc(initials) + '</div>'
+        + '<div class="ws-owner-info">'
+        + '<div class="ws-owner-name">' + esc(name) + '</div>'
+        + '<div class="ws-owner-role">Owner · ' + esc(d.owner.email) + '</div>'
+        + '</div></div>';
+    } else {
+      $('#wsOwner').textContent = '—';
+    }
+    const copyBtn = $('#wsCopyBtn');
+    if (copyBtn) {
+      copyBtn.onclick = () => {
+        const txt = $('#wsId').textContent.trim();
+        if (txt && txt !== '—' && txt !== 'Assigned on first save') {
+          navigator.clipboard.writeText(txt);
+          copyBtn.textContent = 'Copied ✓';
+          setTimeout(() => { copyBtn.textContent = 'Copy'; }, 2000);
+        }
+      };
+    }
+    if ($('#wsSumId')) $('#wsSumId').textContent = d.workspace_id || '—';
+    if ($('#wsSumOwner')) $('#wsSumOwner').textContent = d.owner ? getUserDisplayName(d.owner) : '—';
+    if ($('#wsSumTz')) $('#wsSumTz').textContent = d.timezone || 'Not set';
     const can = canManageSettings();
     $('#wsName').disabled = !can; sel.disabled = !can;
     wsSnapshot = wsState(); wsDirtyCheck();
@@ -1321,6 +1349,8 @@ $('#wsForm').onsubmit = async ev => {
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({name: $('#wsName').value, timezone: $('#wsTz').value})});
     $('#wsId').textContent = d.workspace_id;
+    if ($('#wsSumId')) $('#wsSumId').textContent = d.workspace_id;
+    if ($('#wsSumTz')) $('#wsSumTz').textContent = d.timezone || 'Not set';
     wsNameCache = d.name;
     wsSnapshot = wsState(); wsDirtyCheck();
   } catch (e) { err.textContent = e.message; err.style.display = 'block'; }
@@ -1445,6 +1475,10 @@ function renderAiStatus(state, friendly) {
     + (aiLastTest && state !== 'TESTING'
         ? '<div class="st-meta">Last tested ' + agoLabel(aiLastTest.at) + '</div>' : '')
     + (friendly ? '<div class="st-err">' + esc(friendly) + '</div>' : '');
+  if ($('#aiSumProv')) $('#aiSumProv').textContent = provName || 'Disabled';
+  if ($('#aiSumRegion')) $('#aiSumRegion').textContent = $('#aiRegion').value.trim() || '—';
+  if ($('#aiSumModel')) $('#aiSumModel').textContent = modelLabel($('#aiModel').value.trim()) || '—';
+  if ($('#aiSumStatus')) $('#aiSumStatus').innerHTML = '<span class="stat"><i style="background:' + s[1] + '"></i>' + esc(s[0]) + '</span>';
 }
 async function loadAiSettings() {
   const err = $('#aiErr'); err.style.display = 'none';
@@ -1574,6 +1608,11 @@ function nfRenderStatus(d) {
     ? '<ul class="nf-notes">' + d.notes.map(n => '<li>' + esc(n) + '</li>').join('') + '</ul>'
     : '';
   box.innerHTML = head + dl + notes;
+
+  if ($('#notifSumEnabled')) $('#notifSumEnabled').textContent = d.enabled !== false ? 'Enabled' : 'Disabled';
+  if ($('#notifSumHost')) $('#notifSumHost').textContent = d.host || 'Not set';
+  if ($('#notifSumTls')) $('#notifSumTls').textContent = {ssl: 'Implicit TLS (465)', starttls: 'STARTTLS (587)', none: 'None'}[d.tls] || d.tls || '—';
+  if ($('#notifSumStatus')) $('#notifSumStatus').innerHTML = '<span class="stat"><i style="background:' + (d.ready ? 'var(--green)' : 'var(--amber)') + '"></i>' + esc(d.ready ? 'Ready' : (d.configured ? 'Action needed' : 'Not set')) + '</span>';
 }
 async function loadNotifSettings() {
   const box = $('#notifStatus'), msg = $('#notifTestMsg');
@@ -1760,15 +1799,66 @@ async function loadSecrets() {
       status: c.has_secrets ? 'Stored on this server' : 'Server environment / per-use',
       go: 'marketplace'}));
   } catch (e) {}
-  const stColor = s => s === 'Not configured' ? 'var(--amber)' : 'var(--green)';
-  const secRows = rows.map(r => '<tr><td><b>' + esc(r.name) + '</b></td><td>' + esc(r.used) + '</td>'
-    + '<td><span class="stat"><i style="background:' + stColor(r.status) + '"></i>'
-    + esc(r.status) + '</span></td>'
-    + '<td style="text-align:right"><a data-sgo="' + r.go + '" style="color:var(--accent);'
-    + 'font-weight:600;cursor:pointer">Configure</a></td></tr>');
-  const secHeader = '<tr><th>Credential</th><th>Used by</th><th>Status</th><th></th></tr>';
-  const secEmpty = '<tr><td colspan=4 style="color:var(--muted)">No credentials yet.</td></tr>';
-  const renderSecTable = () => {
+  const stColor = s => s === 'Not configured' ? 'var(--amber)'
+                    : s === 'Server environment / per-use' ? 'var(--accent)'
+                    : 'var(--green)';
+
+  const getCatalogLogoKey = (row) => {
+    const nameLow = (row.name + ' ' + (row.used || '')).toLowerCase();
+    if (row.connector) return row.connector;
+    if (nameLow.includes('anthropic')) return 'anthropic';
+    if (nameLow.includes('bedrock') || nameLow.includes('iam')) return 'bedrock';
+    if (allConnectors && allConnectors.length) {
+      const found = allConnectors.find(c =>
+        c.key === row.connector ||
+        c.key === row.name.toLowerCase() ||
+        nameLow.includes(c.key) ||
+        nameLow.includes(c.name.toLowerCase())
+      );
+      if (found) return found.key;
+    }
+    if (nameLow.includes('snowflake')) return 'snowflake';
+    if (nameLow.includes('postgres') || nameLow.includes('pg')) return 'postgres';
+    if (nameLow.includes('oracle')) return 'oracle';
+    if (nameLow.includes('sqlserver') || nameLow.includes('sql server')) return 'sqlserver';
+    if (nameLow.includes('bigquery')) return 'bigquery';
+    if (nameLow.includes('databricks')) return 'databricks';
+    if (nameLow.includes('redshift')) return 'redshift';
+    if (nameLow.includes('synapse')) return 'synapse';
+    if (nameLow.includes('salesforce')) return 'salesforce';
+    if (nameLow.includes('servicenow')) return 'servicenow';
+    if (nameLow.includes('teradata')) return 'teradata';
+    if (nameLow.includes('db2')) return 'db2';
+    if (nameLow.includes('sap')) return 'sap_hana';
+    return 'postgres';
+  };
+
+  const buildSecRows = filterTxt => {
+    const term = (filterTxt || '').toLowerCase().trim();
+    const filtered = rows.filter(r => !term || r.name.toLowerCase().includes(term) || r.used.toLowerCase().includes(term) || r.status.toLowerCase().includes(term));
+    return filtered.map(r => {
+      const logoKey = getCatalogLogoKey(r);
+      const catObj = allConnectors && allConnectors.find(c => c.key === logoKey);
+      const subTitle = catObj ? (catObj.vendor + ' · ' + (CAT_NAMES[catObj.category] || catObj.category))
+                     : (r.go === 'ai' ? 'MetaBridge AI Runtime' : 'External Integration');
+      return '<tr>'
+        + '<td><div style="display:flex;align-items:center;gap:12px">'
+        + '<div class="sec-logo-badge"><img class="logo" src="/static/logos/' + esc(logoKey) + '.svg" alt="" onerror="this.onerror=null;this.src=\'/static/logos/postgres.svg\'"></div>'
+        + '<div style="display:flex;flex-direction:column;gap:1px;min-width:0">'
+        + '<b style="font-size:13px;color:var(--ink);font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(r.name) + '</b>'
+        + '<span style="font-size:11.5px;color:var(--ink3);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(subTitle) + '</span></div>'
+        + '</div></td>'
+        + '<td><span style="font-size:12.5px;color:var(--ink2);font-weight:500">' + esc(r.used) + '</span></td>'
+        + '<td><span class="stat"><i style="background:' + stColor(r.status) + '"></i>' + esc(r.status) + '</span></td>'
+        + '<td style="text-align:right;white-space:nowrap"><a data-sgo="' + r.go + '" class="set-quick-btn" style="display:inline-flex;white-space:nowrap;width:auto;padding:5px 12px;font-size:12px;font-weight:600;margin:0">Configure &rarr;</a></td>'
+        + '</tr>';
+    });
+  };
+
+  const secHeader = '<tr><th style="width:40%">CREDENTIAL</th><th style="width:25%">USED BY</th><th style="width:20%">STATUS</th><th style="width:15%;text-align:right">ACTION</th></tr>';
+  const secEmpty = '<tr><td colspan=4 style="color:var(--muted)">No matching credentials found.</td></tr>';
+  const renderSecTable = (filterTxt) => {
+    const secRows = buildSecRows(filterTxt);
     renderPage('secTable', secRows, secHeader, secEmpty, 'credentials', () => {
       $('#secTable').querySelectorAll('[data-sgo]').forEach(a => a.onclick = () => {
         if (a.dataset.sgo === 'ai') showSettings('ai');
@@ -1776,8 +1866,17 @@ async function loadSecrets() {
       });
     });
   };
-  renderSecTable();
-  bindPager('secTable', renderSecTable);
+
+  if ($('#secSumTotal')) $('#secSumTotal').textContent = rows.length;
+  if ($('#secSumConfigured')) $('#secSumConfigured').textContent = rows.filter(r => r.status !== 'Not configured').length;
+
+  const searchInput = $('#secSearch');
+  if (searchInput) {
+    searchInput.oninput = () => renderSecTable(searchInput.value);
+  }
+
+  renderSecTable(searchInput ? searchInput.value : '');
+  bindPager('secTable', () => renderSecTable(searchInput ? searchInput.value : ''));
 }
 
 /* ---- members ---- */
@@ -1792,7 +1891,21 @@ async function loadMembers() {
   let d;
   try { d = await api('/api/users'); }
   catch (e) { err.textContent = e.message; err.style.display = 'block'; return; }
+  const totalCount = d.users.length;
+  const activeCount = d.users.filter(u => u.status !== 'deactivated').length;
   const owners = d.users.filter(u => u.role === 'owner').length;
+  const adminsCount = d.users.filter(u => u.role === 'admin').length;
+
+  if ($('#memSumTotal')) $('#memSumTotal').textContent = totalCount;
+  if ($('#memSumActive')) $('#memSumActive').textContent = activeCount;
+  if ($('#memSumOwners')) $('#memSumOwners').textContent = owners;
+  if ($('#memSumAdmins')) $('#memSumAdmins').textContent = adminsCount;
+
+  const meUser = d.users.find(u => u.email === myEmail) || {email: myEmail, role: myPerms._role};
+  if ($('#memSumYouName')) $('#memSumYouName').textContent = getUserDisplayName(meUser);
+  if ($('#memSumYouRole')) $('#memSumYouRole').textContent = (ROLE_LABEL[meUser.role] || meUser.role) + ' · Active';
+  if ($('#memSumYouAvatar')) renderAvatar($('#memSumYouAvatar'), meUser);
+
   $('#memBody').innerHTML = '<div class="set-table-wrap"><table id="memTable"></table>'
     + pagerHtml('memTable') + '</div>';
   const memRows = d.users.map(u => {
@@ -1807,10 +1920,14 @@ async function loadMembers() {
     const stBadge = isDeact
       ? '<span class="stat"><i style="background:var(--red)"></i>Deactivated</span>'
       : '<span class="stat"><i style="background:var(--green)"></i>Active</span>';
-    return '<tr data-email="' + esc(u.email) + '">'
-      + '<td><div class="mem-cell"><span class="avatar" data-avatar></span>'
-      + '<span><b>' + esc(getUserDisplayName(u)) + '</b>'
-      + (isMe ? '<div class="you">You</div>' : '') + '</span></div></td>'
+    return '<tr data-email="' + esc(u.email) + '" class="' + (isMe ? 'me-row' : '') + '">'
+      + '<td><div class="mem-cell">'
+      + '<div class="me-avatar-wrap"><span class="avatar" data-avatar></span>'
+      + (isMe ? '<span class="me-avatar-badge" title="Current user">\u2713</span>' : '') + '</div>'
+      + '<div style="display:flex;flex-direction:column;gap:1px;min-width:0">'
+      + '<b>' + esc(getUserDisplayName(u)) + '</b>'
+      + (isMe ? '<div style="font-size:11.5px;color:var(--accent);font-weight:500">Current user</div>' : '')
+      + '</div></div></td>'
       + '<td style="color:var(--ink3)">' + esc(u.email) + '</td>'
       + '<td>' + badge(ROLE_LABEL[u.role] || u.role, roleColor[u.role] || 'var(--ink3)') + '</td>'
       + '<td style="color:var(--muted)">' + esc((u.created || '').slice(0, 10)) + '</td>'
@@ -2006,28 +2123,104 @@ $('#memAddBtn').onclick = () => {
 
 /* ---- roles & permissions (mirrors web/auth.py PERMISSIONS + route mapping) ---- */
 function renderRolesMatrix() {
-  const ROWS = [
-    ['Manage workspace', ['owner', 'admin']],
-    ['Manage AI runtime', ['owner', 'admin']],
-    ['Manage members', ['owner', 'admin']],
-    ['Manage integrations', ['owner', 'admin', 'engineer']],
-    ['Analyze workloads', ['owner', 'admin', 'engineer']],
-    ['Run modernizations', ['owner', 'admin', 'engineer']],
-    ['Generate pipelines', ['owner', 'admin', 'engineer']],
-    ['Run validation', ['owner', 'admin', 'engineer']],
-    ['Approve AI recommendations', ['owner', 'admin', 'engineer']],
-    ['Delete jobs & artifacts', ['owner', 'admin', 'engineer']],
-    ['View governance', ['owner', 'admin', 'engineer', 'viewer']],
-    ['View reports', ['owner', 'admin', 'engineer', 'viewer']],
+  const MATRIX_ROWS = [
+    {
+      name: 'Manage workspace',
+      desc: 'Update workspace settings, properties and preferences',
+      icon: '<svg viewBox="0 0 24 24"><path d="M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58a.49.49 0 0 0 .12-.61l-1.92-3.32a.488.488 0 0 0-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54a.484.484 0 0 0-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96a.488.488 0 0 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.09.63-.09.94s.02.64.07.94l-2.03 1.58a.49.49 0 0 0-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z"/></svg>',
+      roles: ['owner', 'admin']
+    },
+    {
+      name: 'Manage AI runtime',
+      desc: 'Configure and manage AI runtimes and provider endpoints',
+      icon: '<svg viewBox="0 0 24 24"><path d="M15 9H9v6h6V9zm-2 4h-2v-2h2v2zm8-2V9h-2V7c0-1.1-.9-2-2-2h-2V3h-2v2h-2V3H9v2H7c-1.1 0-2 .9-2 2v2H3v2h2v2H3v2h2v2c0 1.1.9 2 2 2h2v2h2v-2h2v2h2v-2h2c1.1 0 2-.9 2-2v-2h2v-2h-2v-2h2zm-4 6H7V7h10v10z"/></svg>',
+      roles: ['owner', 'admin']
+    },
+    {
+      name: 'Manage members',
+      desc: 'Invite, remove and manage workspace members and roles',
+      icon: '<svg viewBox="0 0 24 24"><path d="M16 11c1.66 0 2.99-1.34 2.99-3S17.66 5 16 5c-1.66 0-3 1.34-3 3s1.34 3 3 3zm-8 0c1.66 0 2.99-1.34 2.99-3S9.66 5 8 5C6.34 5 5 6.34 5 8s1.34 3 3 3zm0 2c-2.33 0-7 1.17-7 3.5V19h14v-2.5c0-2.33-4.67-3.5-7-3.5zm8 0c-.29 0-.62.02-.97.05 1.16.84 1.97 1.97 1.97 3.45V19h6v-2.5c0-2.33-4.67-3.5-7-3.5z"/></svg>',
+      roles: ['owner', 'admin']
+    },
+    {
+      name: 'Manage integrations',
+      desc: 'Add, update and remove integration credentials and secrets',
+      icon: '<svg viewBox="0 0 24 24"><path d="M16 7h-1V3h-2v4h-2V3H9v4H8C6.9 7 6 7.9 6 9v6c0 1.1.9 2 2 2h3v4h2v-4h3c1.1 0 2-.9 2-2V9c0-1.1-.9-2-2-2z"/></svg>',
+      roles: ['owner', 'admin', 'engineer']
+    },
+    {
+      name: 'Analyze workloads',
+      desc: 'View and analyze workload metrics, schema and performance',
+      icon: '<svg viewBox="0 0 24 24"><path d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zM9 17H7v-7h2v7zm4 0h-2V7h2v10zm4 0h-2v-4h2v4z"/></svg>',
+      roles: ['owner', 'admin', 'engineer']
+    },
+    {
+      name: 'Run modernizations',
+      desc: 'Execute modernization and automated code migration workflows',
+      icon: '<svg viewBox="0 0 24 24"><path d="M12 2.5a9.5 9.5 0 0 1 9.5 9.5c0 5.25-4.25 9.5-9.5 9.5S2.5 17.25 2.5 12A9.5 9.5 0 0 1 12 2.5m0-2A11.5 11.5 0 1 0 23.5 12 11.5 11.5 0 0 0 12 .5zm1 6h-2v6h6v-2h-4z"/></svg>',
+      roles: ['owner', 'admin', 'engineer']
+    },
+    {
+      name: 'Generate pipelines',
+      desc: 'Create and configure data pipelines, scaffolds and DAGs',
+      icon: '<svg viewBox="0 0 24 24"><path d="M22 9V7h-2V5c0-1.1-.9-2-2-2H4c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2v-2h2v-2h-2v-2h2v-2h-2V9h2zm-4 10H4V5h14v14zM6 7h10v2H6zm0 4h10v2H6zm0 4h7v2H6z"/></svg>',
+      roles: ['owner', 'admin', 'engineer']
+    },
+    {
+      name: 'Run validation',
+      desc: 'Run data validation, schema checks and quality suites',
+      icon: '<svg viewBox="0 0 24 24"><path d="M12 1L3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5l-9-4zm-2 16l-4-4 1.41-1.41L10 14.17l6.59-6.59L18 9l-8 8z"/></svg>',
+      roles: ['owner', 'admin', 'engineer']
+    },
+    {
+      name: 'Approve AI recommendations',
+      desc: 'Approve or reject automated AI code transformation suggestions',
+      icon: '<svg viewBox="0 0 24 24"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>',
+      roles: ['owner', 'admin', 'engineer']
+    },
+    {
+      name: 'Delete jobs & artifacts',
+      desc: 'Delete pipeline execution runs, generated code and outputs',
+      icon: '<svg viewBox="0 0 24 24"><path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg>',
+      roles: ['owner', 'admin', 'engineer']
+    },
+    {
+      name: 'View governance',
+      desc: 'View governance policies, digital twin graph and security status',
+      icon: '<svg viewBox="0 0 24 24"><path d="M12 1L3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5l-9-4z"/></svg>',
+      roles: ['owner', 'admin', 'engineer', 'viewer']
+    },
+    {
+      name: 'View reports',
+      desc: 'View audit reports, executive dashboards and export analytics',
+      icon: '<svg viewBox="0 0 24 24"><path d="M14 2H6c-1.1 0-1.99.9-1.99 2L4 20c0 1.1.89 2 1.99 2H18c1.1 0 2-.9 2-2V8l-6-6zm2 16H8v-2h8v2zm0-4H8v-2h8v2zm-3-5V3.5L18.5 9H13z"/></svg>',
+      roles: ['owner', 'admin', 'engineer', 'viewer']
+    }
   ];
-  $('#rolesMatrix').innerHTML = '<tr><th>Capability</th>'
-    + Object.values(ROLE_LABEL).map(l => '<th>' + l + '</th>').join('') + '</tr>'
-    + ROWS.map(r => '<tr><td>' + r[0] + '</td>'
-      + Object.keys(ROLE_LABEL).map(role => '<td>'
-        + (r[1].includes(role)
-            ? '<span class="y" role="img" aria-label="Allowed">✓</span>'
-            : '<span class="n" role="img" aria-label="Not allowed">—</span>')
-        + '</td>').join('') + '</tr>').join('');
+
+  const bodyEl = $('#rolesMatrixBody');
+  if (bodyEl) {
+    bodyEl.innerHTML = MATRIX_ROWS.map(r => {
+      const roleKeys = ['owner', 'admin', 'engineer', 'viewer'];
+      const cells = roleKeys.map(k => {
+        const allowed = r.roles.includes(k);
+        return '<td style="text-align:center">'
+          + (allowed ? '<span class="perm-check-yes" role="img" aria-label="Allowed">✓</span>'
+                     : '<span class="perm-check-no" role="img" aria-label="Not allowed">—</span>')
+          + '</td>';
+      }).join('');
+
+      return '<tr>'
+        + '<td><div style="display:flex;align-items:center;gap:12px">'
+        + '<div class="cap-icon-box">' + r.icon + '</div>'
+        + '<div style="display:flex;flex-direction:column;gap:1px;min-width:0">'
+        + '<b style="font-size:13px;color:var(--ink);font-weight:600">' + esc(r.name) + '</b>'
+        + '<span style="font-size:11.5px;color:var(--ink3)">' + esc(r.desc) + '</span>'
+        + '</div></div></td>'
+        + cells
+        + '</tr>';
+    }).join('');
+  }
 }
 
 /* file drops */
@@ -10945,6 +11138,13 @@ async function loadSystemInfo() {
                ai_runtime: !!info.llm_available,
                formats: (info.formats || []).length,
                generated_at: new Date().toISOString()};
+
+    if ($('#sysSumVersion')) $('#sysSumVersion').textContent = 'v' + info.version;
+    if ($('#sysSumMode')) $('#sysSumMode').textContent = mode;
+    if ($('#sysSumApi')) $('#sysSumApi').textContent = info.auth_required ? 'Key required' : 'No key required';
+    if ($('#sysSumAi')) $('#sysSumAi').textContent = info.llm_available ? 'Enabled' : 'Not configured';
+    if ($('#sysSideVersion')) $('#sysSideVersion').textContent = 'v' + info.version;
+    if ($('#sysSideBuild')) $('#sysSideBuild').textContent = info.console_build || 'unknown';
   } catch (e) { $('#sysList').textContent = '—'; }
 }
 $('#sysCopy').onclick = async () => {
