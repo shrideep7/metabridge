@@ -29,6 +29,9 @@ dist/
 
 # Automation Framework (QA only — not committed to repo)
 automation_framework/
+automation_framework.zip
+docs/AUTOMATION_COVERAGE_RECONCILIATION.md
+docs/UI_AUTOMATION_COVERAGE.md
 
 # IDE / agent config dirs
 .agents/
