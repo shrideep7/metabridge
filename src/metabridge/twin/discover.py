@@ -22,7 +22,7 @@ import fnmatch
 import json
 import re
 from pathlib import Path
-from typing import List, Optional
+from typing import Iterable, List, Optional
 
 from .model import DigitalTwin, node_id
 
@@ -212,19 +212,28 @@ def _view_sources(sql: str, dialect: Optional[str]) -> List[str]:
         return []
 
 
-def add_connections(twin: DigitalTwin) -> int:
+def add_connections(twin: DigitalTwin,
+                    only: Optional[Iterable[str]] = None) -> int:
     """Each saved connection becomes a system node; its introspected
     inventory (persisted on Analyze) becomes real table/view nodes with row,
     byte and column metadata, plus intra-system lineage parsed from view
     SQL. Without an inventory yet, the system still appears with its analyzed
-    object COUNT as metadata (so the estate is never empty)."""
+    object COUNT as metadata (so the estate is never empty).
+
+    ``only`` restricts the walk to those connection ids — an agent run is
+    scoped to the systems its requester picked, whereas a whole-estate twin
+    build (the default, ``only=None``) takes every saved connection.
+    """
     try:
         from ..connections_store import get_inventory, list_connections
         conns = list_connections()
     except Exception:  # noqa: BLE001 — store optional in tests
         return 0
+    picked = set(only) if only is not None else None
     for c in conns:
         cid = c.get("id", "")
+        if picked is not None and cid not in picked:
+            continue
         csrc = "connection:%s" % cid
         connector = str(c.get("connector", ""))
         kind = "warehouse" if connector in _WAREHOUSE_KEYS else "database"
@@ -458,7 +467,10 @@ def build_twin(paths: Optional[List[str]] = None,
                estate_docs: Optional[List[dict]] = None,
                include_connections: bool = True,
                jobs_dir: Optional[str] = None,
-               name: str = "estate") -> DigitalTwin:
+               name: str = "estate",
+               connection_ids: Optional[Iterable[str]] = None) -> DigitalTwin:
+    """``connection_ids`` scopes the connection walk to specific saved
+    systems (see ``add_connections``); None keeps the whole-estate default."""
     twin = DigitalTwin(name)
     for path in paths or []:
         p = Path(path)
@@ -498,7 +510,7 @@ def build_twin(paths: Optional[List[str]] = None,
         except Exception:  # noqa: BLE001 — declared, never silent
             twin.built_from.append(src + " (unrecognized)")
     if include_connections:
-        if add_connections(twin):
+        if add_connections(twin, only=connection_ids):
             twin.built_from.append("connections")
     if jobs_dir:
         add_jobs(twin, Path(jobs_dir))

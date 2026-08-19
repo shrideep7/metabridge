@@ -431,7 +431,7 @@ def test_watermark_suggestion_is_valid_yaml_once_uncommented(tmp_path):
 # ---------------------------------------------------------------------------
 
 REPO = Path(__file__).resolve().parent.parent
-CONSOLE = REPO / "web" / "templates" / "console.html"
+CONSOLE = REPO / "web" / "static" / "js" / "console.js"
 
 
 def _slice_manifest(yml: str, keep_js: str, keep_proc_js: str = "") -> str:

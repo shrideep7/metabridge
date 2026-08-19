@@ -1,0 +1,1925 @@
+﻿  :root {
+    /* surfaces */
+    --navy:#0E1A2B; --navy2:#1B3050; --navy-line:#1C2C44; --navy-txt:#B9C7DA; --navy-mut:#5B7089;
+    --bg:#F4F6F9; --surface:#FFFFFF;
+    /* one blue accent only */
+    --accent:#1E62D0; --accent-fill:#1E62D0; --accent-hover:#174FAD; --accent-soft:#EDF3FC; --accent-line:#C4D8F4;
+    /* ink — every value here clears WCAG AA (4.5:1) against --bg and --surface.
+       --muted was #7A8794, which measured 3.39-3.51:1 on the tinted panels it
+       is mostly used on, while carrying KPI labels, timestamps, filter labels
+       and all helper text. --muted2 replaces a hardcoded #98A0AD (2.64:1) used
+       for run durations, engine subtitles and topic names. */
+    --ink:#16212E; --ink2:#33404E; --ink3:#51606F; --muted:#5A6675; --muted2:#6B7787;
+    --border:#D9DFE7; --line:#EDF0F4; --header-bg:#F8FAFC;
+    /* status */
+    --green:#157F3D; --green-fill:#157F3D; --green-bg:#E9F6EE; --green-line:#BFE4CC;
+    --amber:#B45309; --amber-bg:#FCF3E3; --amber-line:#EFD9AC;
+    --red:#B42318;   --red-bg:#FCEBE8;   --red-line:#F2C4BC;
+    /* MANUAL findings: work to schedule, not a failure — kept off red so the
+       one blocking ERROR in a run stays visually distinct from 11 manual items. */
+    --violet:#5B4BC4; --violet-bg:#EFEDFB; --violet-line:#CFC9F0;
+    /* system */
+    --radius:6px; --radius-sm:4px; --shadow:0 1px 2px rgba(16,24,40,.04);
+    --mono:'IBM Plex Mono',ui-monospace,SFMono-Regular,Menlo,monospace;
+    --ring:0 0 0 3px rgba(30,98,208,.15);
+    color-scheme:light;
+  }
+
+  /* ---- dark palette ----------------------------------------------------
+     The console had no dark support at all: zero prefers-color-scheme rules,
+     so under a dark OS the page stayed #F4F6F9 while native controls and
+     scrollbars rendered dark — a guaranteed mismatch on every form. Only the
+     tokens are redefined here; the 60 surfaces that were hardcoded #fff are
+     now var(--surface), so they follow. Defined for BOTH the OS preference
+     and an explicit [data-theme] so the Settings toggle wins in either
+     direction. */
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg:#0F1622; --surface:#161F2E; --header-bg:#1A2432;
+      --ink:#E8EDF4; --ink2:#C6D0DC; --ink3:#A3B0C0; --muted:#93A1B2; --muted2:#8494A6;
+      --border:#2A3646; --line:#232E3D;
+      --accent:#5A9BF0; --accent-fill:#2B6CB8; --accent-hover:#7DB2F6;
+      --accent-soft:#17263B; --accent-line:#2C4869;
+      --green:#4ADE80; --green-fill:#1E7F45; --green-bg:#12291C; --green-line:#1F4A31;
+      --amber:#FBBF24; --amber-bg:#2B2110; --amber-line:#4D3B15;
+      --red:#F87171;   --red-bg:#2C1614;   --red-line:#552420;
+      --violet:#A99BF5; --violet-bg:#1E1B33; --violet-line:#352F5C;
+      --shadow:0 1px 2px rgba(0,0,0,.4);
+      --ring:0 0 0 3px rgba(90,155,240,.25);
+      color-scheme:dark;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg:#0F1622; --surface:#161F2E; --header-bg:#1A2432;
+    --ink:#E8EDF4; --ink2:#C6D0DC; --ink3:#A3B0C0; --muted:#93A1B2; --muted2:#8494A6;
+    --border:#2A3646; --line:#232E3D;
+    --accent:#5A9BF0; --accent-fill:#2B6CB8; --accent-hover:#7DB2F6;
+    --accent-soft:#17263B; --accent-line:#2C4869;
+    --green:#4ADE80; --green-fill:#1E7F45; --green-bg:#12291C; --green-line:#1F4A31;
+    --amber:#FBBF24; --amber-bg:#2B2110; --amber-line:#4D3B15;
+    --red:#F87171;   --red-bg:#2C1614;   --red-line:#552420;
+    --violet:#A99BF5; --violet-bg:#1E1B33; --violet-line:#352F5C;
+    --shadow:0 1px 2px rgba(0,0,0,.4);
+    --ring:0 0 0 3px rgba(90,155,240,.25);
+    color-scheme:dark;
+  }
+  * { box-sizing:border-box; margin:0; }
+  /* App shell: the viewport is the frame (height, not min-height) so the page
+     itself never scrolls — the sidebar stays put and only .workarea scrolls.
+     With min-height the nav grew to the full document height and slid out of
+     view on long pages. */
+  html { height:100%; }
+  body { font-family:'Poppins',-apple-system,'Segoe UI',Roboto,sans-serif; background:var(--bg); color:var(--ink);
+         display:flex; height:100vh; overflow:hidden; font-size:13px; -webkit-font-smoothing:antialiased; }
+  ::selection { background:#D6E4F7; }
+  /* sidebar */
+  nav { width:232px; background:var(--navy); color:#fff; padding:0 0 0; flex-shrink:0; display:flex;
+        flex-direction:column; border-right:1px solid var(--navy-line); transition:width .15s;
+        height:100vh; position:sticky; top:0; }
+  /* Only the link list scrolls; the wordmark and the user chip stay pinned.
+     Without this the items overflow with no way to reach Settings / the
+     account menu on a short window. */
+  nav .nav-scroll { flex:1; min-height:0; overflow-y:auto; overflow-x:hidden; }
+  nav .nav-scroll::-webkit-scrollbar { width:6px; }
+  nav .nav-scroll::-webkit-scrollbar-thumb { background:#1C2C44; border-radius:3px; }
+  nav .nav-scroll::-webkit-scrollbar-track { background:transparent; }
+  nav .logo { padding:20px 20px 0; font-size:17px; font-weight:700; letter-spacing:-.01em; white-space:nowrap; }
+  nav .logo span { color:#4D8DEE; }
+  .skip-link { position:absolute; top:-40px; left:8px; z-index:1000; background:var(--surface); color:#101d33;
+               padding:10px 16px; border-radius:var(--radius-sm); font-size:13px; font-weight:600;
+               text-decoration:none; box-shadow:0 2px 8px rgba(0,0,0,.25); transition:top .12s ease; }
+  .skip-link:focus { top:8px; }
+  nav .tagline { padding:3px 20px 16px; font-size:10px; font-weight:500; color:var(--navy-mut);
+                 letter-spacing:.08em; white-space:nowrap; border-bottom:1px solid var(--navy-line); margin-bottom:12px; }
+  nav .group { padding:8px 20px 6px; font-size:10px; font-weight:600; letter-spacing:.1em; color:var(--navy-mut); }
+  nav .group + a { margin-top:0; }
+  nav a { display:flex; align-items:center; gap:10px; color:var(--navy-txt); text-decoration:none; padding:7px 12px;
+          margin:2px 12px; font-size:13px; font-weight:500; border-radius:var(--radius-sm);
+          border-left:2px solid transparent; cursor:pointer; white-space:nowrap; }
+  nav a svg { width:16px; height:16px; flex-shrink:0; stroke:currentColor; stroke-width:1.75; }
+  nav a:hover { background:#16263C; color:#fff; }
+  nav a.active { background:var(--navy2); color:#fff; font-weight:600; border-left-color:#4D8DEE; }
+  nav a.active svg { stroke:currentColor; }
+  nav a:focus-visible { outline:2px solid #4D8DEE; outline-offset:-2px; }
+  nav .foot { margin-top:auto; padding:0; border-top:1px solid var(--navy-line); }
+  nav .foot-ext { display:flex; align-items:center; gap:10px; color:var(--navy-mut); text-decoration:none;
+                  padding:8px 16px; font-size:12px; font-weight:500; }
+  nav .foot-ext svg { width:14px; height:14px; flex-shrink:0; stroke:currentColor; stroke-width:1.75; }
+  nav .foot-ext .ext-ic { width:11px; height:11px; margin-left:auto; opacity:.7; }
+  nav .foot-ext:hover { color:#E4EAF2; }
+  nav .foot-ext:focus-visible { outline:2px solid #4D8DEE; outline-offset:-2px; }
+  nav .profile { display:flex; align-items:center; gap:10px; padding:12px 16px; position:relative; }
+  nav .avatar { width:30px; height:30px; border-radius:var(--radius-sm); background:var(--navy2); color:#7FA8E4; display:flex;
+                align-items:center; justify-content:center; font-size:11px; font-weight:600; flex-shrink:0; }
+  nav .pname { font-size:12px; font-weight:600; color:#E4EAF2; line-height:1.3; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:120px; }
+  nav .prole { font-size:11px; color:var(--navy-mut); text-transform:capitalize; }
+  nav .navbadge { margin-left:auto; background:var(--amber); color:#fff; border-radius:3px; font-size:10px; font-weight:600; padding:1px 6px; display:none; }
+  body.nav-min nav .navbadge { display:none !important; }
+  nav .pmenu-btn { margin-left:auto; background:none; border:none; color:var(--navy-mut); padding:2px 6px;
+                   font-size:16px; height:auto; border-radius:var(--radius-sm); margin-top:0; }
+  nav .pmenu-btn:hover { background:#16263C; color:#fff; }
+  nav .pmenu { position:absolute; bottom:46px; right:6px; background:var(--surface); color:var(--ink); border-radius:var(--radius);
+               border:1px solid var(--border); box-shadow:0 8px 24px rgba(16,24,40,.14); min-width:180px; display:none; padding:4px; z-index:60; }
+  nav .pmenu button { display:block; width:100%; text-align:left; background:none; border:none; color:var(--ink);
+                      margin:0; height:auto; padding:7px 10px; font-size:13px; font-weight:400; border-radius:var(--radius-sm); }
+  nav .pmenu button:hover { background:var(--header-bg); }
+  nav .collapse-btn { background:none; border:none; color:var(--navy-mut); font-size:12px; padding:6px 10px;
+                      height:auto; margin:4px 12px 8px; border-radius:var(--radius-sm); text-align:left; }
+  nav .collapse-btn:hover { background:#16263C; color:#fff; }
+  body.nav-min nav { width:64px; }
+  body.nav-min nav .logo { font-size:16px; padding-left:16px; }
+  body.nav-min nav .tagline, body.nav-min nav .group, body.nav-min nav a .lbl,
+  body.nav-min nav .pname, body.nav-min nav .prole, body.nav-min nav .pmenu-btn,
+  body.nav-min nav .foot-ext .ext-ic { display:none; }
+  body.nav-min nav a { justify-content:center; padding:10px; }
+  /* global header */
+  .topbar { height:52px; flex:none; background:var(--surface); border-bottom:1px solid var(--border); display:flex; align-items:center;
+            gap:16px; padding:0 24px; position:sticky; top:0; z-index:30; }
+  .topbar .crumb { font-size:13px; color:var(--muted); white-space:nowrap; }
+  .topbar .crumb b { color:var(--ink); font-weight:600; }
+  .topbar #wsSwitch { height:100%; display:flex; align-items:center; align-self:center; position:relative; margin-left:14px; }
+  .topbar #wsBtn { display:inline-flex; align-items:center; justify-content:center; height:32px; box-sizing:border-box; margin:0; align-self:center; gap:7px; background:#f2f5fa; border:1px solid #dfe3ea; border-radius:9px; padding:0 11px; font-size:13px; font-weight:600; color:#123; cursor:pointer; max-width:230px; }
+  #wsBtn:hover { background:var(--header-bg); border-color:#B7C2CF; }
+  /* #notifWrap now carries the margin-left:auto that pushes the right-hand
+     cluster over, so gsearch must not also claim it (two auto margins would
+     split the free space and strand the bell mid-bar). */
+  .topbar .gsearch { position:relative; }
+  .topbar #notifBtn:hover { border-color:var(--accent); color:var(--accent); }
+  .topbar .gsearch input { width:340px; height:32px; padding:0 10px; border:1px solid var(--border);
+            border-radius:var(--radius-sm); font-family:inherit; font-size:13px; background:var(--bg); color:var(--ink); }
+  .topbar .gsearch input::placeholder { color:var(--muted); }
+  .topbar .gsearch input:hover { border-color:#B7C2CF; }
+  .topbar .gsearch input:focus { outline:none; border-color:var(--accent); box-shadow:var(--ring); background:var(--surface); }
+  .topbar .gsearch .hits { position:absolute; top:38px; left:0; right:0; background:var(--surface); border:1px solid var(--border);
+            border-radius:var(--radius); box-shadow:0 8px 24px rgba(16,24,40,.14); display:none; max-height:340px; overflow-y:auto; z-index:40; }
+  .topbar .gsearch .hits div { padding:8px 12px; font-size:13px; cursor:pointer; }
+  .topbar .gsearch .hits div:hover,
+  .topbar .gsearch .hits div[aria-selected="true"] { background:var(--header-bg); }
+  .topbar .gsearch .hits .k { color:var(--muted); font-size:11px; margin-left:6px; font-family:var(--mono); }
+  /* Second line disambiguates rows that share a name — four runs of the same
+     project used to render as four identical rows. */
+  .topbar .gsearch .hits .gh-sub { color:var(--muted); font-size:11px; margin-top:1px;
+                                   font-family:var(--mono); }
+  .topbar .avatar { width:30px; height:30px; border-radius:var(--radius-sm); background:var(--navy2); color:#7FA8E4; display:flex;
+                    align-items:center; justify-content:center; font-size:11px; font-weight:600; }
+  /* the only scrolling region — keeps the sticky topbar working inside it */
+  .workarea { flex:1; display:flex; flex-direction:column; min-width:0;
+              height:100vh; overflow-y:auto; }
+  main { flex:1 0 auto; padding:24px 24px 32px; max-width:1440px; width:100%; margin:0 auto; }
+  main.wide { max-width:none; }
+  @media (max-width:1200px) { main { padding:20px; } .topbar .gsearch input { width:240px; } }
+  @media (max-width:800px) { main { padding:16px; } .topbar { padding:0 16px; } .topbar .gsearch input { width:160px; } }
+
+  /* ---- responsive shell -------------------------------------------------
+     nav previously held a fixed 232px at EVERY width. At 375px that left
+     <main> 143px wide holding ~333px of content with overflow-x:visible,
+     while the document itself does not scroll horizontally — so roughly
+     190px of every page was clipped and unreachable, page titles cut off
+     mid-word. None of the existing breakpoints touched the sidebar.
+
+     Two stages: 1024px collapses to the 64px icon rail that body.nav-min
+     already defines, and 760px takes nav out of the flow entirely as an
+     off-canvas drawer so main gets the full viewport. */
+  main { min-width:0; }
+  /* Table row actions measured 18px tall (e.g. .jd job links). Padding the
+     line box to 24px keeps the row height visually similar while clearing the
+     WCAG 2.2 minimum target size. */
+  table a, .jd { display:inline-block; min-height:24px; line-height:24px; }
+  /* The rest of the sub-24px controls. Each keeps its visual size; only the hit
+     area grows, either by padding the line box or with a centred ::after
+     overlay where the glyph must stay exactly as drawn. */
+  .kebab { min-width:24px; min-height:24px; }
+  .rid, .linkbtn, .sc .note .lnk { display:inline-block; min-height:24px; line-height:24px; }
+  .ibtn { position:relative; }
+  /* Checkbox+label pairs: the twin's "include connections" boxes were 13x13.
+     Sizing the box and giving the whole label a 24px line box makes the label
+     itself part of the target (it already is, via <label>). */
+  label > input[type="checkbox"], label > input[type="radio"] { width:16px; height:16px; }
+  label:has(> input[type="checkbox"]), label:has(> input[type="radio"]) { min-height:24px; }
+  #navToggle { display:none; }
+  #navScrim { display:none; }
+  @media (max-width:1024px) {
+    nav { width:64px; }
+    nav .tagline, nav .group, nav a .lbl, nav .pname, nav .prole,
+    nav .pmenu-btn, nav .foot-ext .ext-ic, nav .navbadge { display:none; }
+    nav a { justify-content:center; padding:10px; margin:2px 8px; }
+    nav .logo { font-size:16px; padding-left:16px; }
+    #navCollapse { display:none; }
+  }
+  @media (max-width:760px) {
+    #navToggle { display:inline-flex; align-items:center; justify-content:center;
+                 width:36px; height:36px; flex:none; margin:0; padding:0;
+                 background:transparent; border:1px solid var(--border);
+                 border-radius:var(--radius-sm); color:var(--ink2); cursor:pointer; }
+    nav { position:fixed; left:0; top:0; z-index:60; width:264px; max-width:86vw;
+          transform:translateX(-100%); transition:transform .18s ease; }
+    body.nav-open nav { transform:none; box-shadow:0 12px 40px rgba(9,16,28,.45); }
+    /* inside the drawer there is room for the full labelled nav again */
+    nav .tagline, nav .group, nav .pname, nav .prole, nav .pmenu-btn { display:block; }
+    nav a .lbl, nav .foot-ext .ext-ic { display:inline; }
+    nav .navbadge { display:inline-block; }
+    nav a { justify-content:flex-start; padding:9px 14px; margin:2px 12px; }
+    body.nav-open #navScrim { display:block; position:fixed; inset:0; z-index:55;
+                              background:rgba(9,16,28,.5); border:0; padding:0; }
+    .topbar { gap:10px; padding:0 12px; }
+    .topbar .crumb { display:none; }
+    .topbar .gsearch input { width:100%; min-width:0; }
+    main { padding:14px 12px 24px; }
+    /* .seg is an inline-flex tab strip with overflow:hidden and nowrap
+       buttons, so a two-tab strip like "All activity / Modernization history
+       (8)" ran 16px past a 375px viewport and clipped the second label.
+       Scroll it instead of hiding it. */
+    .seg { max-width:100%; overflow-x:auto; }
+  }
+  /* metric cards + steps + status */
+  .mcard { background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); box-shadow:var(--shadow);
+           padding:12px 14px; min-width:0; flex:1 1 0; }
+  .mcard .n { font-size:22px; font-weight:600; font-family:var(--mono); letter-spacing:-.02em; color:var(--ink); margin-top:4px; }
+  .mcard .l { font-size:10.5px; color:var(--muted); text-transform:uppercase; font-weight:600; letter-spacing:.04em; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .mcard .d { font-size:11.5px; color:var(--muted); margin-top:3px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  /* ---- run stepper (Modernize) ------------------------------------------
+     Five inert labels that scrolled off screen before the first field. It is
+     now the page's status bar: pinned under the topbar so it survives the
+     three screens of form, each step a control that returns to what that step
+     produced, and states that include the one the old bar could not show —
+     a step that FAILED. The rail fills as the run advances, so progress is
+     readable at a glance rather than by comparing five text colours. */
+  /* One line, always: the steps keep their natural width and the RAILS absorb
+     whatever space is left, so the bar spans the row instead of ending in dead
+     space — and no step can wrap onto a second line on its own. */
+  .steps { display:flex; align-items:center; flex-wrap:nowrap; gap:0 2px; margin:0; min-width:0; }
+  /* The stepper rides the input-mode switch: same row, opposite end. The row
+     carries the spine indent, so the switch stays aligned with the step title
+     and the run state reads at the far edge without a band of its own. */
+  .swrow { display:flex; align-items:center; gap:16px; flex-wrap:wrap; margin:0 0 14px 30px; }
+  @media (max-width:800px) { .swrow { margin-left:0; } }
+  .swrow .segbar { margin:0; }
+  /* takes every pixel the switch leaves; below its 520px basis it drops to its
+     own line and spans the full row rather than squeezing */
+  .swrow .steps { flex:1 1 520px; }
+  .steps .step { display:flex; align-items:center; gap:7px; flex:none; white-space:nowrap;
+                 margin:0; height:auto;
+                 padding:4px 8px; border:1px solid transparent; border-radius:var(--radius-sm);
+                 background:none; font-size:12px; font-weight:500; color:var(--muted); cursor:pointer; }
+  .steps .step b { width:20px; height:20px; flex:none; border-radius:50%; background:var(--line);
+                   color:var(--ink3); display:inline-flex; align-items:center; justify-content:center;
+                   font-size:11px; font-weight:600; font-family:var(--mono); }
+  /* unreached steps are not destinations yet — say so rather than dead-clicking */
+  .steps .step[aria-disabled="true"] { cursor:default; }
+  .steps .step:not([aria-disabled="true"]):hover { background:var(--header-bg); color:var(--ink); }
+  .steps .step:focus-visible { outline:none; box-shadow:var(--ring); }
+  .steps .step.on { color:var(--ink); font-weight:600; }
+  .steps .step.on b { background:var(--accent-fill); color:#fff; }
+  .steps .step.done { color:var(--ink3); }
+  .steps .step.done b { background:var(--green-fill); color:#fff; }
+  .steps .step.busy b { background:var(--accent-fill); color:#fff; animation:dotpulse 1.1s ease-in-out infinite; }
+  .steps .step.fail { color:var(--red); font-weight:600; }
+  .steps .step.fail b { background:var(--red); color:#fff; }
+  /* the rail: filled behind every segment the run has already passed, and the
+     only thing that stretches — the slack in the row lives here */
+  .steps .bar { flex:1 1 auto; min-width:8px; height:2px; border-radius:1px; background:var(--line); }
+  .steps .bar.done { background:var(--green-fill); }
+  /* The status rides the end of the same line and may shrink, never wrap: a
+     full-width basis here would make .steps claim the whole row and push the
+     stepper onto a line of its own. Empty means idle — the footer already
+     carries the "what is missing" hint next to the button it blocks. */
+  .steps .note { flex:0 1 auto; min-width:0; padding-left:12px; font-size:12px; color:var(--ink3);
+                 white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .steps .note:empty { display:none; padding:0; }
+  .steps .note.fail { color:var(--red); font-weight:600; }
+  /* too narrow to hold one line honestly — wrap rather than overflow the panel */
+  @media (max-width:900px) { .steps { flex-wrap:wrap; } .steps .bar { flex:0 1 20px; } }
+  /* stops a scrolled-to section from landing under the sticky topbar */
+  #planPanel, #planTable, #convResult, #convForm { scroll-margin-top:68px; }
+  .tsel { display:grid; grid-template-columns:repeat(auto-fill,minmax(120px,1fr)); gap:8px; margin:6px 0 4px; }
+  /* height:auto is load-bearing: the global `button` rule pins 32px, so a
+     two-line label ("Fabric / Synapse", which wraps in Poppins where it did
+     not in Plex Sans) rendered its second line OUTSIDE the border. The grid
+     stretches every chip in a row to the tallest, so one wrap stays tidy. */
+  .tsel button { margin:0; padding:7px 10px; height:auto; min-height:36px;
+                 display:flex; align-items:center; justify-content:center; text-align:center;
+                 line-height:1.3; font-size:13px; background:var(--surface); color:var(--ink);
+                 border:1px solid var(--border); border-radius:var(--radius-sm); }
+  .tsel button.on { border-color:var(--accent); background:var(--accent-soft); color:var(--accent-hover); font-weight:600; }
+  /* Same reasoning as .prov: these are selectable cards, so hovering one must
+     not paint it in the accent fill that means "selected". */
+  .tsel button { transition:border-color .14s ease, box-shadow .14s ease; }
+  .tsel button:hover { background:var(--surface); color:var(--accent-hover);
+                       border-color:var(--accent-line); box-shadow:0 2px 8px rgba(16,24,40,.08); }
+  .tsel button.on:hover { background:var(--accent-soft); border-color:var(--accent); }
+  .tsel button:disabled:hover { background:var(--surface); color:var(--ink);
+                                border-color:var(--border); box-shadow:none; }
+  .stat { display:inline-flex; align-items:center; gap:6px; font-size:12px; font-weight:600; }
+  .stat i { width:8px; height:8px; border-radius:2px; display:inline-block; }
+  /* Row actions (Recent activity). Bordered chips rather than bare "a · b · c"
+     links: the separators read as content, and an unavailable action needs a
+     state that is visibly OFF rather than just a different shade of blue.
+     .off is a <span>, so it is neither clickable nor tab-reachable. */
+  /* ---- Auto-fix drawer ----
+     Uses the shared conn-drawer shell (head / scrolling body / pinned foot).
+     Before this it rendered into a bare `.modal` while inheriting `conn-drawer`
+     from whichever drawer opened it, so it got padding:0 with no scroll
+     container and long content ran off the viewport. */
+  .af-drawer .cd-head { padding-bottom:14px; }
+  .af-ic { width:30px; height:30px; flex:none; border-radius:8px; display:inline-flex;
+           align-items:center; justify-content:center; font-size:15px;
+           background:var(--amber-bg); color:var(--amber);
+           border:1px solid var(--amber-line); }
+  .af-lede { margin-top:12px; font-size:12.5px; line-height:1.5; color:var(--ink3); }
+  .af-load { color:var(--ink3); font-size:13px; }
+  /* One approval row per fix group. The depth is deliberate but restrained:
+     a hairline border, a tinted selected state, and a shadow that only appears
+     on hover — a static drop shadow on every card reads as clutter. */
+  .af-card { border:1px solid var(--border); border-radius:var(--radius);
+             background:var(--surface); padding:13px 15px; margin-bottom:10px;
+             box-shadow:0 1px 2px rgba(16,24,40,.04);
+             transition:border-color .14s ease, box-shadow .14s ease, background .14s ease; }
+  .af-card:hover { border-color:#C3CCD8; box-shadow:0 3px 10px rgba(16,24,40,.09); }
+  .af-card:has(.fixGroup:checked) { border-color:var(--accent-line); background:var(--accent-soft); }
+  .af-card:has(.fixGroup:focus-visible) { outline:2px solid var(--accent); outline-offset:1px; }
+  .af-card.off { background:var(--header-bg); box-shadow:none; }
+  .af-card.off:hover { border-color:var(--border); box-shadow:none; }
+  .af-row { display:flex; gap:11px; align-items:flex-start; margin:0;
+            text-transform:none; letter-spacing:0; font-weight:400; cursor:pointer; }
+  .af-card.off .af-row { cursor:default; }
+  .af-row > input { width:auto; height:auto; margin:2px 0 0; flex:none; accent-color:var(--accent); }
+  .af-main { min-width:0; flex:1; }
+  .af-title { display:flex; align-items:center; gap:8px; flex-wrap:wrap;
+              font-size:13.5px; font-weight:600; color:var(--ink); line-height:1.35; }
+  .af-count { flex:none; font-size:11px; font-weight:600; font-family:var(--mono);
+              color:var(--ink3); background:var(--line); border-radius:20px; padding:1px 8px; }
+  .af-card:has(.fixGroup:checked) .af-count { background:var(--surface); color:var(--accent); }
+  .af-warn { display:block; margin-top:6px; font-size:12px; line-height:1.5; color:var(--amber); }
+  .af-warn a { color:var(--accent); font-weight:600; cursor:pointer; }
+  .af-warn-sub { color:var(--ink3); }
+  .af-detail { display:flex; flex-direction:column; gap:3px; margin-top:7px; }
+  .af-title + .af-detail, .af-warn + .af-detail { margin-top:7px; }
+  .af-item { font-size:12px; color:var(--ink3); line-height:1.5;
+             overflow-wrap:anywhere; }
+  .af-item.warn { color:var(--amber); }
+  .af-item.ok::before { content:'\2713'; color:var(--green); font-weight:700; margin-right:6px; }
+  .af-item code { font-family:var(--mono); font-size:11.5px; background:var(--line);
+                  border-radius:3px; padding:1px 5px; color:var(--ink2); }
+  /* Result / status notes */
+  .af-note { border:1px solid var(--border); border-left:3px solid var(--muted);
+             border-radius:var(--radius-sm); background:var(--header-bg);
+             padding:11px 14px; margin-bottom:10px; }
+  .af-note.ok { border-color:var(--green-line); border-left-color:var(--green); background:var(--green-bg); }
+  .af-note b { display:block; font-size:13px; font-weight:600; color:var(--ink); margin-bottom:2px; }
+  .af-note.ok b { color:var(--green); }
+  .af-note span { font-size:12.5px; color:var(--ink3); line-height:1.5; }
+  .af-note code { font-family:var(--mono); font-size:11.5px; background:var(--surface);
+                  border:1px solid var(--border); border-radius:3px; padding:0 4px; }
+  .af-sec { font-size:11px; font-weight:600; letter-spacing:.06em; text-transform:uppercase;
+            color:var(--muted); margin:16px 0 7px; }
+  /* ---- Table toolbar (Overview panel header) ----
+     Tabs left, filters right. Anchoring the filter group to the RIGHT edge is
+     what keeps the controls from jumping horizontally when you switch tabs —
+     previously a flex spacer pushed them off the end of the tab strip, so a
+     wider tab label moved every dropdown with it. */
+  .tbar { display:flex; align-items:center; gap:10px 14px; flex-wrap:wrap;
+          margin-bottom:14px; }
+  .tbar-filters { display:none; align-items:center; gap:10px; flex-wrap:wrap;
+                  margin-left:auto; }
+  .tbar-filters.on { display:flex; }
+  /* Label + control travel together, so a wrap never orphans a label from the
+     select it names. */
+  .fgrp { display:inline-flex; align-items:center; gap:7px; }
+  .fgrp > label { margin:0; font-size:11px; font-weight:600; letter-spacing:.05em;
+                  text-transform:uppercase; color:var(--muted); white-space:nowrap; }
+  .fgrp > select { width:auto; min-width:132px; height:30px; font-size:12.5px;
+                   background-color:var(--header-bg); border-color:var(--border);
+                   transition:border-color .14s ease, background-color .14s ease,
+                              box-shadow .14s ease; }
+  .fgrp > select:hover { background-color:var(--surface); border-color:#C3CCD8; }
+  .fgrp > select:focus { background-color:var(--surface); }
+  /* An active filter is visibly ON — otherwise the only clue that a table is
+     filtered is the row count, which is easy to miss. */
+  .fgrp > select.act { background-color:var(--accent-soft); border-color:var(--accent-line);
+                       color:var(--accent-hover); font-weight:600; }
+  .tbar-reset { display:none; margin:0; height:30px; padding:0 12px; font-size:12.5px; }
+  .tbar-reset.on { display:inline-flex; align-items:center; }
+  @media (max-width:820px) {
+    /* Below this the toolbar stacks; keep the filters left-aligned with the
+       tabs rather than stranded against the right edge. */
+    .tbar-filters { margin-left:0; width:100%; }
+    .fgrp { flex:1; min-width:150px; }
+    .fgrp > select { flex:1; min-width:0; }
+  }
+  /* Segmented control — switches which table the Overview panel shows.
+     Buttons, not links: this changes what is rendered, not where you are. */
+  .seg { display:inline-flex; border:1px solid var(--border); border-radius:var(--radius-sm);
+         overflow:hidden; background:var(--header-bg); }
+  .seg button { margin:0; height:30px; padding:0 14px; border:none; border-radius:0;
+                background:transparent; color:var(--ink3); font-size:12.5px; font-weight:600;
+                cursor:pointer; white-space:nowrap;
+                transition:background .12s ease, color .12s ease; }
+  .seg button + button { border-left:1px solid var(--border); }
+  .seg button:hover { background:var(--surface); color:var(--ink); }
+  .seg button[aria-selected="true"] { background:var(--surface); color:var(--accent); box-shadow:inset 0 -2px 0 var(--accent); }
+  .seg button:focus-visible { outline:2px solid var(--accent); outline-offset:-2px; }
+  /* A wide table scrolls inside its own box rather than pushing the page
+     sideways — the row actions must never be the thing that wraps. */
+  .tbl-scroll { overflow-x:auto; }
+  /* Actions stay on ONE line: wrapping made every row double-height and left
+     the third button orphaned under the other two. */
+  .jacts { display:flex; gap:8px; justify-content:flex-end; flex-wrap:nowrap; }
+  /* The actions column is sized by its content, never squeezed by the others. */
+  .jacts-cell { width:1%; white-space:nowrap; text-align:right; }
+  .jact { display:inline-flex; align-items:center; height:28px; padding:0 10px;
+          border:1px solid var(--border); border-radius:var(--radius-sm);
+          background:var(--surface); color:var(--accent); font-size:12px; font-weight:600;
+          white-space:nowrap; cursor:pointer; text-decoration:none;
+          transition:background .12s ease, border-color .12s ease; }
+  .jact:hover { background:var(--accent-soft); border-color:var(--accent-line); }
+  .jact:focus-visible { outline:2px solid var(--accent); outline-offset:1px; }
+  .jact.off { color:var(--muted); background:var(--header-bg); border-color:var(--line);
+              cursor:not-allowed; opacity:.65; }
+  .jact.off:hover { background:var(--header-bg); border-color:var(--line); }
+  /* The global `button` rule carries margin-top:16px for form buttons. A .jact
+     is a 28px inline chip, so on a <button> that margin is always wrong. */
+  button.jact { margin:0; }
+  /* Trend chart (Observability › Performance trends).
+     A stacked-outcome column chart with a success-rate overlay. Every day is
+     hoverable AND keyboard-focusable, and the bar is split by outcome so a bad
+     day is legible from shape alone — hue is never the only channel. */
+  .ot { position:relative; }
+  .ot-head { display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-bottom:12px; }
+  .ot-head .grow { flex:1 1 auto; }
+  .obs-kpis { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:12px; }
+  .obs-kpi { flex:1 1 130px; min-width:120px; padding:8px 10px; border:1px solid var(--line);
+            border-radius:var(--radius-sm); background:var(--header-bg); }
+  .obs-kpi dt { font-size:10.5px; font-weight:600; color:var(--ink3);
+               text-transform:uppercase; letter-spacing:.05em; }
+  .obs-kpi dd { font-size:17px; font-weight:600; color:var(--ink); margin-top:3px;
+               font-variant-numeric:tabular-nums; }
+  .obs-kpi dd small { font-size:11.5px; font-weight:500; color:var(--ink3); }
+  .ot-plot { overflow-x:auto; }
+  .ot-plot svg { display:block; }
+  .ot-grid { stroke:var(--line); shape-rendering:crispEdges; }
+  .ot-zero { stroke:var(--border); shape-rendering:crispEdges; }
+  .ot-ref { stroke:var(--amber); stroke-dasharray:4 3; opacity:.75; }
+  .ot-axis { fill:var(--ink3); font-size:10px; font-variant-numeric:tabular-nums; }
+  .ot-xlab { fill:var(--ink3); font-size:10px; }
+  /* fill-opacity, not opacity: the focus outline must stay fully opaque. */
+  .ot-band { fill:var(--accent); fill-opacity:0; stroke:none;
+             transition:fill-opacity .12s ease; }
+  .ot-slot:hover .ot-band { fill-opacity:.06; }
+  .ot-slot:focus-within .ot-band { fill-opacity:.1; stroke:var(--accent); stroke-width:2; }
+  .ot-hit { fill:transparent; cursor:pointer; outline:none; }
+  .ot-line { fill:none; stroke:var(--accent); stroke-width:2;
+             stroke-linejoin:round; stroke-linecap:round; }
+  .ot-dot { fill:#fff; stroke:var(--accent); stroke-width:2; }
+  .ot-legend { display:flex; gap:14px; flex-wrap:wrap; align-items:center;
+               font-size:11.5px; color:var(--ink3); margin-top:10px; }
+  .ot-legend span { display:inline-flex; align-items:center; gap:6px; }
+  .ot-legend i { width:10px; height:10px; border-radius:2px; flex:none; }
+  .ot-legend i.ln { width:14px; height:2px; border-radius:1px; }
+  .ot-note { font-size:11.5px; color:var(--ink3); margin-top:8px; }
+  .ot-tip { position:absolute; z-index:6; pointer-events:none; opacity:0;
+            transform:translateY(3px); transition:opacity .12s ease, transform .12s ease;
+            background:var(--surface); border:1px solid var(--border); border-radius:var(--radius-sm);
+            box-shadow:0 8px 22px rgba(16,24,40,.16); padding:9px 11px; width:196px; }
+  .ot-tip.on { opacity:1; transform:translateY(0); }
+  .ot-tip b { display:block; font-size:12px; color:var(--ink); margin-bottom:6px; }
+  .ot-tip .r { display:flex; justify-content:space-between; gap:12px;
+               font-size:12px; color:var(--ink3); line-height:1.75; }
+  .ot-tip .r em { font-style:normal; color:var(--ink); font-weight:600;
+                  font-variant-numeric:tabular-nums; }
+  .ot-tip .sw { display:inline-block; width:8px; height:8px; border-radius:2px;
+                margin-right:6px; vertical-align:baseline; }
+  .ot-table { margin-top:12px; overflow-x:auto; }
+  .ot-table table { width:100%; border-collapse:collapse; font-size:12px; }
+  .ot-table th, .ot-table td { padding:5px 8px; border-bottom:1px solid var(--line);
+                               text-align:right; white-space:nowrap; }
+  .ot-table th:first-child, .ot-table td:first-child { text-align:left; }
+  .ot-table th { color:var(--ink3); font-weight:600; font-size:10.5px;
+                 text-transform:uppercase; letter-spacing:.04em; }
+  .ot-table td { font-variant-numeric:tabular-nums; }
+  /* Historical analytics (Observability). The run history used to be one
+     run-on sentence plus a comma list of ~20 job kinds; it is now a status
+     mix bar plus a ranked, filterable breakdown. */
+  .ha-sec { margin-top:16px; }
+  .ha-sec h4 { font-size:11px; font-weight:600; color:var(--ink3); margin:0 0 8px;
+               text-transform:uppercase; letter-spacing:.05em; }
+  .ha-head { display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-bottom:10px; }
+  .ha-head .grow { flex:1 1 auto; }
+  .ha-mix { display:flex; height:16px; border-radius:4px; overflow:hidden;
+            background:var(--line); }
+  .ha-mix span { display:block; min-width:2px; transition:opacity .12s ease; }
+  .ha-mix:hover span { opacity:.55; }
+  .ha-mix span:hover { opacity:1; }
+  .ha-keys { display:flex; gap:16px; flex-wrap:wrap; margin-top:10px; }
+  .ha-key { display:flex; align-items:baseline; gap:6px; font-size:12px; color:var(--ink3); }
+  .ha-key i { width:9px; height:9px; border-radius:2px; flex:none; align-self:center; }
+  .ha-key b { color:var(--ink); font-variant-numeric:tabular-nums; }
+  .ha-rows { display:flex; flex-direction:column; gap:1px; }
+  .ha-row { display:grid; grid-template-columns:minmax(96px,148px) 1fr auto;
+            align-items:center; gap:10px; padding:4px 6px; border-radius:4px;
+            font-size:12.5px; }
+  .ha-row:hover { background:var(--header-bg); }
+  .ha-row > .k { color:var(--ink2); overflow:hidden; text-overflow:ellipsis;
+                 white-space:nowrap; }
+  .ha-row > .k code { font-family:var(--mono); font-size:11.5px; }
+  .ha-bar { height:9px; border-radius:3px; background:var(--line); overflow:hidden; }
+  .ha-bar i { display:block; height:100%; border-radius:3px; background:var(--accent-fill);
+              min-width:2px; }
+  .ha-row > .v { color:var(--ink); font-weight:600; font-variant-numeric:tabular-nums;
+                 white-space:nowrap; }
+  .ha-row > .v small { color:var(--ink3); font-weight:500; margin-left:5px; }
+  .ha-dur { display:flex; gap:8px; flex-wrap:wrap; }
+  .ha-dur div { flex:1 1 150px; padding:8px 10px; border:1px solid var(--line);
+                border-radius:var(--radius-sm); }
+  .ha-dur dt { font-size:11px; color:var(--ink3); font-weight:600; }
+  .ha-dur dd { font-size:15px; font-weight:600; color:var(--ink); margin-top:2px;
+               font-variant-numeric:tabular-nums; }
+  .ha-dur p { font-size:11px; color:var(--ink3); margin-top:3px; }
+  /* ---- Observability: verdict / attention / monitors -------------------
+     Redesigned away from a wall of interchangeable progress bars. Three
+     zones: the verdict (score + the six signals behind it + a day-by-day
+     status ribbon), then what needs attention, then every monitor worst
+     first. Each form follows what its number actually is: big numerals for
+     independent named signals (a hex/polystat grid is for aggregated
+     composites, not six labelled metrics), a uniform status ribbon for
+     day-over-day state, and burn-rate multiples for objectives. */
+  .ozone { padding:18px; }
+  .ozone-row { display:flex; gap:16px; flex-wrap:wrap; margin-top:16px; }
+  .oh { display:flex; gap:26px; align-items:flex-start; flex-wrap:wrap; }
+  .oh-verdict { display:flex; gap:18px; align-items:center;
+                flex:1 1 320px; min-width:290px; }
+  .oh-said { min-width:0; }
+  .oh-head { font-size:15px; font-weight:600; color:var(--ink);
+             letter-spacing:-.01em; line-height:1.35; }
+  .oh-meta { font-size:12px; color:var(--ink3); margin-top:6px; line-height:1.6; }
+  .oh-meta b { color:var(--ink2); }
+  .oh-weak { margin-top:7px; font-size:12px; color:var(--ink3); }
+  .oh-weak b { color:var(--ink); font-weight:600; }
+  .oh-chips { display:flex; gap:6px; flex-wrap:wrap; margin-top:10px; }
+  .oh-chip { display:inline-flex; align-items:center; gap:6px; height:26px;
+             margin:0; padding:0 11px; border:1px solid transparent;
+             border-radius:6px;
+             font-size:12px; font-weight:600; font-family:inherit; cursor:pointer;
+             background:var(--line); color:var(--ink3);
+             transition:border-color .15s ease, background .15s ease; }
+  .oh-chip[disabled] { cursor:default; opacity:.6; }
+  .oh-chip.crit { background:var(--red-bg); color:var(--red); }
+  .oh-chip.warn { background:var(--amber-bg); color:var(--amber); }
+  .oh-chip[aria-pressed="true"] { border-color:currentColor; }
+  .oh-chip:not([disabled]):hover { border-color:currentColor; }
+  .oh-chip:focus-visible { outline:2px solid var(--accent); outline-offset:1px; }
+
+  /* Signal matrix — big numerals, not bars. The number is the visual; hue
+     and the named band reinforce it, so neither carries meaning alone. */
+  .oh-sig { flex:1 1 330px; min-width:300px; }
+  .oh-lbl { font-size:10.5px; font-weight:600; color:var(--ink3); margin:0 0 9px;
+            text-transform:uppercase; letter-spacing:.06em; }
+  .oh-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:7px; }
+  .oh-cell { position:relative; padding:8px 10px 9px 12px;
+             border-radius:var(--radius-sm); background:var(--header-bg);
+             border:1px solid var(--line); overflow:hidden; }
+  /* A tinted left edge, so the band survives greyscale printing. */
+  .oh-cell::before { content:""; position:absolute; left:0; top:0; bottom:0;
+                     width:3px; background:var(--sig,var(--line)); }
+  .oh-cell b { display:block; font-size:21px; font-weight:600; line-height:1.1;
+               color:var(--ink); font-variant-numeric:tabular-nums;
+               letter-spacing:-.02em; }
+  .oh-cell span { display:block; font-size:11px; color:var(--ink3); margin-top:2px; }
+  .oh-cell em { display:block; font-style:normal; font-size:10px; margin-top:3px;
+                color:var(--sig); font-weight:600; }
+  .oh-cell.worst { background:var(--surface); border-color:var(--sig); }
+
+  /* Status ribbon — one uniform cell per day, state by colour AND by a hatch
+     on bad days, because a green/red-only strip fails ~8% of male readers.
+     Deliberately not height-encoded: the trends chart below is the bar view. */
+  .orib { margin-top:18px; padding-top:16px; border-top:1px solid var(--line); }
+  .orib-top { display:flex; align-items:baseline; gap:10px; flex-wrap:wrap;
+              margin-bottom:9px; }
+  .orib-top .grow { flex:1 1 auto; }
+  .orib-sum { font-size:12px; color:var(--ink3); }
+  .orib-sum b { color:var(--ink); font-weight:600;
+                font-variant-numeric:tabular-nums; }
+  .orib-strip { display:flex; gap:3px; align-items:stretch; overflow-x:auto;
+                padding:2px 0; }
+  .orib-cell { flex:1 1 0; min-width:12px; height:34px; margin:0; border:none;
+               padding:0; border-radius:3px; cursor:pointer; position:relative;
+               transition:transform .15s ease, box-shadow .15s ease; }
+  .orib-cell:hover, .orib-cell:focus-visible { transform:scaleY(1.14);
+               box-shadow:0 0 0 2px var(--accent); outline:none; z-index:1; }
+  .orib-scale { display:flex; justify-content:space-between; margin-top:7px;
+                font-size:10px; color:var(--ink3); }
+  .orib-key { display:flex; gap:14px; flex-wrap:wrap; margin-top:10px;
+              font-size:11.5px; color:var(--ink3); }
+  .orib-key span { display:inline-flex; align-items:center; gap:6px;
+                   overflow-wrap:anywhere; }
+  .orib-key i { width:11px; height:11px; border-radius:3px; flex:none; }
+
+  /* Monitor rows — grouped worst-first, shape + word + colour per row, no
+     per-row bar. Compact enough that ten monitors read as one list. */
+  .omg + .omg { margin-top:6px; }
+  .omg-h { display:flex; align-items:center; gap:8px; padding:10px 8px 6px;
+           font-size:10.5px; font-weight:600; color:var(--ink3);
+           text-transform:uppercase; letter-spacing:.06em; }
+  .omg-h b { color:var(--ink2); }
+  /* minmax(0,1fr), not 1fr: an auto minimum refuses to shrink past its
+     content and the row overflows on a narrow panel. */
+  .omr { display:grid;
+         grid-template-columns:18px minmax(90px,190px) 86px minmax(0,1fr);
+         gap:12px; align-items:center; padding:9px 8px; border-radius:6px;
+         border-top:1px solid var(--line); scroll-margin-top:90px;
+         transition:background .15s ease; }
+  .omr:hover { background:var(--header-bg); }
+  .omr:focus-visible { outline:2px solid var(--accent); outline-offset:-2px; }
+  .omr.flash { background:var(--accent-soft);
+               box-shadow:inset 0 0 0 1px var(--accent-line); }
+  .omr-ic { width:16px; height:16px; display:block; }
+  .omr-nm { font-size:12.5px; font-weight:600; color:var(--ink);
+            overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .omr-nm small { display:block; font-weight:500; font-size:10.5px;
+                  color:var(--amber); }
+  .omr-st { font-size:11.5px; font-weight:600; white-space:nowrap; }
+  .omr-st u { display:block; text-decoration:none; color:var(--ink3);
+              font-weight:500; font-size:10.5px;
+              font-variant-numeric:tabular-nums; }
+  .omr-hl { font-size:11.5px; color:var(--ink3); line-height:1.5; min-width:0;
+            overflow-wrap:anywhere; }
+  .om-empty { font-size:12.5px; color:var(--ink3); padding:14px 8px; }
+
+  /* Attention timeline. The product pattern for incident surfaces is
+     "timeline + severity indicators": a rail of severity marks down the left,
+     bold message, detail beneath. Replaces three identical 85px severity
+     pills, which read as a block of noise rather than as three states. */
+  .oat { display:flex; flex-direction:column; margin-top:6px; }
+  /* height:auto and margin:0 are load-bearing — the global `button` rule sets
+     height:32px and margin-top:16px, which clipped these rows to 32px and let
+     their 70px of content spill over the row below. */
+  .oat-i { position:relative; display:grid;
+           grid-template-columns:20px minmax(0,1fr) auto; gap:0 12px;
+           align-items:start; width:100%; height:auto; margin:0;
+           text-align:left; border:none;
+           background:transparent; font-family:inherit; cursor:pointer;
+           padding:11px 8px 11px 4px; border-radius:6px;
+           transition:background .15s ease; }
+  .oat-i:hover { background:var(--header-bg); }
+  .oat-i:focus-visible { outline:2px solid var(--accent); outline-offset:-2px; }
+  /* Nothing to open: do not offer a pointer or a hover lift. */
+  .oat-static { cursor:default; }
+  .oat-static:hover { background:transparent; }
+  /* The rail: a hairline joining each mark to the next, so the list reads as
+     one sequence instead of three detached cards. */
+  .oat-i:not(:last-child)::before { content:""; position:absolute; left:13px;
+           top:29px; bottom:-3px; width:1px; background:var(--border); }
+  .oat-mk { width:18px; height:18px; margin-top:1px; display:block;
+            position:relative; z-index:1; }
+  .oat-b { min-width:0; }
+  .oat-sev { font-size:10px; font-weight:700; text-transform:uppercase;
+             letter-spacing:.07em; display:block; margin-bottom:3px; }
+  .oat-sev.critical { color:var(--red); }
+  .oat-sev.warning { color:var(--amber); }
+  .oat-sev.info { color:var(--ink3); }
+  .oat-msg { display:block; font-size:13px; font-weight:600; color:var(--ink);
+             line-height:1.4; overflow-wrap:anywhere; }
+  .oat-sub { display:block; font-size:11.5px; color:var(--ink3); margin-top:4px;
+             line-height:1.55; overflow-wrap:anywhere; }
+  .oat-sub b { color:var(--ink2); font-weight:600;
+               font-variant-numeric:tabular-nums; }
+  /* Visible at rest at low contrast, so the row reads as clickable without
+     hovering; a hover-only affordance is invisible to touch and to scanning. */
+  /* Full opacity in a quiet tone rather than a faded ink: half-opacity
+     --ink3 computes to ~2.3:1, under the 3:1 floor for UI graphics. */
+  .oat-go { align-self:center; flex:none; width:18px; height:18px;
+            color:var(--muted); transition:color .15s ease, transform .15s ease; }
+  .oat-i:hover .oat-go, .oat-i:focus-visible .oat-go {
+            color:var(--accent); transform:translateX(2px); }
+  .oat-none { display:flex; align-items:center; gap:9px; font-size:13px;
+              color:var(--green); font-weight:500; padding:14px 4px 6px; }
+  .oat-none svg { width:16px; height:16px; flex:none; }
+  .oat-sep { display:flex; align-items:baseline; gap:10px; flex-wrap:wrap;
+             margin-top:18px; padding-top:15px;
+             border-top:1px solid var(--line); }
+
+  /* Objective cards — one row, directly comparable. Severity lives in the
+     card's tint and edge, never in the type size, so the three burn figures
+     stay on the same optical baseline and can be read against each other. */
+  /* Flex, not auto-fit grid: with three cards in a wide panel auto-fit lays
+     out six tracks and leaves half the row empty. Flex lets them stretch. */
+  .osc { display:flex; gap:9px; margin-top:11px; flex-wrap:wrap; }
+  /* max-width so a single objective does not stretch the whole panel; three
+     cards land well under it and still fill the row. */
+  .osc-c { position:relative; flex:1 1 190px; min-width:0; max-width:420px;
+           padding:11px 12px 12px 14px; overflow:hidden;
+           border:1px solid var(--line); border-radius:var(--radius-sm);
+           background:var(--header-bg); }
+  .osc-c::before { content:""; position:absolute; left:0; top:0; bottom:0;
+                   width:3px; background:var(--ob); }
+  .osc-c.bad { background:var(--surface); border-color:var(--ob); }
+  .osc-nm { font-size:12px; font-weight:600; color:var(--ink);
+            overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .osc-cmp { font-size:11.5px; color:var(--ink3); margin-top:5px;
+             font-variant-numeric:tabular-nums; overflow-wrap:anywhere; }
+  .osc-cmp b { font-weight:600; }
+  .osc-burn { display:flex; align-items:baseline; gap:7px; margin-top:9px; }
+  .osc-burn b { font-size:22px; font-weight:600; line-height:1;
+                letter-spacing:-.02em; color:var(--ob);
+                font-variant-numeric:tabular-nums; }
+  .osc-burn span { font-size:11px; font-weight:600; color:var(--ob); }
+  .osc-ft { display:flex; align-items:center; gap:6px; margin-top:8px;
+            padding-top:8px; border-top:1px solid var(--line);
+            font-size:11px; color:var(--ink3); }
+  .osc-ft i { width:7px; height:7px; border-radius:50%; flex:none;
+              background:var(--ob); }
+  /* The text is one flex item, not several — a bare text node beside the dot
+     becomes its own item and wraps onto a second line. */
+  .osc-ft > span { min-width:0; overflow-wrap:anywhere; }
+  .osc-ft b { color:var(--ink2); font-weight:600; }
+  .oslo-foot { font-size:11px; color:var(--ink3); margin-top:11px;
+               line-height:1.55; }
+  .oslo-foot b { color:var(--ink2); font-weight:600;
+                 font-variant-numeric:tabular-nums; }
+
+  @media (max-width:640px) {
+    .oh-grid { grid-template-columns:repeat(2,minmax(0,1fr)); }
+    .omr { grid-template-columns:18px minmax(0,1fr); gap:3px 10px; }
+    .omr-nm, .omr-st, .omr-hl { grid-column:2; }
+    .omr-nm { white-space:normal; overflow-wrap:anywhere; }
+    .omr-st { white-space:normal; }
+    .omr-st u { display:inline; margin-left:6px; }
+    .oat-i { grid-template-columns:18px minmax(0,1fr); gap:0 8px;
+             padding-right:4px; }
+    .oat-go { display:none; }
+    /* 22px numerals do not fit a squeezed content column. */
+    .osc-burn b { font-size:18px; }
+    .osc-burn { flex-wrap:wrap; gap:2px 7px; }
+    .osc-c { padding:10px 10px 11px 12px; }
+    /* The console shell keeps its nav sidebar at phone widths, so the content
+       column can fall below any readable floor. Below it, scroll inside the
+       panel — the same thing the status ribbon and the trends chart do —
+       rather than let text spill out of its box. */
+    #obsAlerts, #obsSla { overflow-x:auto; }
+    .oat, .osc { min-width:210px; }
+  }
+  @media (prefers-reduced-motion:reduce) {
+    .ot-band, .ot-tip, .ha-mix span, .omr, .oat-i, .oat-go, .oh-chip,
+    .orib-cell { transition:none !important; }
+    .ot-tip { transform:none !important; }
+    .orib-cell:hover, .orib-cell:focus-visible { transform:none; }
+    .oat-i:hover .oat-go, .oat-i:focus-visible .oat-go { transform:none; }
+  }
+  /* ---------------- Agentic AI ----------------
+     Same three-zone grammar as Observability: the verdict first, then what
+     needs a human, then every agent worst-first.
+
+     What this replaces: the panel used to open with the 12-agent roster and
+     the run form, so the actual result of a run started ~3 folds down and
+     you scrolled past reference documentation to reach live data every
+     time. The roster IS documentation, not run output, so it now sits
+     behind the (i) disclosure; the launcher and run history are header
+     drawers for the same reason. One screen, one subject. */
+  .agz-top { display:flex; align-items:flex-start; gap:16px; flex-wrap:wrap;
+             margin-bottom:12px; }
+  .agz-ttl { flex:1 1 300px; min-width:250px; }
+  .agz-acts { display:flex; gap:8px; flex-wrap:wrap; }
+  .agz-acts button { margin:0; }
+
+  /* Roster — reference cards, inside the infobox. */
+  .agz-roster { display:grid; grid-template-columns:repeat(auto-fill,minmax(196px,1fr));
+                gap:6px; margin-top:11px; }
+  .agz-rc { background:var(--surface); border:1px solid var(--line);
+            border-radius:var(--radius-sm); padding:7px 9px 8px; }
+  .agz-rc b { display:block; font-size:12px; font-weight:600; color:var(--ink); }
+  .agz-rc b i { font-style:normal; color:var(--muted); font-family:var(--mono);
+                font-weight:500; margin-right:4px; }
+  .agz-rc p { font-size:11px; color:var(--ink3); line-height:1.5; margin-top:4px; }
+  .agz-cls { display:inline-block; margin-top:5px; border-radius:3px; padding:1px 5px;
+             font-size:10px; font-weight:600; text-transform:uppercase;
+             letter-spacing:.05em; background:var(--line); color:var(--ink3); }
+  .agz-cls.gen { background:var(--amber-bg); color:var(--amber); }
+  .agz-dep { display:block; font-size:10px; color:var(--muted); margin-top:4px; }
+
+  /* Header drawers — launcher and history, one open at a time. */
+  .agz-drawer { display:none; border:1px solid var(--border);
+                border-radius:var(--radius); background:var(--header-bg);
+                padding:14px 16px 16px; margin-bottom:16px; }
+  .agz-drawer.on { display:block; }
+  .agz-drawer > .agz-dh { display:flex; align-items:baseline; gap:10px;
+                          margin-bottom:10px; }
+  .agz-drawer > .agz-dh .grow { flex:1 1 auto; }
+
+  /* Launcher sources — a run takes an uploaded folder, saved connections, or
+     both, so the two sit side by side as peers rather than the folder being
+     the only way in. */
+  .agz-src { display:flex; gap:16px; flex-wrap:wrap; align-items:stretch; }
+  .agz-srcbox { flex:1 1 300px; min-width:270px; display:flex;
+                flex-direction:column; }
+  .agz-srcbox > .oh-lbl { margin-bottom:7px; }
+  .agz-srcbox .pdrop { margin:0; }
+  .agz-conns { border:1px solid var(--border); border-radius:var(--radius-sm);
+               background:var(--surface); overflow:hidden; }
+  .agz-conn { display:flex; align-items:center; gap:9px; padding:8px 10px;
+              font-size:12.5px; cursor:pointer; margin:0;
+              text-transform:none; letter-spacing:0; font-weight:400;
+              color:var(--ink); }
+  .agz-conn + .agz-conn { border-top:1px solid var(--line); }
+  .agz-conn:hover { background:var(--header-bg); }
+  .agz-conn input { width:15px; height:15px; margin:0; flex:none;
+                    accent-color:var(--accent); cursor:pointer; }
+  .agz-conn.off { cursor:not-allowed; color:var(--muted); }
+  .agz-conn.off:hover { background:var(--surface); }
+  .agz-conn.off input { cursor:not-allowed; }
+  .agz-conn b { font-weight:600; }
+  .agz-conn .agz-cn-tech { font-size:11px; color:var(--ink3);
+                           font-family:var(--mono); }
+  .agz-conn .grow { flex:1 1 auto; }
+  .agz-conn .agz-cn-why { font-size:11px; color:var(--muted); }
+  .agz-conns-empty { padding:12px 10px; font-size:12px; color:var(--ink3); }
+
+  /* Where a run's data came from — shown on the verdict, because "did this
+     read my warehouse or a folder someone uploaded" changes what the
+     numbers mean. */
+  .agz-srcs { display:flex; gap:6px; flex-wrap:wrap; margin-top:9px; }
+  .agz-srctag { display:inline-flex; align-items:center; gap:5px; height:22px;
+                padding:0 8px; border-radius:4px; font-size:11px;
+                background:var(--accent-soft); color:var(--accent-hover);
+                border:1px solid var(--accent-line); }
+  .agz-srctag svg { width:12px; height:12px; stroke:currentColor;
+                    stroke-width:2; fill:none; flex:none; }
+  .agz-note { margin-top:9px; padding:8px 10px; border-radius:var(--radius-sm);
+              background:var(--amber-bg); border:1px solid var(--amber-line);
+              font-size:11.5px; color:var(--ink2); line-height:1.55; }
+  .agz-note b { color:var(--amber); }
+
+  /* Zone 1 — the verdict. The recommendation is the headline and the
+     confidence is the numeral; both used to be body text inside one grey
+     run-on line. */
+  .agz-v { display:flex; gap:26px; align-items:flex-start; flex-wrap:wrap; }
+  .agz-vl { display:flex; gap:18px; align-items:center; flex:1 1 330px;
+            min-width:280px; }
+  .agz-rec { font-size:15px; font-weight:600; color:var(--ink);
+             letter-spacing:-.01em; line-height:1.35; }
+  .agz-meta { font-size:11.5px; color:var(--ink3); margin-top:5px; }
+  .agz-meta code { font-family:var(--mono); font-size:11px; color:var(--muted); }
+  .agz-blk { margin-top:9px; font-size:12px; color:var(--ink2); line-height:1.55; }
+  .agz-blk b { color:var(--red); font-weight:600; }
+  .agz-chips { display:flex; gap:6px; flex-wrap:wrap; margin-top:10px; }
+  .agz-chip { display:inline-flex; align-items:center; gap:5px; height:26px;
+              padding:0 10px; border-radius:6px; font-size:12px; font-weight:600;
+              background:var(--line); color:var(--ink3); }
+  .agz-chip svg { width:13px; height:13px; stroke:currentColor; stroke-width:2.1;
+                  fill:none; flex:none; }
+  .agz-chip.ok   { background:var(--green-bg); color:var(--green); }
+  .agz-chip.warn { background:var(--amber-bg); color:var(--amber); }
+  .agz-chip.crit { background:var(--red-bg);   color:var(--red); }
+
+  /* Zone 2 — the four executive signals, as numerals (same form as the
+     Observability signal matrix). */
+  .agz-sig { flex:1 1 340px; min-width:290px; }
+  .agz-sgrid { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:7px; }
+  .agz-cell { position:relative; padding:8px 10px 9px 12px; overflow:hidden;
+              border-radius:var(--radius-sm); background:var(--header-bg);
+              border:1px solid var(--line); }
+  .agz-cell::before { content:""; position:absolute; left:0; top:0; bottom:0;
+                      width:3px; background:var(--sig,var(--line)); }
+  .agz-cell b { display:block; font-size:20px; font-weight:600; line-height:1.1;
+                color:var(--ink); font-variant-numeric:tabular-nums;
+                letter-spacing:-.02em; }
+  /* 11px, matching .oh-cell span — these are numeral captions, and the app's
+     floor for a caption under a big figure is set on Observability. */
+  .agz-cell span { display:block; font-size:11px; color:var(--ink3); margin-top:3px;
+                   line-height:1.35; }
+
+  /* Zone 4 — pipeline rows. Two-line grid so the summary can't shove the
+     bar and the status pill out of vertical alignment. */
+  .agz-row { display:grid; gap:2px 12px; align-items:center;
+             grid-template-columns:18px minmax(104px,1fr) minmax(76px,150px) 62px 116px;
+             padding:8px 12px 9px; margin-bottom:6px; background:var(--surface);
+             border:1px solid var(--line); border-radius:var(--radius-sm); }
+  .agz-row.attn { border-color:var(--amber-line); background:#FFFDF8; }
+  .agz-row > svg:first-child { width:15px; height:15px; stroke:var(--sig);
+                               stroke-width:2.1; fill:none; }
+  .agz-nm { font-size:12.5px; font-weight:600; color:var(--ink);
+            text-transform:capitalize; }
+  .agz-bar { height:8px; border-radius:5px; background:var(--line); overflow:hidden; }
+  .agz-bar i { display:block; height:8px; border-radius:5px; background:var(--sig); }
+  .agz-pct { font-size:11px; color:var(--sig); font-weight:600; text-align:right;
+             font-variant-numeric:tabular-nums; }
+  .agz-pill { display:inline-flex; align-items:center; justify-content:center; gap:5px;
+              height:22px; padding:0 8px; border-radius:4px; font-size:10.5px;
+              font-weight:600; white-space:nowrap; background:var(--line);
+              color:var(--ink3); }
+  .agz-pill svg { width:12px; height:12px; stroke:currentColor; stroke-width:2.2;
+                  fill:none; flex:none; }
+  .agz-pill.ok   { background:var(--green-bg); color:var(--green); }
+  .agz-pill.warn { background:var(--amber-bg); color:var(--amber); }
+  .agz-pill.crit { background:var(--red-bg);   color:var(--red); }
+  .agz-sum { grid-column:2 / -1; font-size:11.5px; color:var(--ink3);
+             line-height:1.5; }
+
+  /* Approved GENERATE output, collected where it was approved. The swarm
+     regenerates the documents on demand rather than holding them from the
+     run — the agent discards its bodies by design, which is what makes the
+     approval gate real. The run's input tree is still on disk, so this needs
+     no re-upload: /api/docs takes `from_job`. */
+  .agz-doc { grid-column:2 / -1; margin-top:8px; padding:9px 11px;
+             border:1px solid var(--green-line); border-radius:var(--radius-sm);
+             background:var(--green-bg); }
+  .agz-doc-top { display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
+  .agz-doc-top b { font-size:11.5px; color:var(--green); }
+  .agz-doc-top .grow { flex:1 1 auto; }
+  .agz-doc-fmt { display:inline-flex; align-items:center; gap:5px; margin:0;
+                 font-size:11.5px; font-weight:400; color:var(--ink2);
+                 text-transform:none; letter-spacing:0; cursor:pointer; }
+  .agz-doc-fmt input { width:14px; height:14px; margin:0;
+                       accent-color:var(--accent); cursor:pointer; }
+  .agz-doc button { margin:0; height:26px; padding:0 12px; font-size:11.5px; }
+  .agz-doc-out { margin-top:9px; }
+  .agz-doc-tbl { width:100%; border-collapse:collapse; font-size:11.5px;
+                 background:var(--surface); border-radius:var(--radius-sm);
+                 overflow:hidden; }
+  .agz-doc-tbl th { text-align:left; padding:5px 9px; font-size:10px;
+                    font-weight:600; color:var(--ink3); text-transform:uppercase;
+                    letter-spacing:.05em; background:var(--header-bg); }
+  .agz-doc-tbl td { padding:5px 9px; border-top:1px solid var(--line); }
+  .agz-doc-tbl a { color:var(--accent); font-weight:600;
+                   text-decoration:none; }
+  .agz-doc-tbl a:hover { text-decoration:underline; }
+  .agz-doc-note { font-size:11.5px; color:var(--ink3); line-height:1.55; }
+
+  /* Approvals — the repeated "generate action (produces artifacts / changes
+     systems) requires human approval" sentence was ~40% of every row and
+     identical on all of them; it is a tag with a tooltip now. */
+  .agz-ap { display:flex; align-items:center; gap:10px; flex-wrap:wrap;
+            padding:9px 12px; margin-bottom:6px; background:var(--surface);
+            border:1px solid var(--amber-line); border-radius:var(--radius-sm); }
+  .agz-ap.done { border-color:var(--line); background:var(--header-bg); }
+  .agz-ap .grow { flex:1 1 auto; }
+  .agz-ap-nm { font-size:12.5px; font-weight:600; text-transform:capitalize; }
+  .agz-ap-mt { font-size:11px; color:var(--ink3); font-variant-numeric:tabular-nums; }
+  /* A full email address twice per row wrapped every row onto two lines. The
+     local part identifies the person; the rest is on the tooltip. min-width:0
+     so flexbox may shrink these instead of wrapping the row — a max-width
+     alone still forced a second line on the longer agent names. */
+  .agz-who { flex:0 1 auto; min-width:0; max-width:140px; overflow:hidden;
+             text-overflow:ellipsis; white-space:nowrap; }
+
+  /* Audit — no inner scrollbox. A 280px scroll region nested inside the
+     already-scrolling work area trapped the wheel; it is a disclosure now,
+     so it costs nothing closed and shows every event when open. */
+  .agz-audit { width:100%; border-collapse:collapse; font-size:11.5px; }
+  .agz-audit th { position:sticky; top:0; background:var(--header-bg);
+                  text-align:left; padding:6px 10px; font-size:10px;
+                  font-weight:600; color:var(--ink3); text-transform:uppercase;
+                  letter-spacing:.05em; border-bottom:1px solid var(--border); }
+  .agz-audit td { padding:5px 10px; border-top:1px solid var(--line);
+                  color:var(--ink2); }
+  .agz-audit td:first-child, .agz-audit td:nth-child(4) {
+                  font-family:var(--mono); font-variant-numeric:tabular-nums;
+                  color:var(--muted); }
+  .agz-audit td.agz-ares { color:var(--ink3); }
+  .agz-audit td.agz-ares b { font-weight:600; }
+  .agz-audit tbody tr:hover { background:var(--header-bg); }
+
+  /* Run history — a real table, because eight runs stacked as two-line
+     blocks with the same project name and the same counts were impossible
+     to tell apart. Aligned columns let the one difference pop. */
+  .agz-runs { width:100%; border-collapse:collapse; font-size:12px; }
+  .agz-runs th { text-align:left; padding:5px 10px; font-size:10px; font-weight:600;
+                 color:var(--ink3); text-transform:uppercase; letter-spacing:.05em; }
+  .agz-runs td { padding:8px 10px; border-top:1px solid var(--line); }
+  .agz-runs tbody tr { cursor:pointer; }
+  .agz-runs tbody tr:hover { background:var(--surface); }
+  .agz-runs tbody tr.on { background:var(--surface); box-shadow:inset 2px 0 0 var(--accent); }
+  .agz-runs tbody tr:focus-visible { outline:2px solid var(--accent);
+                                     outline-offset:-2px; }
+  .agz-runs .agz-rid { font-family:var(--mono); font-size:11px; color:var(--muted); }
+  .agz-runs .agz-when { color:var(--ink3); font-variant-numeric:tabular-nums; }
+  .agz-runs .agz-out { font-size:11px; }
+  .agz-runs .agz-out u { text-decoration:none; font-weight:600; }
+
+  .agz-empty { border:1px dashed var(--border); border-radius:var(--radius);
+               background:var(--header-bg); padding:28px 20px; text-align:center; }
+  .agz-empty b { display:block; font-size:13.5px; color:var(--ink); }
+  .agz-empty span { display:block; font-size:12px; color:var(--ink3); margin-top:5px; }
+  .agz-empty button { margin:14px 0 0; }
+
+  @media (max-width:820px) {
+    .agz-sgrid { grid-template-columns:repeat(2,minmax(0,1fr)); }
+    .agz-row { grid-template-columns:18px minmax(90px,1fr) 58px 108px; }
+    .agz-row > .agz-bar { grid-column:2 / -1; grid-row:2; }
+    .agz-sum { grid-row:3; }
+    .agz-runs .agz-hide { display:none; }
+  }
+  @media (prefers-reduced-motion:reduce) {
+    .agz-runs tbody tr, .agz-chip, .agz-pill { transition:none !important; }
+  }
+  h1 { font-size:20px; font-weight:600; letter-spacing:-.01em; margin-bottom:4px; }
+  h2 { font-size:15px; font-weight:600; } h3 { font-size:13px; font-weight:600; }
+  /* <small> inherits the UA's font-size:smaller (0.8333x the parent), which
+     inside a 12.5px parent produced 10.4167px — a fractional step that made
+     the measured type scale look uncontrolled. Pin it to a real step. */
+  small { font-size:11px; }
+  .sub { color:var(--ink3); font-size:13px; margin-bottom:16px; }
+  .panel { background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); box-shadow:var(--shadow);
+           padding:16px; margin-bottom:16px; }
+  label { display:block; font-size:11px; font-weight:600; color:var(--ink3); margin:14px 0 5px; text-transform:uppercase; letter-spacing:.05em; }
+  select, input[type=text], input[type=password], input[type=email], input[type=number], input[type=search] {
+           width:100%; height:32px; padding:0 10px; border:1px solid var(--border); border-radius:var(--radius-sm);
+           font-family:inherit; font-size:13px; background:var(--surface); color:var(--ink); }
+  textarea { font-family:var(--mono); font-size:12px; border:1px solid var(--border); border-radius:var(--radius-sm); padding:8px 10px; color:var(--ink); }
+  select:focus, input:focus, textarea:focus { outline:none; border-color:var(--accent); box-shadow:var(--ring); }
+  /* A value the server environment pins: still readable and focusable (so it can
+     be read by keyboard and screen reader), but visibly not editable here. */
+  input[readonly] { background:var(--bg2, #F5F7FA); color:var(--ink2); cursor:not-allowed; }
+  input[readonly]:focus { border-color:var(--border); box-shadow:var(--ring); }
+  input[aria-invalid="true"] { border-color:var(--red); }
+  input[aria-invalid="true"]:focus { border-color:var(--red); }
+  /* ---- password field with reveal toggle ----
+     The button sits inside the field's box; the input reserves room for it on the
+     right so a long secret never runs underneath the icon. */
+  .pw-wrap { position:relative; display:block; }
+  .pw-wrap > input { padding-right:36px; }
+  .pw-eye { position:absolute; top:0; right:0; margin:0; width:32px; height:32px; padding:0;
+            display:flex; align-items:center; justify-content:center; background:none;
+            border:1px solid transparent; border-radius:var(--radius-sm);
+            color:var(--muted); cursor:pointer; }
+  .pw-eye:hover { background:none; border-color:transparent; color:var(--ink2); }
+  .pw-eye:focus-visible { outline:none; box-shadow:var(--ring); color:var(--ink2); }
+  .pw-eye svg { width:16px; height:16px; display:block; }
+  .row { display:flex; gap:16px; flex-wrap:wrap; } .row > div { flex:1; min-width:170px; }
+  .drop, .mzone { border:1px dashed var(--border); border-radius:var(--radius); padding:24px; text-align:center; color:var(--ink3); cursor:pointer; font-size:13px; background:var(--header-bg); }
+  .drop.hover, .mzone.hover { border-color:var(--accent); background:var(--accent-soft); }
+  /* "or browse" is the affordance the bare bordered box never advertised — the
+     whole zone stays clickable, this just says so. */
+  .drop .browse, .mzone .browse { color:var(--accent); font-weight:600; }
+  .drop .hint, .mzone .hint { display:block; font-weight:400; font-size:12px; color:var(--muted); margin-top:4px; }
+  .mzone .hint { font-family:var(--mono); font-size:11.5px; }
+  button { background:var(--accent-fill); border:1px solid var(--accent); color:#fff; font-family:inherit; font-size:13px;
+           font-weight:500; height:32px; padding:0 14px; border-radius:var(--radius-sm); cursor:pointer; margin-top:16px; }
+  button:hover { background:var(--accent-hover); border-color:var(--accent-hover); }
+  button.secondary { background:var(--surface); color:var(--ink2); border-color:#C7D0DA; }
+  button:disabled { opacity:0.55; cursor:not-allowed; }
+  button.secondary:disabled { background:var(--surface); color:var(--muted2); border-color:#dfe3ea; opacity:0.5; cursor:not-allowed; }
+  button.secondary:disabled:hover { background:var(--surface); border-color:#dfe3ea; cursor:not-allowed; }
+  .cards { display:flex; gap:10px; flex-wrap:nowrap; margin:6px 0 16px; width:100%; }
+  .card { background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); padding:12px 14px; min-width:0; flex:1 1 0; box-shadow:var(--shadow); }
+  .card .n { font-size:22px; font-weight:600; font-family:var(--mono); letter-spacing:-.02em; }
+  .card .l { font-size:10.5px; color:var(--muted); text-transform:uppercase; font-weight:600; letter-spacing:.04em; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  table { border-collapse:collapse; width:100%; background:var(--surface); font-size:13px; }
+  th { background:var(--header-bg); text-align:left; padding:8px 12px; font-size:11px; font-weight:600;
+       text-transform:uppercase; letter-spacing:.05em; color:var(--ink3); border-bottom:1px solid var(--border); }
+  td { padding:10px 12px; border-top:1px solid var(--line); }
+  tbody tr:hover { background:var(--header-bg); }
+  td.num, th.num { text-align:right; font-family:var(--mono); font-size:12px; }
+  .badge { display:inline-flex; align-items:center; gap:5px; height:20px; padding:0 7px; border-radius:3px;
+           font-size:11px; font-weight:600; letter-spacing:.02em; white-space:nowrap;
+           color:var(--ink3); background:var(--line); border:1px solid var(--border); }
+  .badge.ok { color:var(--green); background:var(--green-bg); border-color:var(--green-line); }
+  .badge.warn { color:var(--amber); background:var(--amber-bg); border-color:var(--amber-line); }
+  .badge.bad { color:var(--red); background:var(--red-bg); border-color:var(--red-line); }
+  .badge.info { color:var(--accent); background:var(--accent-soft); border-color:var(--accent-line); }
+  .links a { color:var(--accent); font-weight:500; text-decoration:none; margin-right:14px; }
+  .links a:hover { color:var(--accent-hover); text-decoration:underline; }
+  .err { display:none; margin-top:14px; background:var(--red-bg); color:var(--red); border:1px solid var(--red-line);
+         border-radius:var(--radius-sm); padding:10px 12px; font-size:13px; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(260px,1fr)); gap:12px; }
+  /* Connector cards now sit inside a role="listitem" wrapper (the card itself
+     is role="button"), so the wrapper is the grid item and must pass its full
+     size through to the card. */
+  .grid > [role="listitem"] { display:flex; min-width:0; }
+  .grid > [role="listitem"] > .conn { flex:1; min-width:0; }
+  .conn { background:var(--surface); border-radius:var(--radius); padding:16px; box-shadow:var(--shadow); cursor:pointer; border:1px solid var(--border); }
+  .conn:hover { border-color:var(--accent); }
+  .conn .hd { display:flex; align-items:center; gap:12px; }
+  .conn .logo, .modal .logo { width:36px; height:36px; flex-shrink:0; border-radius:var(--radius-sm); background:var(--header-bg); border:1px solid var(--line); padding:5px; }
+  .modal .logo { width:44px; height:44px; }
+  .conn h3 { font-size:13px; font-weight:600; margin-bottom:2px; } .conn .v { color:var(--muted); font-size:12px; font-family:var(--mono); }
+  .tags { margin-top:10px; display:flex; gap:6px; flex-wrap:wrap; }
+  .tag { background:var(--accent-soft); color:var(--accent-hover); border:1px solid var(--accent-line);
+         font-size:11px; font-weight:500; padding:1px 6px; border-radius:3px; }
+  pre { background:var(--navy); color:#CFE0F5; border:1px solid var(--navy-line); border-radius:var(--radius);
+        padding:14px; font-family:var(--mono); font-size:12px; line-height:1.6; overflow-x:auto; margin-top:10px; }
+  code { font-family:var(--mono); font-size:12px; }
+  .page { display:none; } .page.visible { display:block; }
+  .modal-bg { display:none; position:fixed; inset:0; background:rgba(16,24,40,.55); z-index:50; align-items:flex-start; justify-content:center; overflow-y:auto; padding:40px 16px; }
+  .modal { background:var(--surface); border-radius:var(--radius); max-width:720px; width:100%; padding:20px 24px; }
+  .catbar { display:flex; gap:8px; margin-bottom:16px; flex-wrap:wrap; }
+  .catbar button { margin:0; padding:0 14px; font-size:13px; }
+  .catbar button.off { background:var(--surface); color:var(--ink2); border-color:#C7D0DA; }
+  .catbar button.off:hover { background:var(--header-bg); border-color:#9FACBB; }
+  /* marketplace redesign */
+  .mkt-head { margin-bottom:16px; }
+  .mkt-head-top { display:flex; justify-content:space-between; align-items:center; gap:16px; flex-wrap:wrap; margin-bottom:6px; }
+  .mkt-head-top h1 { margin:0; font-size:20px; font-weight:700; line-height:1.2; }
+  .mkt-actions { display:flex; gap:8px; align-items:center; }
+  .mkt-actions input[type=search] { width:280px; height:36px; box-sizing:border-box; font-size:13px; margin:0; }
+  .mkt-actions button { height:36px; box-sizing:border-box; margin:0; display:inline-flex; align-items:center; justify-content:center; }
+  .mkt-metrics { display:flex; gap:8px; flex-wrap:wrap; margin:0 0 16px; }
+  .mkt-metrics span { background:var(--surface); border:1px solid var(--border); border-radius:var(--radius-sm); padding:5px 10px; font-size:12px; color:var(--ink3); }
+  .mkt-metrics b { color:var(--ink); font-family:var(--mono); font-weight:600; }
+  .mkt-filters { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:12px; }
+  .mkt-filters select { width:auto; min-width:180px; }
+  .sec-head { display:flex; align-items:baseline; gap:10px; margin:24px 0 12px; }
+  .sec-head h3 { font-size:15px; font-weight:600; } .sec-head .cnt { color:var(--muted); font-size:12px; font-family:var(--mono); }
+  /* ---- saved connection cards ----
+     A responsive grid, NOT a horizontally scrolling strip. The old flex row
+     clipped cards mid-content and hid every connection past the third behind a
+     scrollbar, so the section read as broken rather than scrollable. Cards
+     stretch to a common height and pin their actions to the bottom edge, so the
+     primary action lines up across the whole row however much metadata (or
+     driver error text) a card carries. */
+  /* 300px floor: the card no longer carries a 58px label column, so the same
+     content fits a narrower track — a 1280px work area now holds three cards
+     where it held two, without the endpoint truncating. min(…,100%) keeps a
+     narrow work area at one full-width card instead of a horizontal scrollbar. */
+  .sc-row { display:grid; grid-template-columns:repeat(auto-fill,minmax(min(300px,100%),1fr)); gap:10px; align-items:stretch; }
+  .sc { background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); box-shadow:var(--shadow);
+        padding:10px 32px 10px 12px; position:relative; min-width:0; display:flex; flex-direction:column;
+        transition:border-color .15s ease, box-shadow .15s ease; }
+  .sc:hover { border-color:#C3D2E4; box-shadow:0 2px 8px rgba(16,24,40,.07); }
+  .sc .hd { display:flex; align-items:center; gap:8px; min-width:0; }
+  .sc .hd img { width:20px; height:20px; flex:none; border-radius:3px; background:var(--header-bg); padding:2px; }
+  /* The connection's own name is the identity — two connections to the same
+     connector were indistinguishable when only the connector name showed.
+     The connector name moved into the meta list below, so the header is now a
+     single line and the status reads as a dot+label chip beside it. */
+  .sc .hd .nm { min-width:0; flex:1; }
+  .sc .hd .nm strong { display:block; font-size:13px; font-weight:600; letter-spacing:-.01em; line-height:1.35;
+                       white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  /* connector type rides the SAME line as the name — it is context, not a
+     second heading, and a stacked sub-line cost every card a whole row */
+  .sc .hd .nm .sub { font-weight:400; font-size:11px; color:var(--muted); }
+  .sc .hd .nm .sub::before { content:'·'; margin:0 4px; color:var(--border); }
+  /* scoped to the card only — .badge is shared with tables and the manual queue */
+  .sc .hd .badge { flex:none; height:18px; padding:0 6px; font-size:10px; gap:4px; }
+  .sc .hd .badge .dot { width:6px; height:6px; }
+  /* Metadata is a compact stack of "label value" lines rather than a two-column
+     grid: the fixed 58px label gutter cost a third of the card width and forced
+     the 400px floor. Labels are uppercase micro-caps so the mono value still
+     wins the eye at a glance. */
+  .sc .kv { display:flex; flex-direction:column; gap:1px;
+            margin-top:8px; padding-top:8px; border-top:1px solid var(--line); font-size:11px; min-width:0; }
+  .sc .kv div { display:flex; align-items:baseline; gap:6px; min-width:0; }
+  .sc .kv dt { flex:none; color:var(--muted); font-weight:600; font-size:10px; letter-spacing:.04em;
+               text-transform:uppercase; line-height:1.5; }
+  .sc .kv dd { margin:0; min-width:0; flex:1; color:var(--ink2); font-family:var(--mono); font-size:10.5px;
+               line-height:1.5; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .sc .note { margin-top:8px; font-size:11px; line-height:1.4; color:var(--ink3); }
+  .sc .note.bad, .sc .note.warn { border-radius:var(--radius-sm); padding:5px 7px; }
+  .sc .note.bad { background:var(--red-bg); border:1px solid var(--red-line); color:var(--red); }
+  .sc .note.warn { background:var(--amber-bg); border:1px solid var(--amber-line); color:var(--amber); }
+  .sc .note b { font-weight:600; }
+  /* A driver error is often a whole SQL statement or a paragraph of vendor
+     prose — clamp it so one broken connection can't dominate the row, and give
+     it an explicit expander instead of silently cutting the text off. The
+     condition sits INSIDE the clamped box so it shares a line with the message
+     instead of costing the card a whole row of its own. */
+  .sc .note-msg { display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden;
+                  overflow-wrap:anywhere; }
+  .sc .note.open .note-msg { display:block; }
+  .sc .note .lnk { background:none; border:none; padding:0; margin:2px 0 0; height:auto; font-size:10.5px;
+                   font-weight:600; color:inherit; text-decoration:underline; cursor:pointer; }
+  .sc .note .lnk:hover { background:none; opacity:.75; }
+  /* Actions stay on ONE line: the primary keeps its label, the secondaries
+     collapse to 28px icon buttons with tooltips + aria-labels, so a 300px card
+     never wraps its footer onto a second row. */
+  .sc .acts { margin-top:auto; padding-top:9px; display:flex; gap:5px; align-items:center; }
+  .sc .acts button { padding:0 10px; height:28px; font-size:12px; margin:0; flex:none; }
+  .sc .acts .ico { padding:0; width:28px; display:inline-flex; align-items:center; justify-content:center; }
+  .sc .acts .ico svg { width:14px; height:14px; stroke:currentColor; fill:none; stroke-width:1.9;
+                       stroke-linecap:round; stroke-linejoin:round; }
+  /* the kebab tracks the card's own padding so it stays optically level with
+     the connection name rather than floating below it */
+  .sc .kebab { top:9px; right:6px; }
+  .sc .menu { top:32px; }
+  /* Status modifiers are namespaced: a bare `.err` is the app-wide form-error
+     banner (display:none until shown), which used to swallow the dot and the
+     status label on any failed connection card. */
+  .dot { width:8px; height:8px; border-radius:2px; display:inline-block; flex:none;
+         background:var(--green-fill); vertical-align:middle; }
+  .dot.d-err { background:var(--red); } .dot.d-dis { background:#A5AFBA; }
+  .dot.d-warn { background:var(--amber); animation:dotpulse 1.1s ease-in-out infinite; }
+  .badge .dot { width:6px; height:6px; border-radius:50%; background:currentColor; }
+  .badge.busy .dot { animation:dotpulse 1.1s ease-in-out infinite; }
+  @media (prefers-reduced-motion:reduce) { .dot { animation:none !important; } .sc { transition:none; } }
+  @keyframes dotpulse { 0%,100%{opacity:1} 50%{opacity:.35} }
+  /* Digital Twin canvas fullscreen takeover — an explicit escape hatch
+     rather than an always-full-viewport canvas (see twinSetFullscreen).
+     The toolbar (incl. the Exit fullscreen button) lives INSIDE
+     #twinCanvasRoot so it travels with the canvas into the takeover —
+     it must never be left behind under the fixed overlay. */
+  body.twin-fullscreen { overflow:hidden; }
+  #twinCanvasRoot.twin-canvas-fs {
+    position:fixed; inset:16px; z-index:200; margin:0;
+    box-shadow:0 24px 64px rgba(16,24,40,.32);
+  }
+  #twinCanvasRoot.twin-canvas-fs #twinToolbar { flex:none; }
+  #twinCanvasRoot.twin-canvas-fs #twinWrap { height:100% !important; }
+  .req { color:var(--red); font-weight:600; }
+  .opt { color:var(--muted); font-weight:400; font-size:11px; }
+  .kebab { position:absolute; top:12px; right:10px; background:none; border:none; color:var(--muted); padding:2px 8px;
+           font-size:18px; line-height:1; height:auto; margin-top:0; border-radius:var(--radius-sm); }
+  .kebab:hover { background:var(--header-bg); color:var(--ink); }
+  .menu { position:absolute; top:38px; right:12px; background:var(--surface); border:1px solid var(--border); border-radius:var(--radius);
+          box-shadow:0 8px 24px rgba(16,24,40,.14); z-index:20; min-width:180px; display:none; padding:4px; }
+  .menu button { display:block; width:100%; text-align:left; background:none; border:none; color:var(--ink); margin:0;
+                 height:auto; padding:7px 10px; font-size:13px; font-weight:400; border-radius:var(--radius-sm); }
+  .menu button:hover { background:var(--header-bg); }
+  .menu button.danger { color:var(--red); }
+  .menu button:focus-visible { outline:2px solid var(--accent); outline-offset:-2px; }
+  /* account menu (header avatar dropdown) */
+  .menu.acct { width:300px; min-width:0; border:1px solid var(--border); border-radius:var(--radius);
+               box-shadow:0 8px 24px rgba(16,24,40,.14); padding:4px; }
+  .acct-id { padding:12px 14px; display:flex; gap:12px; align-items:center; }
+  .avatar { overflow:hidden; }
+  .avatar img, .acct-av img, .avopt-demo img { width:100%; height:100%; object-fit:cover; display:block; }
+  .acct-av, .menu.acct button.acct-av {
+             position:relative; width:44px; height:44px; flex:none; border-radius:var(--radius-sm); overflow:hidden;
+             background:var(--navy2); color:#7FA8E4; display:flex; align-items:center; justify-content:center;
+             font-weight:600; font-size:14px; border:none; padding:0; margin:0; cursor:pointer; }
+  .acct-av .avslot { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; }
+  .acct-av .cam { position:absolute; inset:0; display:flex; align-items:center; justify-content:center;
+                  background:rgba(10,20,40,.55); color:#fff; opacity:0; transition:opacity .12s; }
+  .acct-av:hover .cam, .acct-av:focus-visible .cam { opacity:1; }
+  .acct-av .cam svg { width:16px; height:16px; stroke:currentColor; fill:none; stroke-width:1.8; }
+  .acct-av[disabled] { cursor:default; }
+  .avopts { display:flex; gap:10px; margin-top:10px; flex-wrap:wrap; }
+  .avopt { display:flex; flex-direction:column; align-items:center; gap:8px; background:var(--surface);
+           border:1px solid var(--border); border-radius:var(--radius); padding:14px 18px; font-size:13px;
+           color:var(--ink2); min-width:112px; margin:0; height:auto; font-weight:400; }
+  .avopt:hover { border-color:var(--accent); background:var(--accent-soft); }
+  .avopt-demo { width:44px; height:44px; border-radius:var(--radius-sm); background:var(--navy2); color:#7FA8E4;
+                display:flex; align-items:center; justify-content:center; font-weight:600; overflow:hidden; }
+  .avopt-demo.cam { background:var(--line); color:var(--ink2); }
+  .avopt-demo svg { width:20px; height:20px; stroke:currentColor; fill:none; stroke-width:1.8; }
+  /* settings workspace */
+  .set-wrap { display:flex; gap:32px; align-items:flex-start; max-width:1160px; }
+  .set-nav { width:220px; flex:none; position:sticky; top:16px; display:flex; flex-direction:column; gap:2px; }
+  .set-nav .sgrp { font-size:10px; letter-spacing:.1em; color:var(--muted); font-weight:600; margin:16px 10px 4px; text-transform:uppercase; }
+  .set-nav .sgrp:first-child { margin-top:0; }
+  .set-nav button { text-align:left; background:none; border:1px solid transparent; color:var(--ink2); padding:7px 10px;
+                    border-radius:var(--radius-sm); font-size:13px; font-weight:500; margin:0; width:100%; height:auto; }
+  .set-nav button:hover { background:var(--header-bg); }
+  .set-nav button.active { background:var(--accent-soft); border-color:var(--accent-line); color:var(--accent-hover); font-weight:600; }
+  .set-nav button:focus-visible { outline:2px solid var(--accent); outline-offset:-2px; }
+  #setNavSel { display:none; margin-bottom:16px; }
+  .set-content { flex:1; min-width:0; max-width:900px; }
+  .set-sec { display:none; } .set-sec.visible { display:block; }
+  .set-sec h2 { font-size:20px; font-weight:600; letter-spacing:-.01em; margin:0 0 4px; }
+  .set-sec .shint { color:var(--ink3); font-size:13px; margin-bottom:20px; line-height:1.55; }
+  .set-sec h3 { font-size:13px; font-weight:600; margin:24px 0 6px; color:var(--ink); }
+  .sec-head { display:flex; align-items:flex-start; justify-content:space-between; gap:16px; flex-wrap:wrap; }
+  .sec-head button { margin-top:0; }
+  .set-form { max-width:760px; }
+  .fld { margin-bottom:20px; max-width:420px; }
+  .fld label { margin-top:0; }
+  .ro { font-size:13px; color:var(--ink); padding:4px 0; }
+  .fhint { font-size:12px; color:var(--muted); margin-top:6px; line-height:1.55; max-width:560px; }
+
+  /* ---- ⓘ info disclosure ------------------------------------------------
+     "What this does / which files" copy is onboarding: read once, then pure
+     noise on every later visit. Previously every tool panel rendered 4-7 lines
+     of it permanently, at body weight, above the first control — so the page
+     read as a wall of prose. It now lives behind this button, in flow (not a
+     floating popover: an absolutely-positioned layer inside .workarea's scroll
+     container would need collision handling this page has nowhere else). */
+  .ihead { display:flex; align-items:center; gap:7px; flex-wrap:wrap; }
+  .ihead h3 { margin:0 !important; }
+  .ibtn { margin:0; width:17px; height:17px; padding:0; flex:none;
+          display:inline-flex; align-items:center; justify-content:center;
+          border-radius:50%; border:1px solid var(--border); background:var(--surface);
+          color:var(--muted); font:italic 700 11px/1 Georgia,'Times New Roman',serif;
+          cursor:pointer; transition:background .12s,color .12s,border-color .12s; }
+  /* The glyph stays 17px so the visual density is unchanged, but the HIT AREA
+     is padded out to the WCAG 2.2 24x24 minimum via a pseudo-element. 79
+     controls measured under 24px before this; the ibtn was the most repeated. */
+  .ibtn { position:relative; }
+  .ibtn::after { content:""; position:absolute; left:50%; top:50%;
+                 width:24px; height:24px; transform:translate(-50%,-50%); }
+  .ibtn:hover { background:var(--accent-soft); border-color:var(--accent-line); color:var(--accent); }
+  .ibtn[aria-expanded="true"] { background:var(--accent-fill); border-color:var(--accent); color:#fff; }
+  .ibtn:focus-visible { outline:none; box-shadow:var(--ring); }
+  .infobox { display:none; font-size:12.5px; line-height:1.65; color:var(--ink3);
+             background:var(--header-bg); border:1px solid var(--line);
+             border-left:2px solid var(--accent-line); border-radius:var(--radius-sm);
+             padding:10px 12px; margin:9px 0 0; max-width:780px; }
+  .infobox.on { display:block; }
+  .infobox > * + * { margin-top:7px; }
+  .infobox code { font-family:var(--mono); font-size:11.5px; background:var(--surface);
+                  border:1px solid var(--line); border-radius:3px; padding:0 4px; white-space:nowrap; }
+  .infobox .cav { display:block; color:var(--muted); font-size:12px; }
+  .infobox b { color:var(--ink2); }
+
+  /* ---- numbered form sections (Modernize) --------------------------------
+     The form ran as one undifferentiated column of labels, so "where does the
+     source end and the target begin" had to be inferred from the copy. A muted
+     numeral, a title and a rule to the right margin split it into steps that
+     are readable at a glance without adding a second visual weight. */
+  .fsec { display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin:26px 0 10px; }
+  .fsec:first-child { margin-top:0; }
+  .fsec .num { width:20px; height:20px; flex:none; border-radius:50%;
+               background:var(--accent-fill); color:#fff; font-family:var(--mono);
+               font-size:11px; font-weight:600; display:inline-flex;
+               align-items:center; justify-content:center; }
+  .fsec .ttl { font-size:15px; font-weight:600; color:var(--ink); letter-spacing:-.01em; }
+  /* One spine: everything belonging to a step lines up under its TITLE, not
+     under the numeral. Before this the switch, the zone, the chips and the
+     name row each started at a different x and the form read as a pile of
+     unrelated controls. The indent collapses on narrow viewports, where the
+     30px would cost more than the alignment buys. */
+  .fbody, .segbar, .fsub { margin-left:30px; }
+  @media (max-width:800px) { .fbody, .segbar, .fsub { margin-left:0; } }
+  .fsub { font-size:12.5px; color:var(--muted); margin-top:-2px; margin-bottom:12px; }
+  /* the source switch is a two-value choice ABOUT step 1, so it gets the same
+     segmented treatment as Mode rather than a labelled bar of its own */
+  .segbar { display:inline-flex; gap:3px; padding:3px; margin-bottom:14px;
+            background:var(--header-bg); border:1px solid var(--border); border-radius:var(--radius); }
+  .segbar button { margin:0; height:auto; padding:6px 14px; font-size:12.5px; font-weight:500;
+                   background:none; border:1px solid transparent; border-radius:var(--radius-sm);
+                   color:var(--ink3); cursor:pointer; }
+  .segbar button:hover { background:var(--surface); border-color:var(--border); color:var(--ink); }
+  .segbar button[aria-pressed="true"] { background:var(--surface); border-color:var(--border);
+                   color:var(--ink); font-weight:600; box-shadow:var(--shadow); cursor:default; }
+  .segbar button:focus-visible { outline:none; box-shadow:var(--ring); }
+  /* accepted formats / supported platforms: one quiet line under the zone,
+     with the tail folded away rather than wrapping to three lines */
+  .exts { font-size:11.5px; color:var(--muted); margin:8px 2px 0; line-height:1.6; }
+  .exts.mono { font-family:var(--mono); }
+  .linkbtn { margin:0; padding:0; height:auto; background:none; border:none;
+             font-size:12px; font-weight:500; color:var(--accent); cursor:pointer; }
+  .linkbtn:hover { background:none; text-decoration:underline; }
+  .linkbtn:focus-visible { outline:none; box-shadow:var(--ring); border-radius:3px; }
+  .tgrp { font-size:11px; font-weight:600; letter-spacing:.05em; text-transform:uppercase;
+          color:var(--muted); margin:16px 0 8px; }
+  .tgrp:first-child { margin-top:0; }
+  /* a two-value radio reads as a switch, not as a list of options */
+  .segr { display:inline-flex; gap:3px; padding:3px; background:var(--header-bg);
+          border:1px solid var(--border); border-radius:var(--radius); }
+  .segr label { display:inline-flex; align-items:center; margin:0; padding:5px 12px;
+                font-size:12.5px; font-weight:500; text-transform:none; letter-spacing:0;
+                color:var(--ink3); border:1px solid transparent; border-radius:var(--radius-sm); cursor:pointer; }
+  .segr label.on { background:var(--surface); border-color:var(--border); color:var(--ink); font-weight:600; box-shadow:var(--shadow); }
+  .segr label:focus-within { box-shadow:var(--ring); }
+  .segr input { position:absolute; width:1px; height:1px; opacity:0; }
+  .opt-row { display:flex; align-items:center; gap:12px; flex-wrap:wrap; margin-top:16px; }
+  .opt-row .k { min-width:52px; font-size:11px; font-weight:600; letter-spacing:.05em;
+                text-transform:uppercase; color:var(--muted); }
+  .opt-row .v { font-size:12.5px; color:var(--ink3); }
+  .opt-row .end { margin-left:auto; }
+  /* The primary action sat below three screenfuls of form, so committing meant
+     scrolling back down past everything you had just filled in. It now rides
+     the bottom of the viewport for exactly as long as the form is on screen —
+     its containing block is the form body, so it releases (rather than hovering
+     over the analysis results) the moment you scroll past it. Opaque, with its
+     own top border, so nothing is obscured behind it. */
+  .fact { position:sticky; bottom:0; z-index:5;
+          display:flex; align-items:center; gap:14px; flex-wrap:wrap;
+          margin:20px -16px 0; padding:12px 16px; background:var(--surface);
+          border-top:1px solid var(--border); }
+  .fact button { margin-top:0; }
+  .fact .note { margin-left:auto; font-size:12px; color:var(--muted); }
+  @media (max-width:800px) { .fact .note { margin-left:0; width:100%; } }
+
+  /* ---- multi-file dropzone (orchestration, events) -----------------------
+     A bare <input type="file" multiple> renders "3 files" and drops the names,
+     so there was no way to see WHAT was attached or to remove one without
+     re-picking the whole set. The zone collapses into a list once files are
+     held; the list is the control. */
+  .flist { border:1px solid var(--border); border-radius:var(--radius); background:var(--surface); overflow:hidden; }
+  .flist .frow { display:flex; align-items:center; gap:10px; padding:8px 10px; border-top:1px solid var(--line); }
+  .flist .frow:first-child { border-top:none; }
+  .flist .fn { flex:1; min-width:0; font-size:13px; color:var(--ink);
+               overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .flist .fp { font-size:11.5px; color:var(--muted); white-space:nowrap; }
+  .flist .fx { margin:0; width:22px; height:22px; padding:0; flex:none; font-size:14px; line-height:1;
+               display:inline-flex; align-items:center; justify-content:center;
+               background:none; border:1px solid transparent; border-radius:var(--radius-sm); color:var(--muted); cursor:pointer; }
+  .flist .fx:hover { background:var(--red-bg); border-color:var(--red-line); color:var(--red); }
+  .flist .fx:focus-visible { outline:none; box-shadow:var(--ring); }
+  .fsum { font-size:12px; color:var(--muted); margin:8px 2px 0; }
+  /* legend for a scored table, read before the table exists */
+  .legend { display:flex; flex-wrap:wrap; gap:6px; margin:0 0 8px; }
+
+  /* ---- agent approvals (Governance) --------------------------------------
+     Decisions were a flat list of bordered cards, one per action, with the run
+     id repeated on every card — so three actions from one swarm read as three
+     unrelated events. They are grouped under the run that produced them now,
+     because "did run X get through" is the question being asked. */
+  .aqrun { display:flex; align-items:center; gap:8px; flex-wrap:wrap; padding:16px 2px 8px; }
+  .aqrun:first-child { padding-top:4px; }
+  .aqrun .rid { font-family:var(--mono); font-size:11.5px; color:var(--ink); }
+  .aqrun .who { font-size:12px; color:var(--muted); }
+  .aqtbl { table-layout:fixed; }
+  .aqtbl td { padding:8px 8px; font-size:12.5px; }
+  .aqtbl td:first-child { padding-left:2px; }
+  .aqtbl td:last-child { padding-right:2px; text-align:right; }
+  .aqtbl .mail { font-family:var(--mono); font-size:11px; color:var(--ink3);
+                 overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .aqtbl .act { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  /* confidence as a bar, not a bare percentage: the number alone gives no
+     sense of where it sits against the rest of the run */
+  .cbar { display:inline-flex; align-items:center; gap:6px; }
+  .cbar .t { width:30px; height:4px; flex:none; border-radius:2px; background:var(--line); overflow:hidden; }
+  .cbar .f { display:block; height:4px; border-radius:2px; background:var(--green-fill); }
+  .cbar .v { font-family:var(--mono); font-size:11.5px; color:var(--ink3); }
+  .cbar.low .f { background:var(--amber); } .cbar.low .v { color:var(--amber); }
+  .aqempty { display:flex; align-items:center; gap:8px; padding:12px 14px; border-radius:var(--radius);
+             background:var(--header-bg); font-size:12.5px; color:var(--ink3); }
+
+  /* ---- source → target pair ----------------------------------------------
+     Two selects side by side with the direction drawn between them, instead
+     of two stacked labelled fields the reader has to infer an order from. */
+  .pair { display:flex; align-items:flex-end; gap:10px; flex-wrap:wrap; }
+  .pair > div { flex:1 1 220px; min-width:0; }
+  .pair > div > label { margin-top:0; }
+  .pair .arrow { flex:none; padding-bottom:9px; color:var(--muted); font-size:14px; }
+  @media (max-width:600px) { .pair .arrow { display:none; } }
+
+  /* ---- option cards ------------------------------------------------------
+     An optional branch of a form (a checkbox that reveals fields, a settings
+     group that is usually left alone) reads as part of the main flow when it
+     is just more rows. Boxing it says "this is a side door", and lets the
+     dependent fields hang off their own control instead of floating loose. */
+  .optcard { border:1px solid var(--border); border-radius:var(--radius);
+             background:var(--header-bg); padding:12px 14px; margin-top:12px; }
+  .optcard .och { display:flex; align-items:flex-start; gap:10px; margin:0; cursor:pointer;
+                  font-size:13px; font-weight:400; text-transform:none; letter-spacing:0; color:var(--ink); }
+  .optcard .och input { width:auto; height:auto; margin:2px 0 0; flex:none; }
+  .optcard .och b { font-weight:600; }
+  .optcard .och .d { display:block; margin-top:2px; font-size:12px; color:var(--ink3); font-weight:400; }
+  .optcard .ocbody { margin:14px 0 0 26px; }
+  @media (max-width:800px) { .optcard .ocbody { margin-left:0; } }
+  .ochead { display:flex; align-items:center; gap:8px; width:100%; margin:0; padding:0; height:auto;
+            background:none; border:none; text-align:left; cursor:pointer;
+            font-size:13px; font-weight:600; color:var(--ink); }
+  .ochead:hover { background:none; color:var(--accent); }
+  .ochead:focus-visible { outline:none; box-shadow:var(--ring); border-radius:3px; }
+  .ochead .caret { flex:none; width:10px; font-size:10px; color:var(--muted); transition:transform .12s; }
+  .ochead[aria-expanded="true"] .caret { transform:rotate(90deg); }
+  .ochead .d { font-weight:400; font-size:12px; color:var(--muted); }
+  .ochead .badge { margin-left:auto; }
+  /* which side of the move a group of fields configures, stated once */
+  .grp { display:flex; align-items:center; gap:8px; margin:18px 0 8px; }
+  .grp:first-child { margin-top:0; }
+  .grp .k { font-size:11px; font-weight:600; letter-spacing:.05em; text-transform:uppercase; color:var(--muted); }
+  .grp .chip { font-size:12px; padding:2px 8px; border-radius:3px; background:var(--surface);
+               border:1px solid var(--border); color:var(--ink3); }
+  .grp .rule { flex:1; min-width:12px; height:0; border-top:1px solid var(--line); }
+  .lockline { font-size:12px; color:var(--green); margin-top:6px; }
+  input.mono { font-family:var(--mono); font-size:12.5px; }
+
+  /* ---- tool picker (Reports) --------------------------------------------
+     Seven upload-and-run tools were stacked expanded on one page; nobody uses
+     more than one at a time. Same switching idea as #dashViewSeg, but wrapping
+     rather than an inline-flex .seg — seven labels overflow a narrow workarea. */
+  .toolseg { display:flex; flex-wrap:wrap; gap:6px; margin:0 0 16px; }
+  .toolseg button { margin:0; height:30px; padding:0 12px; font-size:12.5px; font-weight:500;
+                    background:var(--surface); color:var(--ink3); border:1px solid var(--border);
+                    border-radius:var(--radius-sm); cursor:pointer; }
+  .toolseg button:hover { background:var(--header-bg); color:var(--ink); border-color:#C7D0DA; }
+  .toolseg button[aria-selected="true"] { background:var(--accent-soft); color:var(--accent);
+                    border-color:var(--accent-line); font-weight:600; }
+  .toolseg button:focus-visible { outline:none; box-shadow:var(--ring); }
+  .facts { display:flex; gap:8px; align-items:center; margin-top:20px; flex-wrap:wrap; }
+  .facts button { margin-top:0; }
+  .dirty { font-size:12px; color:var(--amber); font-weight:600; background:var(--amber-bg); border:1px solid var(--amber-line);
+           padding:2px 8px; border-radius:3px; }
+  .prov-cards { display:flex; gap:12px; flex-wrap:wrap; max-width:760px; margin-top:8px; }
+  .prov { flex:1; min-width:200px; text-align:left; background:var(--surface); border:1px solid var(--border); border-radius:var(--radius);
+          padding:14px 16px; display:flex; flex-direction:column; gap:6px; color:var(--ink); margin:0; height:auto; font-weight:400; }
+  .prov b { font-size:13px; font-weight:600; }
+  .prov span { font-size:12px; color:var(--ink3); line-height:1.5; }
+  /* These are selectable CARDS, not actions, so they must not inherit the
+     global `button:hover` accent FILL — that painted the whole card blue while
+     `.prov span` stayed --ink3, i.e. dark-blue body text on a blue field.
+     Hover is a lift + border tint; the accent fill stays reserved for the
+     one card that is actually selected. */
+  .prov { transition:border-color .14s ease, box-shadow .14s ease, background .14s ease; }
+  .prov:hover { background:var(--surface); border-color:var(--accent-line);
+                box-shadow:0 3px 10px rgba(16,24,40,.09); }
+  .prov:hover b { color:var(--accent-hover); }
+  .prov:active { box-shadow:0 1px 3px rgba(16,24,40,.10); }
+  .prov[aria-checked="true"] { border-color:var(--accent); background:var(--accent-soft);
+                               box-shadow:inset 0 0 0 1px var(--accent); }
+  .prov[aria-checked="true"]:hover { background:var(--accent-soft); border-color:var(--accent);
+                                     box-shadow:inset 0 0 0 1px var(--accent), 0 3px 10px rgba(16,24,40,.09); }
+  .prov[aria-checked="true"] b { color:var(--accent-hover); }
+  .prov:focus-visible { outline:none; box-shadow:var(--ring); border-color:var(--accent); }
+  /* Disabled while the workspace lacks permission — must not look clickable. */
+  .prov:disabled { opacity:.55; cursor:not-allowed; }
+  .prov:disabled:hover { background:var(--surface); border-color:var(--border); box-shadow:none; }
+  .prov:disabled:hover b { color:var(--ink); }
+  .radio { display:inline-flex; align-items:center; gap:7px; margin:4px 18px 4px 0; font-size:13px; color:var(--ink);
+           font-weight:500; text-transform:none; letter-spacing:0; }
+  .radio input { width:auto; height:auto; }
+  .adv { max-width:560px; margin:12px 0; }
+  .adv summary { cursor:pointer; font-size:13px; color:var(--accent); font-weight:500; }
+  .adv > div { margin-top:10px; }
+  .ai-status { border:1px solid var(--border); border-radius:var(--radius); box-shadow:var(--shadow); padding:14px 16px;
+               max-width:480px; font-size:13px; background:var(--surface); }
+  .ai-status .st-line { display:flex; align-items:center; gap:8px; font-weight:600; font-size:13px; }
+  .ai-status .st-meta { color:var(--ink3); font-size:12px; margin-top:6px; line-height:1.6; }
+  .ai-status .st-err { color:var(--red); font-size:12px; margin-top:8px; background:var(--red-bg);
+                       border:1px solid var(--red-line); border-radius:var(--radius-sm); padding:8px 10px; line-height:1.5; }
+  /* ---- outbound-email status card ----
+     Five short facts, not a data grid: the label column sizes to its content so
+     a value like "none" sits beside its label instead of across an empty span. */
+  .nf-status { max-width:520px; }
+  .nf-status .nf-head { display:flex; align-items:center; gap:10px; flex-wrap:wrap;
+                        padding-bottom:12px; border-bottom:1px solid var(--line); }
+  .nf-status .nf-head b { font-size:13px; font-weight:600; }
+  .nf-status dl { display:grid; grid-template-columns:auto 1fr; gap:7px 18px;
+                  margin:12px 0 0; align-items:baseline; }
+  .nf-status dt { color:var(--ink3); font-size:12px; font-weight:600; white-space:nowrap; }
+  .nf-status dd { margin:0; font-size:12.5px; color:var(--ink);
+                  overflow-wrap:anywhere; }
+  .nf-status dd.empty { color:var(--ink3); font-style:italic; }
+  .nf-status .nf-notes { margin:12px 0 0; padding:10px 12px; list-style:none;
+                         background:var(--amber-bg); border:1px solid var(--amber-line);
+                         border-radius:var(--radius-sm); color:var(--ink2);
+                         font-size:12px; line-height:1.55; }
+  .nf-status .nf-notes li + li { margin-top:6px; }
+  .nf-status .nf-notes li { position:relative; padding-left:16px; }
+  .nf-status .nf-notes li::before { content:''; position:absolute; left:4px; top:6px;
+                         width:4px; height:4px; border-radius:50%; background:var(--amber); }
+  @media (max-width:640px) {
+    .nf-status dl { grid-template-columns:1fr; gap:2px 0; }
+    .nf-status dd { margin-bottom:8px; }
+  }
+  .set-table-wrap { overflow-x:auto; border:1px solid var(--border); border-radius:var(--radius); }
+  .set-table-wrap table { font-size:13px; }
+  .rowmenu { position:relative; display:inline-block; }
+  .rowmenu .menu { top:26px; right:0; }
+  .mem-cell { display:flex; align-items:center; gap:10px; }
+  .mem-cell .avatar { width:30px; height:30px; border-radius:var(--radius-sm); background:var(--navy2); color:#7FA8E4;
+                      display:flex; align-items:center; justify-content:center; font-size:11px; font-weight:600;
+                      flex:none; overflow:hidden; }
+  .mem-cell .you { color:var(--muted); font-size:11px; }
+  .matrix td:not(:first-child), .matrix th:not(:first-child) { text-align:center; }
+  .matrix .y { color:var(--green); font-weight:600; }
+  .matrix .n { color:var(--muted2); }
+  @media (max-width:980px) {
+    .set-wrap { flex-direction:column; gap:0; }
+    .set-nav { display:none; }
+    #setNavSel { display:block; max-width:340px; }
+    .prov { min-width:100%; }
+  }
+  .acct-name { font-size:13px; font-weight:600; line-height:1.3; color:var(--ink);
+               overflow-wrap:anywhere; display:-webkit-box; -webkit-line-clamp:2;
+               -webkit-box-orient:vertical; overflow:hidden; }
+  .acct-email { font-size:12px; font-weight:400; color:var(--muted); margin-top:2px;
+                overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .menu .sep { height:1px; background:var(--line); margin:4px 0; }
+  .menu.acct button { display:flex; align-items:center; gap:10px; height:36px;
+                      padding:0 12px; font-size:13px; color:var(--ink2); border-radius:var(--radius-sm); }
+  .menu.acct button svg { width:16px; height:16px; stroke:currentColor; fill:none;
+                          stroke-width:1.75; flex:none; opacity:.72; }
+  .menu button.signout { color:var(--ink2); }
+  .menu button.signout:hover { background:var(--red-bg); color:var(--red); }
+  .conn { border:1px solid var(--border); box-shadow:var(--shadow); padding:16px; border-radius:var(--radius);
+          display:flex; flex-direction:column; transition:box-shadow .12s, border-color .12s; }
+  .conn:hover, .conn:focus-visible { border-color:var(--accent); box-shadow:0 2px 8px rgba(16,24,40,.08); }
+  .conn:focus-visible { outline:none; box-shadow:var(--ring); }
+  .conn .logo { width:40px; height:40px; }
+  .conn .foot { margin-top:auto; padding-top:12px; display:flex; align-items:center; gap:8px; font-size:12px; color:var(--ink3); }
+  .conn .foot .go { margin-left:auto; color:var(--accent); font-weight:500; font-size:12px; }
+  .tag.more { background:var(--line); color:var(--ink3); border-color:var(--border); }
+  .empty { background:var(--surface); border:1px dashed var(--border); border-radius:var(--radius); padding:28px; text-align:center; color:var(--ink3); font-size:13px; }
+  .empty b { display:block; font-size:15px; font-weight:600; color:var(--ink); margin-bottom:4px; }
+  /* connector detail drawer */
+  .modal-bg { justify-content:flex-end; align-items:stretch; padding:0; }
+  .modal { max-width:540px; width:540px; height:100%; border-radius:0; overflow-y:auto;
+           box-shadow:-12px 0 40px rgba(16,24,40,.25); animation:slidein .16s ease-out; }
+  @keyframes slidein { from { transform:translateX(30px); opacity:.6; } to { transform:none; opacity:1; } }
+  .drawer-meta { font-size:13px; color:var(--ink3); margin:10px 0 4px; line-height:1.7; }
+  .drawer-meta b { color:var(--ink); font-weight:600; }
+  /* ---- connector drawer layout ----
+     Header + scrolling body + pinned action footer, so the primary actions stay
+     reachable on a long field list instead of scrolling off the bottom. */
+  .modal.conn-drawer { display:flex; flex-direction:column; padding:0; }
+  .cd-head { flex:none; padding:20px 24px 16px; border-bottom:1px solid var(--line); }
+  .cd-body { flex:1; overflow-y:auto; padding:16px 24px 24px; }
+  .cd-foot { flex:none; border-top:1px solid var(--border); background:var(--surface);
+             padding:14px 24px; box-shadow:0 -4px 12px rgba(16,24,40,.04); }
+  .cd-title { display:flex; align-items:center; gap:14px; }
+  .cd-title h2 { font-size:18px; font-weight:600; letter-spacing:-.01em; margin:0; }
+  .cd-title .v { color:var(--muted); font-size:12px; margin-top:2px; }
+  /* status banner */
+  .cd-status { display:flex; align-items:flex-start; gap:8px; margin-top:14px; padding:9px 12px;
+               border-radius:var(--radius-sm); font-size:12.5px; line-height:1.45; }
+  .cd-status.ok  { background:var(--green-bg); border:1px solid var(--green-line); color:var(--green); }
+  .cd-status.dis { background:var(--header-bg); border:1px solid var(--border); color:var(--ink3); }
+  .cd-status b { font-weight:600; }
+  /* collapsible "about this connector" */
+  .cd-about { border:1px solid var(--border); border-radius:var(--radius); overflow:hidden; margin-bottom:20px; }
+  .cd-about > summary { display:flex; align-items:center; justify-content:space-between; gap:10px;
+                        padding:10px 14px; background:var(--header-bg); cursor:pointer;
+                        font-size:12px; font-weight:600; color:var(--ink2); list-style:none; }
+  .cd-about > summary::-webkit-details-marker { display:none; }
+  .cd-about > summary::after { content:'▾'; color:var(--muted); font-size:11px; transition:transform .15s; }
+  .cd-about[open] > summary::after { transform:rotate(180deg); }
+  .cd-about > summary:hover { background:var(--line); }
+  .cd-about .cd-about-in { padding:14px; border-top:1px solid var(--border); }
+  .cd-facts { display:grid; grid-template-columns:104px 1fr; row-gap:7px; column-gap:12px; font-size:12.5px; }
+  .cd-facts dt { color:var(--muted); font-weight:600; }
+  .cd-facts dd { color:var(--ink2); margin:0; }
+  /* field sections */
+  .cd-sec { font-size:11px; font-weight:600; letter-spacing:.06em; color:var(--accent);
+            text-transform:uppercase; margin:0 0 10px; }
+  .cd-sec + .cd-grid { margin-bottom:18px; }
+  .cd-grid { display:grid; grid-template-columns:1fr 1fr; gap:14px; }
+  .cd-grid .wide { grid-column:1 / -1; }
+  .cd-grid label { margin:0 0 6px; }
+  .cd-grid .fhint { font-size:11.5px; margin-top:5px; }
+  .cd-rule { height:1px; background:var(--line); margin:0 0 18px; }
+  .cd-lead { display:flex; align-items:baseline; justify-content:space-between; gap:12px; margin-bottom:2px; }
+  .cd-lead h3 { font-size:15px; font-weight:600; margin:0; }
+  .cd-lead .req-key { font-size:11.5px; color:var(--muted); }
+  .cd-note { font-size:12.5px; color:var(--ink3); margin-bottom:16px; line-height:1.5; }
+  /* footer actions */
+  .cd-acts { display:flex; gap:8px; }
+  .cd-acts button { margin-top:0; flex:1; white-space:nowrap; padding:0 10px; min-width:0; }
+  .cd-acts.primary-row button.wide2 { flex:1.6; }
+  .cd-acts.primary-row #closeModal { flex:0 0 auto; }
+  .cd-foot .savepw { display:flex; align-items:center; gap:7px; font-size:12.5px;
+                     color:var(--ink3); margin:0 0 12px; text-transform:none; letter-spacing:0; font-weight:400; }
+  .cd-foot .savepw input { width:auto; height:auto; }
+  @media (max-width:640px) { .cd-grid { grid-template-columns:1fr; } }
+  /* ---- manual review queue drawer ----
+     Reuses the conn-drawer skeleton (pinned head / scrolling body / pinned foot).
+     The drawer is a fixed 540px, so the row is a 2-line grid rather than a single
+     flex line: severity + object + code on line 1, message on line 2. A one-line
+     row forced the message into a 6-word column and pushed the run chip off the
+     right edge. */
+  .mq-sum { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:14px; }
+  .mq-sum .s { flex:1 1 0; min-width:96px; background:var(--header-bg); border:1px solid var(--border);
+               border-radius:var(--radius); padding:8px 10px; }
+  .mq-sum .s .n { font-size:18px; font-weight:600; font-family:var(--mono); letter-spacing:-.02em; color:var(--ink); }
+  .mq-sum .s .l { font-size:10px; color:var(--muted); text-transform:uppercase; font-weight:600; letter-spacing:.04em; }
+  .mq-grp { font-family:var(--mono); font-size:10px; font-weight:600; letter-spacing:.07em;
+            text-transform:uppercase; color:var(--muted); margin:14px 0 6px;
+            display:flex; align-items:center; gap:8px; }
+  /* Divider sits between the label and the trailing count, so the header reads as
+     one rule line rather than two floating fragments. */
+  .mq-grp > span:first-child { flex:none; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .mq-grp::before { content:''; order:1; flex:1; height:1px; background:var(--line); }
+  .mq-grp .mq-n { order:2; flex:none; letter-spacing:.04em; color:var(--ink3);
+                  background:var(--header-bg); border:1px solid var(--line);
+                  border-radius:999px; padding:2px 8px; }
+  .mq-grp .mq-n.t-bad { color:var(--red); background:var(--red-bg); border-color:var(--red-line); }
+  .mq-grp .mq-n.t-manual { color:var(--violet); background:var(--violet-bg); border-color:var(--violet-line); }
+  .mq-grp .mq-n.t-warn { color:var(--amber); background:var(--amber-bg); border-color:var(--amber-line); }
+  .mq-grp:first-child { margin-top:0; }
+  .mq-obj.mq-dim { color:var(--muted); font-weight:500; }
+  .mq-item { border:1px solid var(--border); border-radius:var(--radius); margin-bottom:6px;
+             background:var(--surface); overflow:hidden; transition:border-color .12s, box-shadow .12s; }
+  .mq-item:hover { border-color:#C3CCD8; box-shadow:var(--shadow); }
+  .mq-item[open] { border-color:var(--accent-line); box-shadow:var(--shadow); }
+  .mq-item > summary { list-style:none; cursor:pointer; padding:9px 12px; display:grid;
+                       grid-template-columns:auto 1fr auto; gap:3px 8px; align-items:start; }
+  /* Badge and object name sit on the first text line even when the message wraps. */
+  .mq-item > summary > .badge { grid-column:1; grid-row:1; align-self:center; }
+  .mq-item > summary::-webkit-details-marker { display:none; }
+  .mq-item > summary:hover { background:var(--header-bg); }
+  .mq-item > summary:focus-visible { outline:none; box-shadow:var(--ring); }
+  .mq-obj { font-size:13px; font-weight:600; color:var(--ink); min-width:0; grid-row:1;
+            overflow:hidden; text-overflow:ellipsis; white-space:nowrap; align-self:center; }
+  .mq-chev { color:var(--muted); font-size:10px; transition:transform .15s; justify-self:end;
+             grid-column:3; grid-row:1; align-self:start; margin-top:3px; }
+  .mq-item[open] .mq-chev { transform:rotate(180deg); }
+  /* Message spans the full row width on its own line — it is the part users read.
+     When there is no object name it IS the title, so it takes the ink weight. */
+  /* Stops before the chevron column (3) — spanning to -1 ran the text under it. */
+  .mq-msg { grid-column:1 / 3; min-width:0; font-size:12.5px; color:var(--ink3); line-height:1.45; }
+  /* No object name: the message moves up to line 1, stopping before the chevron
+     column so the two never overlap. `.lead` starts in column 2, leaving column 1
+     for the severity badge; `.full` also claims column 1 when no badge is shown. */
+  .mq-msg.lead { grid-column:2 / 3; grid-row:1; min-width:0; color:var(--ink2); align-self:center; }
+  .mq-msg.lead.full { grid-column:1 / 3; }
+  .mq-code { font-family:var(--mono); font-size:10.5px; color:var(--muted);
+             background:var(--line); border-radius:3px; padding:1px 5px; white-space:nowrap; }
+  .mq-body { padding:12px; border-top:1px solid var(--line); background:var(--header-bg); }
+  .mq-detail { font-family:var(--mono); font-size:11.5px; line-height:1.5; background:var(--navy); color:#C7D6E8;
+               border-radius:var(--radius-sm); padding:9px 11px; margin-bottom:10px;
+               white-space:pre-wrap; overflow-x:auto; }
+  .mq-fix { display:flex; gap:7px; font-size:12.5px; color:var(--ink2); line-height:1.5;
+            background:var(--accent-soft); border:1px solid var(--accent-line);
+            border-radius:var(--radius-sm); padding:8px 10px; margin-bottom:10px; }
+  .mq-fix b { color:var(--accent); font-weight:600; }
+  .mq-prov { border:1px solid var(--border); border-radius:var(--radius-sm); background:var(--surface); padding:9px 11px; }
+  .mq-prov .h { font-size:10px; font-weight:600; letter-spacing:.06em; text-transform:uppercase;
+                color:var(--muted); margin-bottom:6px; }
+  .mq-prov dl { display:grid; grid-template-columns:88px 1fr; row-gap:4px; column-gap:10px; margin:0; font-size:12px; }
+  .mq-prov dt { color:var(--muted); }
+  .mq-prov dd { margin:0; color:var(--ink2); min-width:0; overflow-wrap:anywhere; }
+  .mq-prov dd.mono { font-family:var(--mono); font-size:11px; }
+  .mq-acts { display:flex; gap:6px; flex-wrap:wrap; margin-top:10px; }
+  .mq-acts button { margin:0; padding:5px 11px; font-size:11.5px; border-radius:var(--radius-sm); }
+  /* ---- findings drawer ----
+     Severity is carried by a left rail + a small tag on each card, never by a
+     tinted card fill: a list where every row is a coloured block reads as noise.
+     MANUAL uses violet rather than red — it is work to schedule, not a failure,
+     and must not compete with the one ERROR that actually blocks the run. */
+  .fnd-head-wrap { padding:16px 18px 12px; }
+  .fnd-top { display:flex; align-items:center; gap:12px; }
+  .fnd-id { flex:1; min-width:0; }
+  .fnd-eyebrow { font-family:var(--mono); font-size:10px; letter-spacing:.07em;
+                 text-transform:uppercase; color:var(--muted); margin-bottom:3px;
+                 overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .fnd-head-wrap h2 { font-size:17px; font-weight:700; letter-spacing:-.015em;
+                      color:var(--ink); margin:0; line-height:1.2; }
+  .fnd-sum { font-size:12px; color:var(--ink3); line-height:1.5; margin-top:8px; }
+  .fnd-sum b { font-weight:600; color:var(--ink2); }
+  .fnd-bar { display:flex; gap:2px; margin-top:8px; height:3px; }
+  .fnd-bar i { border-radius:2px; min-width:8px; background:var(--muted); }
+  .fnd-bar i.t-bad { background:var(--red); }
+  .fnd-bar i.t-manual { background:var(--violet); }
+  .fnd-bar i.t-warn { background:var(--amber); }
+  .fnd-bar i.t-info { background:var(--accent-fill); }
+  /* Filter chips: colour lives in a 4px dot, not the chip fill. */
+  .fchips { display:flex; gap:5px; flex-wrap:wrap; margin-top:11px; }
+  .fchip { margin:0; height:24px; padding:0 9px; font-size:11px; font-weight:500;
+           border-radius:999px; cursor:pointer; background:var(--header-bg); color:var(--ink2);
+           border:1px solid var(--border); display:inline-flex; align-items:center; gap:5px;
+           line-height:1; transition:background .12s, color .12s, border-color .12s; }
+  .fchip .dot { width:4px; height:4px; border-radius:50%; flex:none; background:var(--muted); }
+  .fchip.t-bad .dot { background:var(--red); }
+  .fchip.t-manual .dot { background:var(--violet); }
+  .fchip.t-warn .dot { background:var(--amber); }
+  .fchip.t-info .dot { background:var(--accent-fill); }
+  .fchip .n { font-family:var(--mono); font-size:10px; font-weight:500; color:var(--muted);
+              font-variant-numeric:tabular-nums; }
+  .fchip:hover:not(.on) { border-color:#C3CCD8; background:var(--surface); }
+  .fchip.on { background:var(--ink); color:#fff; border-color:var(--ink); font-weight:600; }
+  .fchip.on .dot { display:none; }
+  .fchip.on .n { color:#fff; opacity:.7; }
+  .fchip:focus-visible { outline:none; box-shadow:var(--ring); }
+  /* Auto-fix is the one filled action in the drawer — it is the only control that
+     changes the conversion, so it gets the single accent fill. */
+  .fixbtn { margin:0; flex:none; height:30px; padding:0 11px; font-size:12px; font-weight:600;
+            border-radius:var(--radius-sm); background:var(--accent-fill); color:#fff;
+            border:1px solid var(--accent); display:inline-flex; align-items:center; gap:6px;
+            line-height:1; white-space:nowrap;
+            transition:background .12s, border-color .12s; }
+  .fixbtn svg { width:12px; height:12px; fill:currentColor; flex:none; }
+  .fixbtn .n { font-family:var(--mono); font-size:10.5px; font-weight:600;
+               background:rgba(255,255,255,.22); border-radius:999px; padding:1px 6px;
+               font-variant-numeric:tabular-nums; }
+  .fixbtn:hover:not(:disabled) { background:var(--accent-hover); border-color:var(--accent-hover); }
+  .fixbtn:disabled { background:var(--line); color:var(--muted); border-color:var(--border);
+                     box-shadow:none; }
+  .fixbtn:disabled .n { background:rgba(16,24,40,.08); }
+  /* ---- finding cards ---- */
+  .fnd-list { background:var(--bg); padding:12px 18px 18px; }
+  .fnd { position:relative; background:var(--surface); border:1px solid var(--border);
+         border-left:2px solid var(--muted); border-radius:var(--radius-sm);
+         margin-bottom:6px; overflow:hidden; transition:box-shadow .12s, border-color .12s; }
+  .fnd.t-bad { border-left-color:var(--red); }
+  .fnd.t-manual { border-left-color:var(--violet); }
+  .fnd.t-warn { border-left-color:var(--amber); }
+  .fnd.t-info { border-left-color:var(--accent); }
+  .fnd:hover { box-shadow:var(--shadow); }
+  .fnd[open] { box-shadow:0 2px 8px rgba(16,24,40,.07); }
+  .fnd > summary { list-style:none; cursor:pointer; padding:9px 11px; display:grid;
+                   grid-template-columns:auto 1fr auto; gap:3px 9px; align-items:start; }
+  .fnd > summary::-webkit-details-marker { display:none; }
+  .fnd > summary:hover { background:var(--header-bg); }
+  .fnd > summary:focus-visible { outline:none; box-shadow:var(--ring); }
+  .fnd-sev { grid-column:1; grid-row:1; font-family:var(--mono); font-size:8.5px; font-weight:700;
+             letter-spacing:.06em; padding:3px 5px; border-radius:3px; margin-top:1px;
+             background:var(--line); color:var(--ink3); white-space:nowrap; }
+  .fnd.t-bad .fnd-sev { background:var(--red-bg); color:var(--red); }
+  .fnd.t-manual .fnd-sev { background:var(--violet-bg); color:var(--violet); }
+  .fnd.t-warn .fnd-sev { background:var(--amber-bg); color:var(--amber); }
+  .fnd.t-info .fnd-sev { background:var(--accent-soft); color:var(--accent); }
+  /* Headline is clamped to 2 lines: a 540px drawer turns a long message into a
+     3-4 line block that dwarfs the row it belongs to. The full text stays
+     available via the title attribute and the expanded body. */
+  .fnd-head { grid-column:2; grid-row:1; min-width:0; font-size:12.5px; font-weight:600;
+              color:var(--ink); line-height:1.4; letter-spacing:-.005em;
+              display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical;
+              overflow:hidden; }
+  .fnd[open] .fnd-head { -webkit-line-clamp:unset; }
+  .fnd-chev { grid-column:3; grid-row:1; color:var(--muted); font-size:9px;
+              transition:transform .15s; margin-top:3px; }
+  .fnd[open] .fnd-chev { transform:rotate(180deg); }
+  .fnd-meta { grid-column:2 / 4; grid-row:2; display:flex; align-items:center; gap:6px;
+              flex-wrap:wrap; min-width:0; }
+  .fnd-obj { font-family:var(--mono); font-size:10.5px; color:var(--ink3); min-width:0;
+             max-width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .fnd-code { font-family:var(--mono); font-size:9px; color:var(--muted);
+              background:var(--header-bg); border:1px solid var(--line);
+              border-radius:3px; padding:1px 5px; white-space:nowrap; }
+  .fnd-n { font-size:10px; color:var(--muted); white-space:nowrap; }
+  .fnd-body { padding:0 11px 11px; }
+  /* Code excerpt: gutter numbers are positions within the excerpt, not the file. */
+  .fnd-code-block { margin:0 0 9px; background:var(--navy); border-radius:var(--radius-sm);
+                    padding:9px 0; overflow-x:auto; font-family:var(--mono);
+                    font-size:10.5px; line-height:1.6; color:#C7D6E8; }
+  .fnd-code-block .ln { display:block; white-space:pre; padding:0 11px 0 0; }
+  .fnd-code-block .ln i { display:inline-block; width:26px; padding-right:11px;
+                          text-align:right; color:#5A6B80; font-style:normal;
+                          user-select:none; }
+  .fnd-occ { list-style:none; margin:0 0 9px; padding:0; border:1px solid var(--line);
+             border-radius:var(--radius-sm); overflow:hidden; }
+  .fnd-occ li { display:flex; align-items:baseline; gap:7px; padding:6px 9px;
+                border-bottom:1px solid var(--line); min-width:0; }
+  .fnd-occ li:last-child { border-bottom:none; }
+  .fnd-occ li:nth-child(even) { background:var(--header-bg); }
+  .fnd-occ .ix { font-family:var(--mono); font-size:10px; color:var(--muted); flex:none;
+                 font-variant-numeric:tabular-nums; }
+  .fnd-occ .sn { font-family:var(--mono); font-size:10.5px; color:var(--ink2); min-width:0;
+                 overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .fnd-fix { display:flex; gap:8px; align-items:baseline; background:var(--accent-soft);
+             border-left:2px solid var(--accent); border-radius:0 3px 3px 0;
+             padding:8px 10px; font-size:11.5px; color:var(--ink2); line-height:1.5; }
+  .fnd-fix .k { font-family:var(--mono); font-size:8.5px; font-weight:700; letter-spacing:.06em;
+                color:var(--accent); flex:none; }
+  .fnd-acts { display:flex; gap:6px; flex-wrap:wrap; margin-top:9px; }
+  .fnd-acts button { margin:0; height:26px; padding:0 10px; font-size:11px;
+                     border-radius:var(--radius-sm); }
+  /* Manual-review rows omit the severity tag when the group header already states it,
+     so headline + meta reclaim column 1 rather than leaving a dead indent. */
+  .fnd-head.nosev, .fnd-meta.nosev { grid-column:1 / 3; }
+  /* provenance block inside a manual-review card */
+  .mq-prov { margin-top:9px; border-top:1px solid var(--line); padding-top:9px; }
+  .mq-prov .h { font-family:var(--mono); font-size:8.5px; font-weight:700; letter-spacing:.06em;
+                text-transform:uppercase; color:var(--muted); margin-bottom:5px; }
+  .mq-prov dl { display:grid; grid-template-columns:auto 1fr; gap:2px 10px; margin:0;
+                font-size:11px; }
+  .mq-prov dt { color:var(--muted); white-space:nowrap; }
+  .mq-prov dd { margin:0; color:var(--ink2); min-width:0; overflow-wrap:anywhere; }
+  .mq-prov dd.mono { font-family:var(--mono); font-size:10px; }
+  /* ---- job detail drawer ---- */
+  .jd-meta { display:grid; grid-template-columns:auto 1fr; gap:5px 14px; margin:0 0 16px;
+             font-size:12px; }
+  .jd-meta dt { color:var(--muted); white-space:nowrap; }
+  .jd-meta dd { margin:0; color:var(--ink2); min-width:0; overflow-wrap:anywhere; }
+  .jd-meta dd.mono { font-family:var(--mono); font-size:11px; color:var(--ink); }
+  .jd-sec { font-family:var(--mono); font-size:9px; font-weight:700; letter-spacing:.07em;
+            text-transform:uppercase; color:var(--muted); margin:0 0 7px;
+            display:flex; align-items:center; gap:7px; }
+  .jd-sec::after { content:''; flex:1; height:1px; background:var(--line); }
+  .jd-sec .c { order:1; font-size:9px; color:var(--ink3); background:var(--header-bg);
+               border:1px solid var(--line); border-radius:999px; padding:1px 7px; }
+  .jd-reports { display:flex; flex-wrap:wrap; gap:5px; margin-bottom:16px; }
+  .jd-rep { font-size:11.5px; color:var(--accent); text-decoration:none;
+            background:var(--accent-soft); border:1px solid var(--accent-line);
+            border-radius:var(--radius-sm); padding:4px 9px; }
+  .jd-rep:hover { background:#E1EBF9; }
+  .jd-none { font-size:11.5px; color:var(--muted); }
+  /* The artifact list is the reason this drawer used to scroll sideways: the file
+     name identifies the artifact, so it stays legible while the directory prefix
+     shrinks and truncates. Nothing overflows the 540px column. */
+  .jd-arts { border:1px solid var(--line); border-radius:var(--radius-sm); overflow:hidden; }
+  .jd-art { display:flex; align-items:baseline; gap:10px; padding:6px 9px; min-width:0;
+            border-bottom:1px solid var(--line); text-decoration:none; }
+  .jd-art:last-child { border-bottom:none; }
+  .jd-art:nth-child(even) { background:var(--header-bg); }
+  .jd-art:hover { background:var(--accent-soft); }
+  /* The file name is the identifying part, so it never truncates; the directory
+     prefix shrinks and ellipsises ahead of it. Both sit in one nowrap line, so a
+     long path clips instead of widening the drawer. */
+  .jd-art .p { flex:1; min-width:0; display:flex; align-items:baseline;
+               font-family:var(--mono); font-size:10.5px; white-space:nowrap; }
+  .jd-art .dir { color:var(--muted); min-width:0; flex:0 1 auto;
+                 overflow:hidden; text-overflow:ellipsis; }
+  .jd-art .f { color:var(--accent); flex:0 0 auto; }
+  .jd-art .sz { flex:none; font-family:var(--mono); font-size:10px; color:var(--muted);
+                font-variant-numeric:tabular-nums; }
+  .jd-actions { display:flex; align-items:center; gap:12px; flex-wrap:wrap; }
+  .jd-actions .linkbtn { font-size:12px; font-weight:600; color:var(--accent);
+                         cursor:pointer; text-decoration:none; }
+  .jd-actions .linkbtn:hover { text-decoration:underline; }
+  /* Scoped to footers that carry a .jd-actions link group — the connector drawer's
+     .cd-acts still stretches its buttons edge-to-edge (rule above), which is right
+     for a Save/Test pair but wrong for links + a single Close. */
+  .cd-acts:has(.jd-actions) { align-items:center; justify-content:space-between; }
+  .cd-acts:has(.jd-actions) button { flex:0 0 auto; padding:0 14px; }
+  /* Findings footer: two peer actions sit at the edges rather than each claiming
+     half the width, which is what the default flex:1 would do. */
+  .cd-acts.fnd-foot { justify-content:space-between; }
+  .cd-acts.fnd-foot button { flex:0 0 auto; padding:0 14px; }
+  /* ---- dialogs (replace native confirm/alert/prompt) ----
+     .modal-bg above is repurposed as a right-side drawer, so dialogs get
+     their own centered overlay rather than overriding those rules back. */
+  .dlg-bg { display:none; position:fixed; inset:0; background:rgba(16,24,40,.55); z-index:70;
+            align-items:center; justify-content:center; padding:24px; }
+  .dlg-bg.open { display:flex; }
+  .dlg { background:var(--surface); border:1px solid var(--border); border-radius:var(--radius);
+         box-shadow:0 12px 32px rgba(16,24,40,.18); width:100%; max-width:440px;
+         padding:20px; animation:dlgin .12s ease-out; }
+  @keyframes dlgin { from { transform:translateY(-4px); opacity:.7; } to { transform:none; opacity:1; } }
+  .dlg h4 { font-size:15px; font-weight:600; color:var(--ink); margin:0 0 6px; }
+  .dlg .dlg-msg { font-size:13px; color:var(--ink3); line-height:1.6; white-space:pre-wrap; overflow-wrap:anywhere; }
+  .dlg .dlg-msg b { color:var(--ink); font-weight:600; }
+  .dlg input[type=text] { margin-top:12px; }
+  .dlg .dlg-acts { display:flex; justify-content:flex-end; gap:8px; margin-top:20px; }
+  .dlg .dlg-acts button { margin-top:0; }
+  .dlg .dlg-acts button.danger { background:var(--red); border-color:var(--red); color:#fff; }
+  .dlg .dlg-acts button.danger:hover { background:#962014; border-color:#962014; }
+  .dlg .dlg-ic { display:flex; align-items:center; justify-content:center; width:32px; height:32px;
+                 border-radius:var(--radius-sm); flex:none; }
+  .dlg .dlg-ic svg { width:18px; height:18px; stroke:currentColor; fill:none; stroke-width:1.9; }
+  .dlg .dlg-ic.warn { background:var(--amber-bg); color:var(--amber); border:1px solid var(--amber-line); }
+  .dlg .dlg-ic.bad  { background:var(--red-bg);   color:var(--red);   border:1px solid var(--red-line); }
+  .dlg .dlg-ic.info { background:var(--accent-soft); color:var(--accent); border:1px solid var(--accent-line); }
+  .dlg .dlg-hd { display:flex; align-items:flex-start; gap:12px; }
+  @media (max-width:640px) { .modal { width:100%; max-width:none; } .mkt-actions input[type=search] { width:100%; } }

@@ -245,7 +245,8 @@ def test_requester_cannot_claim_own_request(solo):
 
 
 def test_console_has_a_shared_approval_queue_ui():
-    console = (REPO / "web" / "templates" / "console.html").read_text(encoding="utf-8")
+    console = ((REPO / "web" / "templates" / "console.html").read_text(encoding="utf-8")
+               + (REPO / "web" / "static" / "js" / "console.js").read_text(encoding="utf-8"))
     assert 'id="agentApprovalsPanel"' in console
     assert "loadApprovalQueue" in console
     assert "no_eligible_approver" in console or "approvalEscalationBanner" in console

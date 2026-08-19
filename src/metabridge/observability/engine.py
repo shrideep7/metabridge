@@ -323,7 +323,7 @@ def _mon_agent_health(runs: List[dict]) -> dict:
             "denied": denied, "needs_approval": needs_appr,
             "mean_confidence_pct": round(mean_conf * 100), "agents": agents,
             "headline": "%d agent run(s), %d action(s); mean confidence "
-                        "%.0f%%, %d failed, %d awaiting approval."
+                        "%.0f%%, %d failed, %d action(s) needed approval."
                         % (len(runs), total, mean_conf * 100, failed,
                            needs_appr)}
 
