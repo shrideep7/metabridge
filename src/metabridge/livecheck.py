@@ -3252,8 +3252,14 @@ def _teradata_introspect(params: Dict[str, str],
     Snowflake/PostgreSQL introspects so the console and scaffold consume it
     unchanged. Each object class is fetched independently and reports its own
     capability status, so one denied view never costs the whole inventory."""
-    scope = (params.get("schema") or "").strip()
     login_db = (params.get("database") or "").strip()
+    # On Teradata a DATABASE *is* a schema — there is no level between the two —
+    # so the `database` field names a scope, not merely a login default. It is
+    # also the REQUIRED field on the connection form, so reading only `schema`
+    # for scoping meant someone who typed BANKING_DB, as the form asks, still
+    # got every user database on the instance inventoried. `schema` still wins
+    # when both are set: it is the narrower thing the user typed last.
+    scope = (params.get("schema") or "").strip() or login_db
     started = time.time()
     try:
         conn = _teradata_connect(params)

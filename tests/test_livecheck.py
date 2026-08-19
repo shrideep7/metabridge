@@ -2072,3 +2072,77 @@ def test_with_body_withholds_the_body_when_it_cannot_be_scanned(monkeypatch):
     assert o["definition"] == ""
     assert o["secret_findings"][0]["type"] == "unscanned"
     assert "hunter2secret" not in json.dumps(o)
+
+
+# ---------------------------------------------------------------------------
+# Teradata: a DATABASE is a schema, so the `database` field is a scope
+# ---------------------------------------------------------------------------
+
+class _TdCursor:
+    """Records every statement and answers nothing. Each object class is
+    fetched through `_guarded`, so an empty answer is a normal outcome and the
+    inventory still completes — which is all this needs to inspect the SQL."""
+
+    def __init__(self, seen):
+        self.seen = seen
+
+    def execute(self, sql, *a, **k):
+        self.seen.append(" ".join(str(sql).split()))
+
+    def fetchall(self):
+        return []
+
+    def fetchone(self):
+        return None
+
+    def close(self):
+        pass
+
+
+class _TdConn:
+    def __init__(self):
+        self.seen = []
+
+    def cursor(self):
+        return _TdCursor(self.seen)
+
+    def close(self):
+        pass
+
+
+def test_teradata_database_field_scopes_the_scan(monkeypatch):
+    """A Teradata DATABASE *is* a schema — there is no level between them — and
+    `database` is the REQUIRED field on the connection form. Scoping read only
+    `schema`, so someone who typed BANKING_DB where the form asked still had
+    every user database on the instance inventoried."""
+    conn = _TdConn()
+    monkeypatch.setattr(livecheck, "_teradata_connect", lambda p: conn)
+    r = livecheck.introspect("teradata", {"host": "h", "user": "u",
+                                          "password": "p",
+                                          "database": "BANKING_DB"})
+    assert r["ok"] is True
+    tables_sql = next(s for s in conn.seen if "DBC.TABLESV" in s.upper())
+    assert "UPPER(DATABASENAME) = UPPER('BANKING_DB')" in tables_sql.upper()
+    # and the unscoped enumeration must not run at all
+    assert not any("DBC.DATABASESV" in s.upper() for s in conn.seen)
+
+
+def test_teradata_without_a_database_still_enumerates_user_databases(
+        monkeypatch):
+    """The unscoped path is unchanged: with nothing named, every non-system
+    database is inventoried."""
+    conn = _TdConn()
+    monkeypatch.setattr(livecheck, "_teradata_connect", lambda p: conn)
+    livecheck.introspect("teradata", {"host": "h", "user": "u",
+                                      "password": "p"})
+    assert any("DBC.DATABASESV" in s.upper() for s in conn.seen)
+
+
+def test_teradata_schema_still_wins_when_both_are_given(monkeypatch):
+    conn = _TdConn()
+    monkeypatch.setattr(livecheck, "_teradata_connect", lambda p: conn)
+    livecheck.introspect("teradata", {"host": "h", "user": "u", "password": "p",
+                                      "database": "BANKING_DB",
+                                      "schema": "EDW_FACT"})
+    tables_sql = next(s for s in conn.seen if "DBC.TABLESV" in s.upper())
+    assert "UPPER('EDW_FACT')" in tables_sql.upper()
