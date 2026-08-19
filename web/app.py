@@ -5474,7 +5474,7 @@ def v1_connections_list():
 # connector that reports fewer classes needs no change here.
 _OTHER_OBJECT_COUNTS = (
     "materialized_views", "dynamic_tables", "sequences", "file_formats",
-    "functions", "procedures", "streams", "tasks", "pipes", "stages",
+    "functions", "procedures", "macros", "streams", "tasks", "pipes", "stages",
     "volumes", "masking_policies", "row_access_policies", "tags", "shares")
 
 

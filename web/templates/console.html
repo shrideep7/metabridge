@@ -9827,6 +9827,9 @@ function estateAssets(d) {
   push(d.file_formats, 'File format');
   push(d.functions, 'Function');
   push(d.procedures, 'Stored procedure');
+  // A Teradata MACRO is a parameterized SQL statement — real logic,
+  // returned by the backend and rendered by nothing until now.
+  push(d.macros, 'Macro');
   push(d.streams, 'Stream');
   push(d.tasks, 'Task');
   push(d.pipes, 'Pipe');

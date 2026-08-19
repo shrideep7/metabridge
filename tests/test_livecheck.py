@@ -1916,6 +1916,13 @@ def test_every_object_class_the_backend_returns_is_rendered(ora_driver,
             assert rendered, ("%s is returned by %s but never rendered"
                               % (key, report["connector"]))
 
+    # Connectors with no fake driver in this suite return classes of their own,
+    # which the live-report walk above cannot reach. `macros` is why this list
+    # exists: Teradata returned them, the console registered nothing, and every
+    # macro in a real estate was invisible while the object count looked right.
+    for extra in ("macros",):
+        assert "push(d.%s," % extra in html, extra
+
 
 # ---------------------------------------------------------------------------
 # Level 1: the database picker (a connection saved without a database)
