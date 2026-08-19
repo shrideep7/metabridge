@@ -1802,6 +1802,11 @@ async function loadMembers() {
     // owner accounts; the sole owner can never be demoted or removed
     const canMutate = !soleOwner && (u.role !== 'owner' || myPerms._role === 'owner');
     const canReset = canResetFor(u);
+    const isDeact = u.status === 'deactivated';
+    const canDeact = !isMe && u.role !== 'owner' && myPerms._role === 'owner';
+    const stBadge = isDeact
+      ? '<span class="stat"><i style="background:var(--red)"></i>Deactivated</span>'
+      : '<span class="stat"><i style="background:var(--green)"></i>Active</span>';
     return '<tr data-email="' + esc(u.email) + '">'
       + '<td><div class="mem-cell"><span class="avatar" data-avatar></span>'
       + '<span><b>' + esc(getUserDisplayName(u)) + '</b>'
@@ -1809,13 +1814,16 @@ async function loadMembers() {
       + '<td style="color:var(--ink3)">' + esc(u.email) + '</td>'
       + '<td>' + badge(ROLE_LABEL[u.role] || u.role, roleColor[u.role] || 'var(--ink3)') + '</td>'
       + '<td style="color:var(--muted)">' + esc((u.created || '').slice(0, 10)) + '</td>'
-      + '<td><span class="stat"><i style="background:var(--green)"></i>Active</span></td>'
-      + '<td style="text-align:right">' + (isMe || !(canMutate || canReset) ? ''
+      + '<td>' + stBadge + '</td>'
+      + '<td style="text-align:right">' + (isMe || !(canMutate || canReset || canDeact) ? ''
           : '<div class="rowmenu"><button class="kebab" style="position:static" '
             + 'aria-haspopup="menu" aria-label="Member actions">&#8942;</button>'
             + '<div class="menu" role="menu">'
             + (canMutate ? '<button data-act="role" role="menuitem">Change role…</button>' : '')
             + (canReset ? '<button data-act="reset" role="menuitem">Send reset link…</button>' : '')
+            + (canDeact ? (isDeact
+                ? '<button data-act="activate" role="menuitem">Reactivate member</button>'
+                : '<button data-act="deactivate" class="signout" role="menuitem">Deactivate member</button>') : '')
             + (canMutate ? '<button data-act="rm" class="signout" role="menuitem">Remove from workspace</button>' : '')
             + '</div></div>')
       + '</td></tr>';
@@ -1842,6 +1850,8 @@ async function loadMembers() {
         const u = d.users.find(x => x.email === email);
         if (b.dataset.act === 'role') openRoleDialog(u);
         else if (b.dataset.act === 'reset') openResetLinkDialog(u);
+        else if (b.dataset.act === 'deactivate') openDeactivateMemberDialog(u);
+        else if (b.dataset.act === 'activate') openActivateMemberDialog(u);
         else openRemoveMemberDialog(u);
       });
     });
@@ -1932,6 +1942,42 @@ function openRemoveMemberDialog(u) {
       await api('/api/users/' + encodeURIComponent(u.email), {method: 'DELETE'});
       closeModal(); loadMembers();
     } catch (e) { $('#rmErr2').textContent = e.message; $('#rmErr2').style.display = 'block'; }
+  };
+}
+function openDeactivateMemberDialog(u) {
+  $('#modalBody').innerHTML = '<h3 style="margin:0 0 6px">Deactivate '
+    + esc(getUserDisplayName(u)) + '?</h3>'
+    + '<div style="color:var(--ink3);font-size:13.5px">This member will be unable to log in or access '
+    + esc(wsNameCache || 'this workspace') + ' until reactivated.</div>'
+    + '<div class="err" id="deactErr"></div>'
+    + '<div style="display:flex;gap:8px;justify-content:flex-end;margin-top:18px">'
+    + '<button class="secondary" id="deactCancel">Cancel</button>'
+    + '<button id="deactGo" style="background:var(--red)">Deactivate member</button></div>';
+  $('#modalBody').className = 'modal'; $('#modalBg').style.display = 'flex';
+  $('#deactCancel').onclick = closeModal;
+  $('#deactGo').onclick = async () => {
+    try {
+      await api('/api/users/' + encodeURIComponent(u.email) + '/deactivate', {method: 'POST'});
+      closeModal(); loadMembers();
+    } catch (e) { $('#deactErr').textContent = e.message; $('#deactErr').style.display = 'block'; }
+  };
+}
+function openActivateMemberDialog(u) {
+  $('#modalBody').innerHTML = '<h3 style="margin:0 0 6px">Reactivate '
+    + esc(getUserDisplayName(u)) + '?</h3>'
+    + '<div style="color:var(--ink3);font-size:13.5px">Restores access to '
+    + esc(wsNameCache || 'this workspace') + ' for this member.</div>'
+    + '<div class="err" id="actErr"></div>'
+    + '<div style="display:flex;gap:8px;justify-content:flex-end;margin-top:18px">'
+    + '<button class="secondary" id="actCancel">Cancel</button>'
+    + '<button id="actGo" style="background:var(--green)">Reactivate member</button></div>';
+  $('#modalBody').className = 'modal'; $('#modalBg').style.display = 'flex';
+  $('#actCancel').onclick = closeModal;
+  $('#actGo').onclick = async () => {
+    try {
+      await api('/api/users/' + encodeURIComponent(u.email) + '/activate', {method: 'POST'});
+      closeModal(); loadMembers();
+    } catch (e) { $('#actErr').textContent = e.message; $('#actErr').style.display = 'block'; }
   };
 }
 $('#memAddBtn').onclick = () => {
