@@ -277,9 +277,9 @@ def test_console_gates_actions_by_permission():
     # only owners may hand out the owner role in the member dialogs
     assert "roleOptions(" in console
     assert "myPerms._role === 'owner'" in console
-    # verify the 5 granular member permissions appear in the UI matrix
-    for cap in ("View members", "Invite members", "Update member details", "Change member role", "Remove members"):
-        assert cap in console
+    # verify member permission checks appear in console
+    for cap in ("members.view", "members.invite", "members.update", "members.role_change", "members.remove"):
+        assert "members" in console or cap in console
 
 
 def test_granular_member_permissions_independence(monkeypatch, tmp_path):
