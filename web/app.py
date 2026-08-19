@@ -257,12 +257,28 @@ def _at(path: str, prefix: str) -> bool:
     return path == prefix or path.startswith(prefix + "/")
 
 
-def _required_permission(path: str, method: str) -> str:
+def _required_permission(path: str, method: str, perms: Optional[set] = None) -> str:
     """Map an API route to the RBAC permission it needs."""
     if _at(path, "/api/v1/me"):
         return "jobs:read"   # self-service profile: any authenticated role
     if _at(path, "/api/users"):
-        return "users:manage"
+        if "/deactivate" in path:
+            return "members.deactivate"
+        if "/activate" in path:
+            return "members.activate"
+        if "/reset-link" in path:
+            return "members.update"
+        if method == "GET":
+            return "members.view"
+        if method == "POST":
+            return "members.invite"
+        if method in ("PATCH", "PUT"):
+            if perms and "members.role_change" in perms and "members.update" not in perms:
+                return "members.role_change"
+            return "members.update"
+        if method == "DELETE":
+            return "members.remove"
+        return "members.view"
     if _at(path, "/api/settings"):
         return "jobs:read" if method == "GET" else "settings:manage"
     # approving/claiming a governed agent action needs a DISTINCT permission
@@ -301,7 +317,17 @@ def _required_permission(path: str, method: str) -> str:
             _at(path, "/api/workspaces") and method == "GET"):
         return "jobs:read"
     if _at(path, "/api/workspaces") and "/members" in path:
-        return "users:manage"
+        if method == "GET":
+            return "members.view"
+        if method == "POST":
+            return "members.invite"
+        if method in ("PATCH", "PUT"):
+            if perms and "members.role_change" in perms and "members.update" not in perms:
+                return "members.role_change"
+            return "members.update"
+        if method == "DELETE":
+            return "members.remove"
+        return "members.view"
     if _at(path, "/api/workspaces"):
         return "jobs:read"          # create/rename: handler enforces admin
     if method in ("POST", "PUT", "PATCH"):
@@ -349,7 +375,7 @@ async def access_guard(request: Request, call_next):
                 return JSONResponse({"detail": "Authentication required"},
                                     status_code=401)
             if path.startswith("/api"):
-                needed = _required_permission(path, request.method)
+                needed = _required_permission(path, request.method, perms)
                 if "*" not in perms and needed not in perms:
                     who = (user or {}).get("role", "api key")
                     return JSONResponse(
@@ -484,7 +510,7 @@ def _session_response(user: dict, workspace: str = "") -> JSONResponse:
 async def auth_signup(request: Request):
     body = await request.json()
     if AUTH.has_users() and not has_permission(_request_user(request),
-                                               "users:manage"):
+                                               "members.invite"):
         raise HTTPException(403, "This instance already has an owner — ask "
                             "an admin to add you from Settings, or sign in.")
     first = not AUTH.has_users()
@@ -510,6 +536,8 @@ async def auth_login(request: Request):
                             str(body.get("password", "")))
     if user is None:
         raise HTTPException(401, "Incorrect email or password")
+    if user.get("status") == "deactivated":
+        raise HTTPException(403, "Account deactivated. Your account has been deactivated by the workspace owner. Please contact your workspace owner for access.")
     return _session_response(user, _default_workspace_for(user["email"]))
 
 
@@ -1018,9 +1046,16 @@ def _workspace_members(wsid: str) -> list:
 @app.get("/api/users")
 def list_users(request: Request):
     """Members of the ACTIVE workspace with their per-workspace role."""
-    wsid = (_request_user(request) or {}).get("workspace", "")
-    return {"users": _workspace_members(wsid), "roles": [
-        {"role": r, "description": ROLE_DESCRIPTIONS[r]} for r in ROLES]}
+    user = _request_user(request)
+    if user and not has_permission(user, "members.view"):
+        raise HTTPException(403, "Your role does not allow viewing members (needs members.view)")
+    wsid = (user or {}).get("workspace", "")
+    return JSONResponse(
+        content={"users": _workspace_members(wsid), "roles": [
+            {"role": r, "description": ROLE_DESCRIPTIONS[r]} for r in ROLES]},
+        headers={"Cache-Control": "no-cache, no-store, must-revalidate, max-age=0",
+                 "Pragma": "no-cache"}
+    )
 
 
 def _caller_is_owner(request: Request) -> bool:
@@ -1044,6 +1079,9 @@ async def create_user(request: Request):
     account if the email is new; an existing account is simply granted
     membership (Databricks-style: identity is account-level, access is
     per-workspace)."""
+    user = _request_user(request)
+    if user and not has_permission(user, "members.invite"):
+        raise HTTPException(403, "Your role does not allow inviting members (needs members.invite)")
     body = await _json_object(request)
     role = normalize_role(str(body.get("role", "engineer")))
     email = str(body.get("email", "")).strip().lower()
@@ -1095,35 +1133,55 @@ async def create_user(request: Request):
 async def change_role(email: str, request: Request):
     body = await _json_object(request)
     email_norm = email.strip().lower()
-    new_role = normalize_role(str(body.get("role", "")))
     me_user = _request_user(request)
     wsid = (me_user or {}).get("workspace", "")
-    if me_user and me_user["email"] == email_norm and \
-            new_role != me_user["role"]:
-        raise HTTPException(422, "You cannot change your own role")
     cur = WS.member_role(wsid, email_norm)
     if cur is None:
         raise HTTPException(422, "Not a member of this workspace")
-    if new_role == "owner" or normalize_role(cur) == "owner":
-        _require_owner_for_owner_role(
-            request, "Only a workspace owner can grant or revoke the owner "
-                     "role")
-    try:
-        WS.set_role(wsid, email_norm, new_role)
-    except WorkspaceError as e:
-        raise HTTPException(422, str(e))
+
+    has_role_field = "role" in body
+    has_details_field = any(k in body for k in ("name", "company"))
+
+    if has_role_field:
+        if me_user and not has_permission(me_user, "members.role_change"):
+            raise HTTPException(403, "Your role does not allow changing member roles (needs members.role_change)")
+        new_role = normalize_role(str(body.get("role", "")))
+        if me_user and me_user["email"] == email_norm and \
+                new_role != me_user["role"]:
+            raise HTTPException(422, "You cannot change your own role")
+        if new_role == "owner" or normalize_role(cur) == "owner":
+            _require_owner_for_owner_role(
+                request, "Only a workspace owner can grant or revoke the owner "
+                         "role")
+        try:
+            WS.set_role(wsid, email_norm, new_role)
+        except WorkspaceError as e:
+            raise HTTPException(422, str(e))
+
+    if has_details_field:
+        if me_user and not has_permission(me_user, "members.update"):
+            raise HTTPException(403, "Your role does not allow updating member details (needs members.update)")
+        if "name" in body:
+            AUTH.set_name(email_norm, str(body.get("name", "")))
+
+    if not has_role_field and not has_details_field:
+        # If neither role nor details are passed in body, fallback check
+        if me_user and not (has_permission(me_user, "members.role_change") or has_permission(me_user, "members.update")):
+            raise HTTPException(403, "Your role does not allow updating members")
+
     acct = next((u for u in AUTH.list_users() if u["email"] == email_norm),
                 {"email": email_norm, "name": email_norm})
-    if normalize_role(cur) != new_role:
+    curr_role = WS.member_role(wsid, email_norm) or cur
+    if has_role_field and normalize_role(cur) != normalize_role(curr_role):
         try:
             from metabridge import notify
             notify.role_changed(
-                email_norm, acct.get("name", ""), new_role,
+                email_norm, acct.get("name", ""), curr_role,
                 _actor_name(request),
                 login_url=_abs_url(request, "login", True), center=_nc())
         except Exception:                    # noqa: BLE001 - best-effort
             pass
-    return {**acct, "role": new_role}
+    return {**acct, "role": curr_role}
 
 
 @app.delete("/api/users/{email}")
@@ -1131,6 +1189,8 @@ async def delete_user(email: str, request: Request):
     email_norm = email.strip().lower()
     me_user = _request_user(request)
     wsid = (me_user or {}).get("workspace", "")
+    if me_user and not has_permission(me_user, "members.remove"):
+        raise HTTPException(403, "Your role does not allow removing members (needs members.remove)")
     if me_user and me_user["email"] == email_norm:
         raise HTTPException(422, "You cannot remove yourself from a workspace")
     cur = WS.member_role(wsid, email_norm)
@@ -1227,10 +1287,13 @@ async def workspaces_rename(wsid: str, request: Request):
 
 @app.post("/api/users/{email}/reset-link")
 async def mint_reset_link(email: str, request: Request):
-    """Mint a one-time password-reset link for a member (users:manage via
+    """Mint a one-time password-reset link for a member (members.update via
     the access middleware). This is the no-SMTP delivery path: the admin
     hands the link to the account holder out-of-band. The link works once
     and expires after 60 minutes; minting again replaces it."""
+    me_user = _request_user(request)
+    if me_user and not has_permission(me_user, "members.update"):
+        raise HTTPException(403, "Your role does not allow updating member credentials (needs members.update)")
     target = next((u for u in AUTH.list_users()
                    if u["email"] == email.strip().lower()), None)
     if target is not None and target["role"] == "owner":
@@ -1262,6 +1325,52 @@ async def mint_reset_link(email: str, request: Request):
             "reset_link": link, "emailed": emailed,
             "expires_in_minutes": RESET_TOKEN_TTL_SECONDS // 60,
             "one_time": True}
+
+
+@app.post("/api/users/{email}/deactivate")
+async def deactivate_user(email: str, request: Request):
+    email_norm = email.strip().lower()
+    me_user = _request_user(request)
+    wsid = (me_user or {}).get("workspace", "")
+    if me_user and not has_permission(me_user, "members.deactivate"):
+        raise HTTPException(403, "Only the workspace owner can deactivate members (needs members.deactivate)")
+    if me_user and me_user["email"] == email_norm:
+        raise HTTPException(422, "You cannot deactivate your own account")
+    cur = WS.member_role(wsid, email_norm)
+    if cur is None:
+        raise HTTPException(422, "Not a member of this workspace")
+    if normalize_role(cur) == "owner":
+        _require_owner_for_owner_role(
+            request, "Only a workspace owner can manage an owner account, and owner accounts cannot be deactivated")
+        raise HTTPException(422, "Owner accounts cannot be deactivated")
+    try:
+        acct = AUTH.set_status(email_norm, "deactivated")
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+    import logging
+    logger = logging.getLogger("metabridge.audit")
+    logger.info("Member deactivated: Actor=%s, Target=%s, Workspace=%s", _actor_name(request), email_norm, wsid)
+    return {**acct, "role": cur, "status": "deactivated"}
+
+
+@app.post("/api/users/{email}/activate")
+async def activate_user(email: str, request: Request):
+    email_norm = email.strip().lower()
+    me_user = _request_user(request)
+    wsid = (me_user or {}).get("workspace", "")
+    if me_user and not has_permission(me_user, "members.activate"):
+        raise HTTPException(403, "Only the workspace owner can activate members (needs members.activate)")
+    cur = WS.member_role(wsid, email_norm)
+    if cur is None:
+        raise HTTPException(422, "Not a member of this workspace")
+    try:
+        acct = AUTH.set_status(email_norm, "active")
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+    import logging
+    logger = logging.getLogger("metabridge.audit")
+    logger.info("Member activated: Actor=%s, Target=%s, Workspace=%s", _actor_name(request), email_norm, wsid)
+    return {**acct, "role": cur, "status": "active"}
 
 
 @app.get("/api/settings/ai")

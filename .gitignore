@@ -26,3 +26,20 @@ build/
 dist/
 # golden-file snapshots for the event-pipeline refactor (regenerate with tools/event_golden.py)
 .golden/
+
+# Automation Framework (QA only — not committed to repo)
+automation_framework/
+automation_framework.zip
+docs/AUTOMATION_COVERAGE_RECONCILIATION.md
+docs/UI_AUTOMATION_COVERAGE.md
+
+# IDE / agent config dirs
+.agents/
+.claude/
+
+# CI templates (untracked)
+.github/
+
+# Generated runtime outputs
+governance_out/
+scratch/
