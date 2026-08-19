@@ -830,3 +830,76 @@ END;"""
         encoding="utf-8")
     assert "did NOT parse" in md
     assert "REPLACE_REGEXPR" in md
+
+
+# ---------------------------------------------------------------------------
+# Teradata: a MACRO is transformation logic too
+# ---------------------------------------------------------------------------
+
+TD_MACRO = """REPLACE MACRO BANKING_DB.MAC_BUILD_SILVER AS (
+    DELETE FROM BANKING_DB.SILVER_ACCOUNTS;
+
+    INSERT INTO BANKING_DB.SILVER_ACCOUNTS (ACCOUNT_ID, BALANCE, STATUS)
+    SELECT ACCOUNT_ID, BALANCE,
+           CASE WHEN STATUS IS NULL THEN 'UNKNOWN' ELSE UPPER(STATUS) END
+    FROM BANKING_DB.RAW_ACCOUNTS
+    WHERE BALANCE IS NOT NULL;
+);"""
+
+
+def _td_pipeline():
+    from metabridge.connectors.base import get_registry
+    from metabridge.scaffold import build_pipeline
+    return build_pipeline("td", get_registry().get("teradata"), [
+        {"name": "RAW_ACCOUNTS", "schema": "BANKING_DB",
+         "columns": [{"name": "ACCOUNT_ID", "type": "INTEGER"},
+                     {"name": "BALANCE", "type": "DECIMAL(15,2)"},
+                     {"name": "STATUS", "type": "VARCHAR(20)"}]}])
+
+
+def test_teradata_replace_macro_is_recognised_as_a_create():
+    """Teradata writes `REPLACE MACRO x AS (...)` where others write CREATE OR
+    REPLACE. A synthesized header was stacked on top of the real one, turning
+    the object's own first line into a junk statement."""
+    (proc,), _ = normalize_procedures(
+        [{"name": "MAC_BUILD_SILVER", "schema": "BANKING_DB", "kind": "macro",
+          "language": "SQL", "definition": TD_MACRO}])
+    header = ensure_create_header(proc)
+    assert header.startswith("CREATE OR REPLACE MACRO BANKING_DB.")
+    assert header.count("MACRO") == 1          # not stacked on a synthesized one
+
+
+def test_a_macro_is_delimited_by_parentheses_not_begin_end():
+    """No BEGIN ever opens a macro, so BEGIN/END counting let the first
+    balanced `CASE ... END` inside a SELECT close it — losing the DELETE that
+    makes the load a full refresh."""
+    from metabridge.parsers.legacy_script import split_legacy_script
+    (unit,) = split_legacy_script(
+        "CREATE OR " + TD_MACRO, "teradata").units
+    assert unit.kind == "procedural"
+    assert "RAW_ACCOUNTS" in unit.text         # the half that was being cut
+
+
+def test_a_teradata_macro_becomes_a_transformation_model():
+    pipeline = _td_pipeline()
+    summary = merge_procedure_logic(
+        pipeline, [{"name": "MAC_BUILD_SILVER", "schema": "BANKING_DB",
+                    "kind": "macro", "language": "SQL",
+                    "definition": TD_MACRO}], dialect="teradata")
+    assert [m["model"] for m in summary["models"]] == ["SILVER_ACCOUNTS"]
+    m = pipeline.mapping("SILVER_ACCOUNTS")
+    # the DELETE is the clear, so this is a full refresh and not an append
+    assert m.load_strategy.value == "FULL"
+    assert m.properties["target_cleared_by"] == "DELETE"
+    assert "UPPER(STATUS)" in (m.origin or "")
+
+
+def test_macros_reach_the_conversion_from_a_live_analysis():
+    """The Teradata introspect returns them; ANALYSIS_KINDS has to carry them
+    or they stop at the estate list."""
+    from metabridge.procedures import ANALYSIS_KINDS
+    assert "macros" in ANALYSIS_KINDS
+    procs = procedures_from_analysis({
+        "macros": [{"schema": "BANKING_DB", "name": "MAC", "language": "SQL",
+                    "definition": TD_MACRO}]})
+    assert [p["kind"] for p in procs] == ["macro"]

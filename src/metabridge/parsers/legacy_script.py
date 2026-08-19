@@ -240,6 +240,17 @@ def split_legacy_script(text: str, dialect: str) -> ScriptSplit:
             # cleansing logic is not an edge case: this cut real procedures in
             # half on every dialect but Oracle, which does not use this branch.
             stripped = re.sub(r"--.*", "", line)
+            if proc_type.upper() == "MACRO":
+                # A Teradata MACRO is delimited by PARENTHESES, not BEGIN/END:
+                # `REPLACE MACRO x AS ( stmt; stmt; );`. No BEGIN ever opens
+                # it, so BEGIN/END counting had the first balanced
+                # `CASE ... END` inside a SELECT close the macro instead.
+                shielded = re.sub(r"'(?:[^']|'')*'", "''", stripped)
+                was = depth
+                depth += shielded.count("(") - shielded.count(")")
+                if was > 0 and depth <= 0:
+                    flush_proc(i)
+                continue
             # `END CASE` closes a CASE exactly as a bare END does; folding it
             # first stops that word being read as another CASE opening.
             counting = _END_CASE.sub("END", stripped)

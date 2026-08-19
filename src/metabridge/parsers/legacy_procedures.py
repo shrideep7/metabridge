@@ -318,6 +318,17 @@ def decompose_procedure(unit: dict) -> dict:
         body = sql[header_end.start():] \
             if header_end.group(1).upper() == "BEGIN" else sql[header_end.end():]
 
+    # A Teradata MACRO holds its statement list inside parentheses —
+    # `AS ( stmt; stmt; )` — so the opening paren prefixes the first statement
+    # and hides it from every classifier, exactly as a comment or an IF did.
+    # Losing the first statement of a macro usually means losing its DELETE,
+    # and with it the fact that the load is a full refresh.
+    trimmed = body.strip()
+    if trimmed.startswith("("):
+        inner = trimmed[1:]
+        close = inner.rfind(")")
+        body = inner[:close] if close != -1 else inner
+
     mo_begin = re.search(r"\bBEGIN\b", body, re.IGNORECASE)
     variables: List[dict] = []
     if dialect == "tsql":

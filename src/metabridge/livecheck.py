@@ -3490,7 +3490,14 @@ def _teradata_introspect(params: Dict[str, str],
             "verdict": "READY" if base_tables or convertible else
                        "NOTHING_TO_CONVERT",
         },
-        "manifest_yaml": _manifest_yaml(base_tables, "", pks, procedures),
+        # A Teradata MACRO is a parameterized SQL statement — the same kind of
+        # transformation logic a procedure holds, and on many sites the ONLY
+        # place it lives. Carrying procedures without them would convert half
+        # the estate's logic and call it done.
+        "manifest_yaml": _manifest_yaml(
+            base_tables, "", pks,
+            [dict(o, kind="procedure") for o in procedures]
+            + [dict(o, kind="macro") for o in macros]),
     }
 
 

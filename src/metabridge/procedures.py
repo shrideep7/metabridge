@@ -55,6 +55,11 @@ _OBJECT_KIND = {
 }
 
 _CREATE_RE = re.compile(r"^\s*CREATE\b", re.IGNORECASE)
+# Teradata writes `REPLACE MACRO x AS (...)` where other platforms write
+# CREATE OR REPLACE. Without this the header is SYNTHESIZED on top of the
+# real one, and the object's own first line becomes a junk statement.
+_REPLACE_HEAD_RE = re.compile(
+    r"^\s*REPLACE\s+(PROCEDURE|FUNCTION|MACRO|VIEW)\b", re.IGNORECASE)
 _BARE_HEAD_RE = re.compile(
     r"^\s*(PROCEDURE|FUNCTION|PACKAGE|TRIGGER|MACRO)\b", re.IGNORECASE)
 
@@ -149,6 +154,8 @@ def ensure_create_header(proc: dict) -> str:
         return body
     if _BARE_HEAD_RE.match(body):                 # Oracle ALL_SOURCE shape
         return "CREATE OR REPLACE " + body
+    if _REPLACE_HEAD_RE.match(body):              # Teradata REPLACE MACRO/PROC
+        return "CREATE OR " + body.lstrip()
     kind = _OBJECT_KIND.get(str(proc.get("kind", "")).lower(), "PROCEDURE")
     return "CREATE OR REPLACE %s %s AS\n%s" % (kind, proc["qualified"], body)
 
@@ -578,7 +585,7 @@ def write_logic_pack(summary: dict, out_dir: str,
 # logic. Functions and triggers are deliberately NOT here: a function is a
 # scalar expression (the object package converts it as a UDF) and a trigger is
 # row-level DML the target has no equivalent for.
-ANALYSIS_KINDS = ("procedures", "packages")
+ANALYSIS_KINDS = ("procedures", "packages", "macros")
 
 
 def procedures_from_analysis(report: dict,
