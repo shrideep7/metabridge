@@ -9912,13 +9912,21 @@ function estateGatedNote(d) {
 
 // Level 3 — breadcrumb, role banner and the scope-aware "filter by type"
 // count pills.
+// The PREFERRED ORDER of the type filter, no longer the set of types that may
+// appear: anything the estate actually contains gets a chip (see below). This
+// list had drifted 14 types behind what the asset table already rendered —
+// packages, triggers, synonyms, macros and the rest were rows nobody could
+// filter to, and the chip row understated the estate.
 const ESTATE_TYPES = ['Table', 'View', 'Materialized view', 'Dynamic table',
-  'Sequence', 'File format', 'Function', 'Stored procedure', 'Stream', 'Task',
-  'Pipe', 'Stage', 'Volume', 'Masking policy', 'Row access policy', 'Tag',
-  'Share'];
-// "Masking policy" pluralises to "policies", not "policys"
+  'Sequence', 'File format', 'Function', 'Stored procedure', 'Macro',
+  'Package', 'Trigger', 'Index', 'Constraint', 'Synonym', 'Database link',
+  'Queue', 'Object type', 'Rule', 'Stream', 'Task', 'Pipe', 'Stage', 'Volume',
+  'Scheduler job', 'Scheduler program', 'Schedule', 'Scheduler chain',
+  'Masking policy', 'Row access policy', 'Tag', 'Share'];
+// "Masking policy" pluralises to "policies", "Index" to "indexes"
 const estatePlural = t => t.endsWith('s') ? t
-  : t.endsWith('y') ? t.slice(0, -1) + 'ies' : t + 's';
+  : t.endsWith('y') ? t.slice(0, -1) + 'ies'
+  : /(x|ch|sh|z)$/.test(t) ? t + 'es' : t + 's';
 
 function renderEstateContext(d) {
   const el = $('#estateContext');
@@ -9941,9 +9949,18 @@ function renderEstateContext(d) {
           : 'background:var(--header-bg);border:1px solid var(--line);color:var(--muted)')
     + '"><b>' + count + '</b> ' + esc(label) + '</span>';
   // an active pill stays visible at count 0 so it can always be un-clicked
+  // Known types first, in the curated order; then ANY other type present in
+  // the data. A hardcoded list is a place for a class to go missing, and this
+  // is the third one that did — so the data decides what is filterable and the
+  // list only decides what comes first. Grants already have their own count
+  // pill below and would otherwise appear twice.
+  const shown = ESTATE_TYPES.filter(t => byType[t] || active === t);
+  Object.keys(byType).sort().forEach(t => {
+    if (shown.indexOf(t) === -1 && t !== 'Grant') shown.push(t);
+  });
   const pills = pill('All', '', scoped.length, !active, true)
-    + ESTATE_TYPES.filter(t => byType[t] || active === t)
-        .map(t => pill(estatePlural(t), t, byType[t] || 0, active === t, true)).join('')
+    + shown.map(t => pill(byType[t] === 1 ? t : estatePlural(t), t,
+                          byType[t] || 0, active === t, true)).join('')
     // account-level objects belong to no schema, so they are counts, not rows
     + ((d.roles || []).length ? pill('Roles', null, d.roles.length, false, false) : '')
     + ((d.grants || []).length ? pill('Grants', null, d.grants.length, false, false) : '');

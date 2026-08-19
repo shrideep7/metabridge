@@ -2146,3 +2146,27 @@ def test_teradata_schema_still_wins_when_both_are_given(monkeypatch):
                                       "schema": "EDW_FACT"})
     tables_sql = next(s for s in conn.seen if "DBC.TABLESV" in s.upper())
     assert "UPPER('EDW_FACT')" in tables_sql.upper()
+
+
+def test_every_asset_type_the_console_renders_is_also_filterable():
+    """The estate has THREE allowlists — what the backend returns, what the
+    asset table renders, and what the "Filter by type" row offers. The third
+    had drifted 14 types behind the second: packages, triggers, synonyms,
+    macros and the rest were rows nobody could filter to, and the chip row
+    understated the estate. The row now falls back to whatever the data
+    contains, and this keeps the curated ORDER honest as well."""
+    import re
+    from pathlib import Path
+    html = (Path(__file__).resolve().parent.parent / "web" / "templates"
+            / "console.html").read_text(encoding="utf-8")
+    body = html[html.index("function estateAssets"):]
+    body = body[:body.index(chr(10) + "}" + chr(10))]
+    pushed = set(re.findall(r"push\(d\.\w+,\s*'([^']+)'", body))
+    pushed |= set(re.findall(r"type:\s*'([^']+)'", body))
+    listed = set(re.findall(r"'([^']+)'", re.search(
+        r"const ESTATE_TYPES = \[(.*?)\];", html, re.S).group(1)))
+    # Grants have their own count pill and would appear twice
+    missing = pushed - listed - {"Grant"}
+    assert not missing, "rendered but not in the type filter: %s" % sorted(missing)
+    # and the fallback that makes the list an ORDER rather than a gate
+    assert "if (shown.indexOf(t) === -1 && t !== 'Grant') shown.push(t);" in html
