@@ -903,3 +903,56 @@ def test_macros_reach_the_conversion_from_a_live_analysis():
         "macros": [{"schema": "BANKING_DB", "name": "MAC", "language": "SQL",
                     "definition": TD_MACRO}]})
     assert [p["kind"] for p in procs] == ["macro"]
+
+
+# A real macro: the opening paren is on the CREATE line, and a multi-line
+# function call makes a later line net-NEGATIVE on parentheses.
+TD_MACRO_MULTILINE = """REPLACE MACRO BANKING_DB.MC_BUILD_SILVER AS (
+    INSERT INTO BANKING_DB.SILVER_DIM_CUSTOMER (CUSTOMER_ID, PHONE, GENDER)
+    SELECT
+        CUSTOMER_ID,
+        SUBSTRING(REGEXP_REPLACE(PHONE, '[^0-9]', '') FROM
+                  (CHARACTER_LENGTH(REGEXP_REPLACE(PHONE, '[^0-9]', '')) - 9)),
+        CASE WHEN UPPER(SUBSTRING(GENDER FROM 1 FOR 1)) = 'M' THEN 'M' ELSE 'F' END
+    FROM BANKING_DB.RAW_CUSTOMERS
+    WHERE PHONE IS NOT NULL;
+
+    INSERT INTO BANKING_DB.SILVER_FCT_TRANSACTION (TXN_ID, CHANNEL)
+    SELECT TXN_ID,
+           CASE WHEN CHANNEL IS NULL THEN 'UNKNOWN' ELSE UPPER(CHANNEL) END
+    FROM BANKING_DB.RAW_TRANSACTIONS
+    WHERE UPPER(STATUS) = 'SUCCESS';
+);"""
+
+
+def test_a_macro_block_starts_one_level_deep_at_its_own_paren():
+    """The macro's opening paren is on the CREATE line, which the splitter
+    skips — so the block started a level short and the first line whose
+    parentheses went net-NEGATIVE (here a multi-line SUBSTRING) closed the
+    macro halfway through its first statement. Everything after it, including
+    a whole second target table, was lost."""
+    from metabridge.parsers.legacy_script import split_legacy_script
+    (unit,) = split_legacy_script("CREATE OR " + TD_MACRO_MULTILINE,
+                                  "teradata").units
+    assert unit.kind == "procedural"
+    assert "SILVER_FCT_TRANSACTION" in unit.text
+
+
+def test_both_targets_of_a_multi_statement_macro_convert():
+    from metabridge.connectors.base import get_registry
+    from metabridge.scaffold import build_pipeline
+    pipeline = build_pipeline("td", get_registry().get("teradata"), [
+        {"name": "RAW_CUSTOMERS", "schema": "BANKING_DB",
+         "columns": [{"name": "CUSTOMER_ID", "type": "INTEGER"},
+                     {"name": "PHONE", "type": "VARCHAR(30)"},
+                     {"name": "GENDER", "type": "VARCHAR(10)"}]},
+        {"name": "RAW_TRANSACTIONS", "schema": "BANKING_DB",
+         "columns": [{"name": "TXN_ID", "type": "INTEGER"},
+                     {"name": "CHANNEL", "type": "VARCHAR(20)"},
+                     {"name": "STATUS", "type": "VARCHAR(20)"}]}])
+    summary = merge_procedure_logic(
+        pipeline, [{"name": "MC_BUILD_SILVER", "schema": "BANKING_DB",
+                    "kind": "macro", "language": "SQL",
+                    "definition": TD_MACRO_MULTILINE}], dialect="teradata")
+    assert sorted(m["model"] for m in summary["models"]) == [
+        "SILVER_DIM_CUSTOMER", "SILVER_FCT_TRANSACTION"]

@@ -115,6 +115,14 @@ def _object_name(after_head: str) -> str:
     return (mo.group(1) or mo.group(2) or mo.group(3) or "").split("(")[0]
 
 
+def _paren_delta(line: str) -> int:
+    """Net parenthesis depth a line adds, comments and string
+    literals ignored — the delimiter a Teradata MACRO block uses."""
+    bare = re.sub(r"'(?:[^']|'')*'", "''",
+                  re.sub(r"--.*", "", line))
+    return bare.count("(") - bare.count(")")
+
+
 def split_legacy_script(text: str, dialect: str) -> ScriptSplit:
     """Split one script into SQL units, procedural blocks and runtime
     commands, all line-tracked."""
@@ -225,7 +233,12 @@ def split_legacy_script(text: str, dialect: str) -> ScriptSplit:
                 proc_name = _object_name(line[head.end(1):])
                 buf = [line]
                 buf_start = i
-                depth = 0
+                # A MACRO's opening paren sits on THIS line, and this line is
+                # skipped below — so starting at 0 left the block one level
+                # short, and the first line whose parens went net-negative (a
+                # multi-line SUBSTRING(...), say) closed the macro halfway
+                # through its first statement.
+                depth = _paren_delta(line) if head.group(2).upper() == "MACRO"                     else 0
                 continue
 
         buf.append(line)
@@ -245,9 +258,8 @@ def split_legacy_script(text: str, dialect: str) -> ScriptSplit:
                 # `REPLACE MACRO x AS ( stmt; stmt; );`. No BEGIN ever opens
                 # it, so BEGIN/END counting had the first balanced
                 # `CASE ... END` inside a SELECT close the macro instead.
-                shielded = re.sub(r"'(?:[^']|'')*'", "''", stripped)
                 was = depth
-                depth += shielded.count("(") - shielded.count(")")
+                depth += _paren_delta(line)
                 if was > 0 and depth <= 0:
                     flush_proc(i)
                 continue
