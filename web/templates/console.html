@@ -8411,6 +8411,14 @@ async function fillScaffoldSelects() {
   $('#scafSource').innerHTML = allConnectors.map(c => '<option value="' + c.key + '"' + (c.key==='sap_s4'?' selected':'') + '>' + c.name + '</option>').join('');
   $('#scafTarget').innerHTML = allConnectors.filter(c => c.dbt_adapter || c.category === 'cloud_dw' || c.category === 'lakehouse')
     .map(c => '<option value="' + c.key + '"' + (c.key==='snowflake'?' selected':'') + '>' + c.name + '</option>').join('');
+  // This runs on every page LOAD, so the hardcoded snowflake default silently
+  // undid a target the user had already chosen — and the Modernize flow sets
+  // only the source, so the next generate produced Snowflake artifacts for a
+  // migration aimed at Databricks. Remember the choice instead of asking for
+  // it twice. Same localStorage idiom the Modernize filters already use.
+  const savedTarget = localStorage.getItem('mb_scaf_target');
+  if (savedTarget && [...$('#scafTarget').options].some(o => o.value === savedTarget))
+    $('#scafTarget').value = savedTarget;
   syncMvChips();          // the From/To chips name whatever is selected here
 }
 /* ---------------- Reports: migration assessment ------------------------- */
@@ -9532,7 +9540,10 @@ function syncScafGovern() {
 $('#scafGovern').onchange = syncScafGovern;
 syncScafGovern();
 $('#scafSource').onchange = syncMvChips;
-$('#scafTarget').onchange = syncMvChips;
+$('#scafTarget').onchange = () => {
+  localStorage.setItem('mb_scaf_target', $('#scafTarget').value);
+  syncMvChips();
+};
 
 $('#scafForm').onsubmit = async ev => {
   ev.preventDefault();

@@ -2170,3 +2170,22 @@ def test_every_asset_type_the_console_renders_is_also_filterable():
     assert not missing, "rendered but not in the type filter: %s" % sorted(missing)
     # and the fallback that makes the list an ORDER rather than a gate
     assert "if (shown.indexOf(t) === -1 && t !== 'Grant') shown.push(t);" in html
+
+
+def test_the_chosen_scaffold_target_survives_a_page_load():
+    """fillScaffoldSelects() runs on every page LOAD and hardcodes snowflake as
+    the default, while the Modernize handoff sets only the source. So a target
+    the user had already chosen was silently undone by a refresh, and the next
+    generate produced Snowflake artifacts — profiles.yml of type snowflake,
+    03_load_into_snowflake.sql — for a migration aimed at Databricks."""
+    from pathlib import Path
+    html = (Path(__file__).resolve().parent.parent / "web" / "templates"
+            / "console.html").read_text(encoding="utf-8")
+    fn = html[html.index("async function fillScaffoldSelects"):]
+    fn = fn[:fn.index(chr(10) + "}" + chr(10))]
+    assert "mb_scaf_target" in fn, "the target choice is not restored on load"
+    assert "localStorage.setItem('mb_scaf_target'" in html, (
+        "nothing records the target choice, so there is nothing to restore")
+    # and the id must stay unique — #modTarget is already the Modernize page's
+    # target FILTER, so reusing it silently rewires that control instead
+    assert html.count('id="modTarget"') == 1
