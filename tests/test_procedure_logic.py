@@ -956,3 +956,22 @@ def test_both_targets_of_a_multi_statement_macro_convert():
                     "definition": TD_MACRO_MULTILINE}], dialect="teradata")
     assert sorted(m["model"] for m in summary["models"]) == [
         "SILVER_DIM_CUSTOMER", "SILVER_FCT_TRANSACTION"]
+
+
+def test_the_modernize_picker_offers_every_logic_class_the_manifest_carries():
+    """The picker filters the manifest's `procedures:` entries by what was
+    SELECTED, so a class it never offers is a class it deletes: the manifest
+    arrives carrying the object, nothing selects it, and the slicer strips it
+    on the way out. Teradata MACROs hit exactly that — the estate listed them,
+    the manifest shipped them, and every one was removed between the two.
+
+    Tied to ANALYSIS_KINDS so adding a class to the conversion cannot quietly
+    leave the picker behind."""
+    from metabridge.procedures import ANALYSIS_KINDS
+    html = CONSOLE.read_text(encoding="utf-8")
+    fn = html[html.index("function openModPicker"):]
+    fn = fn[:fn.index(chr(10) + "}" + chr(10))]
+    for kind in ANALYSIS_KINDS:                     # procedures, packages, macros
+        assert "report.%s" % kind in fn, (
+            "%s is converted but the Modernize picker never offers it, so the "
+            "manifest filter removes it" % kind)

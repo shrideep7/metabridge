@@ -6932,12 +6932,19 @@ function openModPicker(report, row) {
   // them alongside the tables. Listing them here is what makes that visible
   // and controllable up front — otherwise the only sign they were converted
   // is the "N analyzed" line in the results, long after the choice is gone.
-  const procedures = report.procedures || [];
+  // Every class the MANIFEST can carry as logic has to be listed here, or the
+  // filter below removes what was never offered: the manifest arrives with the
+  // object in it, nothing selects it, and it is stripped on the way out. That
+  // is what happened to Teradata MACROs — the estate showed them, the manifest
+  // shipped them, and the picker deleted every one. Keep in step with
+  // procedures.ANALYSIS_KINDS.
+  const logic = [].concat(report.procedures || [], report.macros || [],
+                          report.packages || []);
   const objs = tables.map(t => ({schema: t.schema || '', name: t.name,
                                  kind: 'table', rows: t.rows}))
     .concat(views.map(v => ({schema: v.schema || '', name: v.name, kind: 'view'})))
-    .concat(procedures.map(p => ({schema: p.schema || '', name: p.name,
-                                  kind: 'procedure'})));
+    .concat(logic.map(p => ({schema: p.schema || '', name: p.name,
+                             kind: 'procedure', label: p.kind || 'procedure'})));
   const schemas = [...new Set(objs.map(o => o.schema))].sort();
   modPick = {
     report: report, row: row, objs: objs, schemas: schemas,
@@ -7016,7 +7023,7 @@ function renderModPicker() {
           + '<span style="flex:1;overflow:hidden;text-overflow:ellipsis">' + esc(o.name) + '</span>'
           + '<span style="color:var(--muted);font-size:11px">'
           + (o.kind === 'view' ? 'view'
-             : o.kind === 'procedure' ? 'procedure'
+             : o.kind === 'procedure' ? (o.label || 'procedure')
              : (o.rows == null ? 'table' : Number(o.rows).toLocaleString() + ' rows'))
           + '</span></label>';
       }).join('')
