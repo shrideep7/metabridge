@@ -401,6 +401,10 @@ def _create_table(src: SourceTable, dialect: str, hint: dict,
 # on purpose: it resolves against wherever psql was launched, needs no
 # privileges, and is obvious to clean up.
 _PG_LOCAL_EXPORT_DIR = "./mb_export"
+# Platforms whose object names really do carry three parts.
+_THREE_PART_DIALECTS = ("snowflake", "bigquery", "databricks", "tsql")
+# Where a delimited Teradata export lands when NOS is unavailable.
+_TD_LOCAL_EXPORT_DIR = "./mb_export"
 # SQLcl spools to a FILE, never to a bucket, so an Oracle export always lands
 # locally first and is uploaded afterwards.
 _ORACLE_LOCAL_EXPORT_DIR = "./mb_export"
@@ -424,6 +428,27 @@ def _hana_object_uri(uri: str, region: str = "") -> str:
     """
     if uri.startswith("s3://"):
         return "s3-%s://%s" % (region or "<region>", uri[len("s3://"):])
+    return uri
+
+
+def _td_nos_location(uri: str) -> str:
+    """Rewrite an object-storage URI into the form Teradata NOS accepts.
+
+    NOS addresses a bucket as a PATH with the endpoint host inside it —
+    `/s3/bucket.s3.amazonaws.com/prefix/` — where every other platform here
+    takes `s3://bucket/prefix`. One workspace setting, rendered differently
+    on the two halves of the package, exactly as with SAP HANA's
+    region-in-the-scheme.
+    """
+    if uri.startswith("s3://"):
+        rest = uri[len("s3://"):].strip("/")
+        bucket, _, path = rest.partition("/")
+        return "/s3/%s.s3.amazonaws.com/%s" % (
+            bucket, path + "/" if path else "")
+    for scheme, nos in (("abfss://", "/az/"), ("az://", "/az/"),
+                        ("gs://", "/gs/")):
+        if uri.startswith(scheme):
+            return nos + uri.split("://", 1)[1].strip("/") + "/"
     return uri
 
 
@@ -467,7 +492,16 @@ def _unload(spec: Optional[ConnectorSpec], dialect: str,
     def fq(t: SourceTable) -> str:
         q = _qualified(dialect, t.schema, t.name)
         d = db_of(t)
-        return "%s.%s" % (d, q) if d else q
+        # Only these platforms address an object as
+        # DATABASE.SCHEMA.TABLE. On Oracle the database is the
+        # CONNECTION (a PDB); on Teradata and SAP HANA a "database" IS
+        # the schema. Prefixing one there builds a three-part name that
+        # addresses nothing — and since the connection database and the
+        # schema are the same word on Teradata, it read back as the
+        # absurdity it was: BANKING_DB.BANKING_DB.RAW_ACCOUNTS.
+        if d and dialect in _THREE_PART_DIALECTS:
+            return "%s.%s" % (d, q)
+        return q
 
     # SAP HANA dispatches on the CONNECTOR, not the dialect. It declares no
     # sqlglot dialect because none exists, so the dialect chain below would
@@ -615,6 +649,58 @@ def _unload(spec: Optional[ConnectorSpec], dialect: str,
                            "-- this becomes a runnable upload step:",
                            "--   HOST %s" % upload]
         body = body + ["\n".join(tail_upload)]
+    elif dialect == "teradata":
+        # WRITE_NOS writes PARQUET straight to object storage, so Teradata
+        # needs no local staging and no upload step — the same shape as
+        # Snowflake's COPY INTO @stage and Oracle's DBMS_CLOUD.EXPORT_DATA.
+        # It needs Vantage 17.00+ with NOS enabled; the delimited fallback for
+        # older systems rides along as a comment, because neither BTEQ nor TPT
+        # can write Parquet and moving to them means changing the LOAD too.
+        #
+        # The credential is a NAME, not a secret: the AUTHORIZATION object is
+        # created once on Teradata, so no key material appears in this file.
+        auth = mv["source_credential"] or "MB_OBJECT_STORE_AUTH"
+        loc = _td_nos_location(uri)
+        head += [
+            "-- WRITE_NOS exports Parquet directly to object storage.",
+            "-- Requires Vantage 17.00+ with Native Object Store enabled.",
+            "--",
+            "-- Create the AUTHORIZATION object ONCE, outside this file, so no",
+            "-- key material is ever written here:",
+            "--   CREATE AUTHORIZATION %s" % auth,
+            "--     USER '<access-id>' PASSWORD '<secret-key>';",
+            "--",
+            "-- No NOS on this system? Export delimited text instead, with BTEQ",
+            "-- (run `bteq < file`; .SET SEPARATOR needs TTU 16.10+):",
+            "--   .LOGON <host>/<user>,<password>",
+            "--   .SET WIDTH 65531",
+            "--   .SET TITLEDASHES OFF",
+            "--   .SET SEPARATOR ','",
+            "--   .EXPORT REPORT FILE = %s/<table>/<table>.csv"
+            % _TD_LOCAL_EXPORT_DIR,
+            "--   SELECT * FROM <database>.<table>;",
+            "--   .EXPORT RESET",
+            "-- or with TPT for volume: tbuild -f export.tpt, a DATACONNECTOR",
+            "-- CONSUMER operator with Format = 'Delimited'.",
+            "--",
+            "-- Those write to DISK, so upload afterwards (one folder per",
+            "-- table) AND switch 03_load_into_* to CSV, or the load reads",
+            "-- Parquet that was never written:",
+            "--   aws s3 cp %s %s/ --recursive --include '*.csv'"
+            % (_TD_LOCAL_EXPORT_DIR, uri),
+            "",
+        ]
+        # SCHEMA.TABLE, never fq(): a Teradata DATABASE *is* the schema.
+        body = ["SELECT * FROM WRITE_NOS (\n"
+                "  ON (SELECT * FROM %s)\n"
+                "  USING\n"
+                "    LOCATION('%s%s/')\n"
+                "    AUTHORIZATION(%s)\n"
+                "    STOREDAS('PARQUET')\n"
+                ") AS export_%s;"
+                % (_qualified("teradata", t.schema, t.name), loc,
+                   t.name.lower(), auth, t.name.lower())
+                for t in tables]
     elif dialect == "bigquery":
         body = ["EXPORT DATA OPTIONS(uri='%s/%s/*.parquet',\n"
                 "  format='PARQUET', overwrite=true) AS\n"

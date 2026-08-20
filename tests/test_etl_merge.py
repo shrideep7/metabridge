@@ -356,3 +356,76 @@ def test_conversion_report_lists_what_the_project_builds():
     report = build_report(pl, "snowflake")
     assert [t["table"] for t in report["produced_tables"]] == ["DIM_CUSTOMER"]
     assert "exclude them from the landing layer" in report["produced_tables_note"]
+
+
+# --- Teradata: a DATABASE is the schema, and NOS is the export ------------
+
+TD_MANIFEST = {
+    "tables": [
+        {"name": "RAW_ACCOUNTS", "schema": "BANKING_DB",
+         "columns": [{"name": "ACCOUNT_ID", "type": "INTEGER"},
+                     {"name": "BALANCE", "type": "DECIMAL(15,2)"}]},
+    ],
+}
+
+
+def _td_unload(tmp_path, **kw):
+    out = tmp_path / "out"
+    scaffold("teradata", "databricks", _manifest(tmp_path, TD_MANIFEST),
+             str(out), "td", **kw)
+    return out, (out / "ddl" / "02_unload_from_teradata.sql").read_text(
+        encoding="utf-8")
+
+
+def test_teradata_export_never_builds_a_three_part_name(tmp_path):
+    """On Teradata a DATABASE *is* the schema, so prefixing the connection's
+    database produced BANKING_DB.BANKING_DB.RAW_ACCOUNTS — a name that
+    addresses nothing, and one that reads back as the mistake it was."""
+    _out, sql = _td_unload(tmp_path)
+    assert "BANKING_DB.BANKING_DB" not in sql
+    assert "ON (SELECT * FROM BANKING_DB.RAW_ACCOUNTS)" in sql
+
+
+def test_teradata_gets_a_runnable_export_not_a_note(tmp_path):
+    """It used to say "no generated bulk-export form yet" and list the tables
+    as comments — a to-do, not a step."""
+    _out, sql = _td_unload(tmp_path)
+    assert "no generated bulk-export form in MetaBridge yet" not in sql
+    assert "SELECT * FROM WRITE_NOS (" in sql
+    assert "STOREDAS('PARQUET')" in sql
+
+
+def test_teradata_export_names_a_credential_and_embeds_none(tmp_path):
+    """An AUTHORIZATION object is created once on Teradata, so the generated
+    file carries a NAME and never key material."""
+    _out, sql = _td_unload(tmp_path, movement={"stage_uri": "s3://b/p",
+                                               "source_credential": "MY_AUTH"})
+    assert "AUTHORIZATION(MY_AUTH)" in sql
+    for secret in ("PASSWORD '", "access_key", "secret_key"):
+        # only ever inside the commented CREATE AUTHORIZATION example
+        for line in sql.splitlines():
+            if secret in line:
+                assert line.lstrip().startswith("--"), line
+
+
+def test_teradata_parquet_export_keeps_a_parquet_load(tmp_path):
+    """WRITE_NOS writes Parquet, so the load must read Parquet. The delimited
+    fallback is offered in comments precisely BECAUSE taking it means changing
+    this side too."""
+    out, sql = _td_unload(tmp_path, movement={"stage_uri": "s3://b/p"})
+    load = (out / "ddl" / "03_load_into_databricks.sql").read_text(
+        encoding="utf-8")
+    assert "FILEFORMAT = PARQUET" in load
+    assert "switch 03_load_into_* to CSV" in sql       # stated, not silent
+
+
+def test_teradata_nos_location_is_a_path_not_a_url(tmp_path):
+    """NOS addresses a bucket as /s3/<bucket>.s3.amazonaws.com/<path>/, where
+    every other platform here takes s3://<bucket>/<path>. One setting, two
+    renderings — a plain s3:// URL is rejected."""
+    from metabridge.generators.ddl_generator import _td_nos_location
+    assert _td_nos_location("s3://bucket/prefix") ==         "/s3/bucket.s3.amazonaws.com/prefix/"
+    assert _td_nos_location("s3://bucket") == "/s3/bucket.s3.amazonaws.com/"
+    _out, sql = _td_unload(tmp_path, movement={"stage_uri": "s3://b/p"})
+    assert "LOCATION('/s3/b.s3.amazonaws.com/p/raw_accounts/')" in sql
+    assert "LOCATION('s3://" not in sql
