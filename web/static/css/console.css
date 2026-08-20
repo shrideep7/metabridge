@@ -1546,24 +1546,28 @@
   .set-table-wrap { overflow-x:auto; border:1px solid var(--border); border-radius:var(--radius); }
   .set-table-wrap table { font-size:13px; }
   .rowmenu { position:relative; display:inline-block; }
-  .rowmenu .menu {
-    top:26px; right:0; min-width:170px; padding:3px;
+  .rowmenu .menu, .rowmenu-portal {
+    right:auto; width:max-content; min-width:170px; max-width:220px; padding:2px;
     display:none; flex-direction:column; gap:1px;
     box-shadow:0 4px 16px rgba(16,24,40,.12); border-radius:6px;
+    background:var(--surface); border:1px solid var(--border);
   }
-  .rowmenu .menu button {
-    padding:5px 8px; font-size:12.5px; font-weight:400;
-    border-radius:4px; line-height:1.3; margin:0;
-    display:block; width:100%; text-align:left;
+  .rowmenu .menu button, .rowmenu-portal button {
+    padding:3.5px 8px; font-size:12.5px; font-weight:400;
+    border-radius:4px; line-height:1.25; margin:0;
+    display:block; width:100%; text-align:left; white-space:nowrap;
+    background:none; border:none; color:var(--ink);
   }
-  .rowmenu .menu button.signout,
-  .rowmenu .menu button[data-act="rm"],
-  .rowmenu .menu button[data-act="deactivate"] {
+  .rowmenu .menu button + button, .rowmenu-portal button + button { margin-top:1px; }
+  .rowmenu .menu button.signout, .rowmenu-portal button.signout,
+  .rowmenu .menu button[data-act="rm"], .rowmenu-portal button[data-act="rm"],
+  .rowmenu .menu button[data-act="deactivate"], .rowmenu-portal button[data-act="deactivate"] {
     color:var(--red);
   }
-  .rowmenu .menu button.signout:hover,
-  .rowmenu .menu button[data-act="rm"]:hover,
-  .rowmenu .menu button[data-act="deactivate"]:hover {
+  .rowmenu .menu button:hover, .rowmenu-portal button:hover { background:var(--header-bg); }
+  .rowmenu .menu button.signout:hover, .rowmenu-portal button.signout:hover,
+  .rowmenu .menu button[data-act="rm"]:hover, .rowmenu-portal button[data-act="rm"]:hover,
+  .rowmenu .menu button[data-act="deactivate"]:hover, .rowmenu-portal button[data-act="deactivate"]:hover {
     background:#fef2f2; color:var(--red);
   }
   .mem-cell { display:flex; align-items:center; gap:10px; }

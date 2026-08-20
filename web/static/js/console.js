@@ -1934,15 +1934,7 @@ async function loadMembers() {
       + '<td>' + stBadge + '</td>'
       + '<td style="text-align:right">' + (isMe || !(canMutate || canReset || canDeact) ? ''
           : '<div class="rowmenu"><button class="kebab" style="position:static" '
-            + 'aria-haspopup="menu" aria-label="Member actions">&#8942;</button>'
-            + '<div class="menu" role="menu">'
-            + (canMutate ? '<button data-act="role" role="menuitem">Change role…</button>' : '')
-            + (canReset ? '<button data-act="reset" role="menuitem">Send reset link…</button>' : '')
-            + (canDeact ? (isDeact
-                ? '<button data-act="activate" role="menuitem">Reactivate member</button>'
-                : '<button data-act="deactivate" class="signout" role="menuitem">Deactivate member</button>') : '')
-            + (canMutate ? '<button data-act="rm" class="signout" role="menuitem">Remove from workspace</button>' : '')
-            + '</div></div>')
+            + 'aria-haspopup="menu" aria-label="Member actions">&#8942;</button></div>')
       + '</td></tr>';
   });
   const memHeader = '<tr><th>Member</th><th>Email</th><th>Role</th><th>Joined</th><th>Status</th><th></th></tr>';
@@ -1956,20 +1948,103 @@ async function loadMembers() {
       });
       document.querySelectorAll('#memTable .kebab').forEach(k => k.onclick = ev => {
         ev.stopPropagation();
-        const m = k.nextElementSibling;
-        const open = m.style.display === 'block';
-        document.querySelectorAll('#memTable .rowmenu .menu').forEach(x => { x.style.display = 'none'; });
-        m.style.display = open ? 'none' : 'block';
-        if (!open) document.addEventListener('click', () => { m.style.display = 'none'; }, {once: true});
-      });
-      document.querySelectorAll('#memTable [data-act]').forEach(b => b.onclick = () => {
-        const email = b.closest('tr').dataset.email;
-        const u = d.users.find(x => x.email === email);
-        if (b.dataset.act === 'role') openRoleDialog(u);
-        else if (b.dataset.act === 'reset') openResetLinkDialog(u);
-        else if (b.dataset.act === 'deactivate') openDeactivateMemberDialog(u);
-        else if (b.dataset.act === 'activate') openActivateMemberDialog(u);
-        else openRemoveMemberDialog(u);
+        const tr = k.closest('tr');
+        const email = tr ? tr.dataset.email : null;
+        const u = email ? d.users.find(x => x.email === email) : null;
+        if (!u) return;
+
+        const existingPortal = document.querySelector('.mem-menu-portal');
+        if (existingPortal) {
+          const isSame = existingPortal._trigger === k;
+          existingPortal.remove();
+          if (isSame) return;
+        }
+
+        const isMe = u.email === myEmail;
+        const soleOwner = u.role === 'owner' && owners <= 1;
+        const canMutate = !soleOwner && (u.role !== 'owner' || myPerms._role === 'owner');
+        const canReset = canResetFor(u);
+        const isDeact = u.status === 'deactivated';
+        const canDeact = !isMe && u.role !== 'owner' && myPerms._role === 'owner';
+
+        if (isMe || !(canMutate || canReset || canDeact)) return;
+
+        const menu = document.createElement('div');
+        menu.className = 'menu rowmenu-portal mem-menu-portal';
+        menu.setAttribute('role', 'menu');
+        menu._trigger = k;
+        menu.innerHTML = (canMutate ? '<button data-act="role" role="menuitem">Change role…</button>' : '')
+          + (canReset ? '<button data-act="reset" role="menuitem">Send reset link…</button>' : '')
+          + (canDeact ? (isDeact
+              ? '<button data-act="activate" role="menuitem">Reactivate member</button>'
+              : '<button data-act="deactivate" class="signout" role="menuitem">Deactivate member</button>') : '')
+          + (canMutate ? '<button data-act="rm" class="signout" role="menuitem">Remove from workspace</button>' : '');
+
+        document.body.appendChild(menu);
+
+        const positionMenu = () => {
+          if (!document.body.contains(menu)) return;
+          const rect = k.getBoundingClientRect();
+          menu.style.display = 'block';
+          menu.style.position = 'fixed';
+          menu.style.right = 'auto';
+          menu.style.width = 'max-content';
+          menu.style.zIndex = '9999';
+
+          const menuWidth = menu.offsetWidth || 170;
+          const menuHeight = menu.offsetHeight || 100;
+          const gap = 4;
+
+          let top = rect.bottom + gap;
+          if (top + menuHeight > window.innerHeight - 8 && rect.top - menuHeight - gap > 0) {
+            top = rect.top - menuHeight - gap;
+          }
+
+          let left = rect.right - menuWidth;
+          if (left < 8) left = 8;
+          if (left + menuWidth > window.innerWidth - 8) {
+            left = window.innerWidth - menuWidth - 8;
+          }
+
+          menu.style.top = Math.round(top) + 'px';
+          menu.style.left = Math.round(left) + 'px';
+        };
+
+        positionMenu();
+
+        const cleanup = () => {
+          menu.remove();
+          document.removeEventListener('click', closeMenu, true);
+          document.removeEventListener('keydown', handleKey, true);
+          window.removeEventListener('scroll', closeMenu, true);
+          window.removeEventListener('resize', closeMenu);
+        };
+
+        const closeMenu = (e) => {
+          if (e && (menu.contains(e.target) || k.contains(e.target))) return;
+          cleanup();
+        };
+
+        const handleKey = (e) => {
+          if (e.key === 'Escape') cleanup();
+        };
+
+        setTimeout(() => {
+          document.addEventListener('click', closeMenu, true);
+          document.addEventListener('keydown', handleKey, true);
+          window.addEventListener('scroll', closeMenu, true);
+          window.addEventListener('resize', closeMenu);
+        }, 0);
+
+        menu.querySelectorAll('[data-act]').forEach(b => b.onclick = (e) => {
+          e.stopPropagation();
+          cleanup();
+          if (b.dataset.act === 'role') openRoleDialog(u);
+          else if (b.dataset.act === 'reset') openResetLinkDialog(u);
+          else if (b.dataset.act === 'deactivate') openDeactivateMemberDialog(u);
+          else if (b.dataset.act === 'activate') openActivateMemberDialog(u);
+          else openRemoveMemberDialog(u);
+        });
       });
     });
   };
