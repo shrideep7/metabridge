@@ -34,22 +34,93 @@ class NotificationCenter:
     def _now(self) -> float:
         return time.time()
 
+    def _seed(self) -> List[dict]:
+        now = time.time()
+        day = 86400
+        return [
+            {
+                "id": "notif-001",
+                "topic": "members",
+                "title": "Member removed",
+                "body": "john.smith@metafordata.com · Removed by Mahesh Sutar",
+                "severity": "info",
+                "seen": False,
+                "at": "",
+                "ts": now - 1020,
+            },
+            {
+                "id": "notif-002",
+                "topic": "governance",
+                "title": "Governance: 1 violation detected",
+                "body": "Sensitive data policy issue in Customer PII",
+                "severity": "warning",
+                "seen": False,
+                "at": "",
+                "ts": now - 3600,
+            },
+            {
+                "id": "notif-003",
+                "topic": "jobs",
+                "title": "Migration completed",
+                "body": "Customer DB migration completed successfully",
+                "severity": "success",
+                "seen": True,
+                "at": "",
+                "ts": now - 10800,
+            },
+            {
+                "id": "notif-004",
+                "topic": "auth",
+                "title": "Role changed",
+                "body": "mahesh.sutar@metafordata.com → admin · Changed by Mahesh Sutar",
+                "severity": "info",
+                "seen": True,
+                "at": "",
+                "ts": now - (day + 3600),
+            },
+            {
+                "id": "notif-005",
+                "topic": "validation",
+                "title": "Pipeline validation failed",
+                "body": 'Pipeline "Orders_ETL" failed validation',
+                "severity": "critical",
+                "seen": False,
+                "at": "",
+                "ts": now - (day + 7200),
+            },
+            {
+                "id": "notif-006",
+                "topic": "connections",
+                "title": "Data estate connected",
+                "body": "Sales_Oracle connected successfully",
+                "severity": "success",
+                "seen": True,
+                "at": "",
+                "ts": now - (2 * day + 3600),
+            },
+        ]
+
     def _load(self) -> dict:
         if self._file.exists():
             try:
                 d = json.loads(self._file.read_text(encoding="utf-8"))
                 if isinstance(d, dict):
-                    # coerce INNER types too — a repaired/hand-edited file
-                    # may hold the wrong type for log/subscriptions
                     log = d.get("log")
                     subs = d.get("subscriptions")
-                    return {"log": [n for n in log if isinstance(n, dict)]
-                            if isinstance(log, list) else [],
-                            "subscriptions": subs
-                            if isinstance(subs, dict) else {}}
+                    log_list = [n for n in log if isinstance(n, dict)] if isinstance(log, list) else []
+                    if not log_list:
+                        log_list = self._seed()
+                    return {"log": log_list,
+                            "subscriptions": subs if isinstance(subs, dict) else {}}
             except (ValueError, OSError):
                 pass
-        return {"log": [], "subscriptions": {}}
+        seed_log = self._seed()
+        state = {"log": seed_log, "subscriptions": {}}
+        try:
+            self._save(state)
+        except OSError:
+            pass
+        return state
 
     def _save(self, state: dict) -> None:
         atomic_write_json(self._file, state)

@@ -15,6 +15,7 @@ out*/
 /agents/
 /marketplace/
 /jobs/
+/platform/
 temp/
 # generated decks & reports (regenerated artifacts — keep source, not binaries)
 /reports/*.pptx

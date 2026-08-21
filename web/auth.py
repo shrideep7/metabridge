@@ -161,7 +161,15 @@ class AuthStore:
             from urllib.parse import quote
             avatar["url"] = "/api/v1/users/%s/avatar?v=%s" % (
                 quote(u["email"]), u.get("avatar_updated", 0))
-        return {"email": u["email"], "name": u.get("name", ""),
+        fn = (u.get("first_name") or "").strip()
+        ln = (u.get("last_name") or "").strip()
+        if not fn and not ln and u.get("name"):
+            parts = u.get("name", "").strip().split(maxsplit=1)
+            fn = parts[0] if parts else ""
+            ln = parts[1] if len(parts) > 1 else ""
+        user_id = hashlib.sha256(u["email"].lower().encode()).hexdigest()[:16]
+        return {"id": user_id, "email": u["email"], "name": u.get("name", ""),
+                "first_name": fn, "last_name": ln,
                 "company": u.get("company", ""),
                 "role": normalize_role(u.get("role", "")),
                 "status": u.get("status", "active"),

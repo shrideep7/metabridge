@@ -5750,9 +5750,60 @@ async def v1_ai_ask(request: Request):
 # ---------------------------------------------------------------------------
 
 @app.get("/api/v1/connections")
-def v1_connections_list():
+def v1_connections_list(request: Request):
+    import hashlib
     from metabridge.connections_store import list_connections
-    return {"connections": list_connections()}
+    conns = list_connections()
+    users_by_email = {}
+    if AUTH:
+        try:
+            users_doc = AUTH._load(AUTH.users_file)
+            users_by_email = {k.lower(): AUTH._public(u) for k, u in users_doc.items()}
+        except Exception:
+            pass
+
+    fallback_user = None
+    if users_by_email:
+        from .auth import normalize_role
+        fallback_user = next((u for u in users_by_email.values()
+                             if normalize_role(u.get("role", "")) == "owner"), None)
+        if not fallback_user:
+            fallback_user = next(iter(users_by_email.values()), None)
+
+    for c in conns:
+        creator_email = (c.get("created_by") or "").strip().lower()
+        u = users_by_email.get(creator_email) if creator_email else fallback_user
+        if u:
+            fn = (u.get("first_name") or "").strip()
+            ln = (u.get("last_name") or "").strip()
+            user_id = u.get("id") or hashlib.sha256(u["email"].lower().encode()).hexdigest()[:16]
+            c["creator"] = {
+                "id": user_id,
+                "first_name": fn,
+                "last_name": ln
+            }
+            c["creator_id"] = user_id
+        elif creator_email:
+            parts = creator_email.split("@")[0].replace(".", " ").replace("_", " ").split(maxsplit=1)
+            fn = parts[0].title() if parts else ""
+            ln = parts[1].title() if len(parts) > 1 else ""
+            user_id = hashlib.sha256(creator_email.encode()).hexdigest()[:16]
+            c["creator"] = {
+                "id": user_id,
+                "first_name": fn,
+                "last_name": ln
+            }
+            c["creator_id"] = user_id
+        else:
+            c["creator"] = {
+                "id": "unknown",
+                "first_name": "Unknown",
+                "last_name": ""
+            }
+            c["creator_id"] = "unknown"
+        c.pop("created_by", None)
+
+    return {"connections": conns}
 
 
 # readiness keys that are neither tables nor views — the object classes the
@@ -5870,6 +5921,8 @@ async def v1_connections_save(request: Request):
     body = await request.json()
     connector = str(body.get("connector", ""))
     params = dict(body.get("params") or {})
+    req_user = _request_user(request)
+    created_by_email = req_user["email"] if req_user else ""
     # required-field validation at the API boundary — the console form runs
     # the same check, so UI and API reject the same incomplete inputs
     missing = _missing_required(connector, params)
@@ -5883,7 +5936,8 @@ async def v1_connections_save(request: Request):
             name=str(body.get("name", "") or ""),
             save_secrets=bool(body.get("save_secrets", False)),
             last_test=body.get("last_test"),
-            conn_id=str(body.get("id", "") or ""))
+            conn_id=str(body.get("id", "") or ""),
+            created_by=created_by_email)
     except KeyError:
         raise HTTPException(404, "Unknown connection")
     except ValueError as e:

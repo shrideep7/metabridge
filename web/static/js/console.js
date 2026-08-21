@@ -749,33 +749,105 @@ document.addEventListener('click', ev => {
   ev.preventDefault();
   document.querySelector('nav a[data-page="' + g.dataset.go + '"]').click();
 });
-/* ---- notification bell ----------------------------------------------------
-   The feed already existed (/api/system/notifications) but its only entry point
-   was the bottom of System, inside the collapsed "Platform internals"
-   accordion. Rows there repeated verbatim with no timestamps, no links and no
-   way to mark them read, so a real backlog was indistinguishable from noise.
-   Here: unread count on the bell, relative timestamps, one row per item with a
-   destination where we know one, and an explicit "Mark all as read". */
-const NOTIF_TOPIC_PAGE = {approvals: 'governance', governance: 'governance',
-  jobs: 'dashboard', connections: 'marketplace', auth: 'settings',
-  marketplace: 'marketplace', validation: 'validation'};
+/* ---- notification bell ---------------------------------------------------- */
+const NOTIF_TOPIC_PAGE = {
+  approvals: 'governance',
+  governance: 'governance',
+  jobs: 'dashboard',
+  connections: 'marketplace',
+  auth: 'settings',
+  members: 'settings',
+  marketplace: 'marketplace',
+  validation: 'validation',
+  system: 'settings'
+};
+
 let gNotifOpen = false;
-/* The feed carries `ts` (unix seconds) and leaves `at` empty, so relative
-   times have to come from ts. Rows previously showed no time at all, which is
-   why 53 near-identical entries could not be triaged. */
+let gNotifTab = 'all'; // 'all' | 'unread'
+let gNotifData = [];
+let gNotifCounts = { total: 0, unseen: 0 };
+
 function notifWhen(n) {
   if (n.at) return fmtAgo(n.at);
   if (typeof n.ts === 'number') return fmtAgo(new Date(n.ts * 1000).toISOString());
   return '';
 }
+
+function getNotifTimeGroup(n) {
+  let date;
+  if (typeof n.ts === 'number') {
+    date = new Date(n.ts * 1000);
+  } else if (n.at) {
+    date = new Date(n.at);
+  } else {
+    date = new Date();
+  }
+  const now = new Date();
+  const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const yesterdayStart = new Date(todayStart);
+  yesterdayStart.setDate(yesterdayStart.getDate() - 1);
+
+  if (date >= todayStart) return 'TODAY';
+  if (date >= yesterdayStart) return 'YESTERDAY';
+  return 'EARLIER';
+}
+
+function getNotifTypeIcon(n) {
+  const t = (n.topic || '').toLowerCase();
+  const title = (n.title || '').toLowerCase();
+  const sev = (n.severity || '').toLowerCase();
+
+  if (t === 'auth' || t === 'members' || title.includes('member') || title.includes('role') || title.includes('user')) {
+    return {
+      cls: 'notif-ic-user',
+      svg: `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>`
+    };
+  }
+  if (t === 'governance' || t === 'approvals' || title.includes('governance') || title.includes('violation') || title.includes('policy') || title.includes('pii')) {
+    return {
+      cls: 'notif-ic-shield',
+      svg: `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>`
+    };
+  }
+  if (t === 'validation' || t === 'pipeline' || t === 'jobs' || title.includes('pipeline') || title.includes('validation') || title.includes('etl')) {
+    return {
+      cls: 'notif-ic-pipeline',
+      svg: `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="6" y1="3" x2="6" y2="15"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/></svg>`
+    };
+  }
+  if (sev === 'success' || title.includes('completed') || title.includes('success')) {
+    return {
+      cls: 'notif-ic-check',
+      svg: `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>`
+    };
+  }
+  if (t === 'connections' || t === 'marketplace' || title.includes('estate') || title.includes('database') || title.includes('connected')) {
+    return {
+      cls: 'notif-ic-database',
+      svg: `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg>`
+    };
+  }
+  if (sev === 'critical' || sev === 'warning' || title.includes('failed') || title.includes('error') || title.includes('alert')) {
+    return {
+      cls: 'notif-ic-alert',
+      svg: `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>`
+    };
+  }
+  return {
+    cls: 'notif-ic-system',
+    svg: `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>`
+  };
+}
+
 function notifSetOpen(open) {
   gNotifOpen = open;
   const m = $('#notifMenu'), b = $('#notifBtn');
   if (!m || !b) return;
-  m.style.display = open ? 'block' : 'none';
+  m.style.display = open ? 'flex' : 'none';
   b.setAttribute('aria-expanded', open ? 'true' : 'false');
   if (open) loadNotifFeed();
 }
+
 async function refreshNotifBadge() {
   const dot = $('#notifDot');
   if (!dot) return;
@@ -788,53 +860,233 @@ async function refreshNotifBadge() {
       unseen ? 'Notifications — ' + unseen + ' unread' : 'Notifications');
   } catch (e) { dot.hidden = true; }
 }
+
+function renderNotifPanel() {
+  const m = $('#notifMenu');
+  if (!m) return;
+
+  const totalCount = gNotifData.length;
+  const unseenCount = gNotifData.filter(n => !n.seen).length;
+
+  const filteredItems = gNotifTab === 'unread'
+    ? gNotifData.filter(n => !n.seen)
+    : gNotifData;
+
+  // Header HTML
+  const headerHtml = `
+    <div class="notif-panel-header">
+      <div class="notif-title-group">
+        <h3 class="notif-title-text">Notifications</h3>
+        <span class="notif-unread-count-tag">${unseenCount ? unseenCount + ' unread' : 'all read'}</span>
+      </div>
+      <div class="notif-header-actions">
+        ${unseenCount ? '<button type="button" id="notifMarkAll" class="notif-btn-mark-all">Mark all as read</button>' : ''}
+        <button type="button" id="notifSettingsBtn" class="notif-btn-settings" title="Notification preferences" aria-label="Notification settings">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+        </button>
+      </div>
+    </div>
+  `;
+
+  // Tabs HTML
+  const tabsHtml = `
+    <div class="notif-tabs-bar" role="tablist">
+      <button type="button" role="tab" id="notifTabAll" class="notif-tab-btn ${gNotifTab === 'all' ? 'active' : ''}" aria-selected="${gNotifTab === 'all'}">
+        All <span class="notif-tab-count">(${totalCount})</span>
+      </button>
+      <button type="button" role="tab" id="notifTabUnread" class="notif-tab-btn ${gNotifTab === 'unread' ? 'active' : ''}" aria-selected="${gNotifTab === 'unread'}">
+        Unread <span class="notif-tab-count">(${unseenCount})</span>
+      </button>
+    </div>
+  `;
+
+  // Content HTML
+  let bodyContentHtml = '';
+
+  if (!filteredItems.length) {
+    if (gNotifTab === 'unread') {
+      bodyContentHtml = `
+        <div class="notif-empty-state">
+          <div class="notif-empty-icon-wrap">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
+          </div>
+          <div class="notif-empty-title">You're all caught up!</div>
+          <div class="notif-empty-sub">No unread notifications.</div>
+        </div>
+      `;
+    } else {
+      bodyContentHtml = `
+        <div class="notif-empty-state">
+          <div class="notif-empty-icon-wrap">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.7 21a2 2 0 0 1-3.4 0"/></svg>
+          </div>
+          <div class="notif-empty-title">No notifications</div>
+          <div class="notif-empty-sub">When events occur, they will appear here.</div>
+        </div>
+      `;
+    }
+  } else {
+    // Group by time: TODAY, YESTERDAY, EARLIER
+    const groups = { TODAY: [], YESTERDAY: [], EARLIER: [] };
+    filteredItems.forEach(n => {
+      const grp = getNotifTimeGroup(n);
+      groups[grp].push(n);
+    });
+
+    ['TODAY', 'YESTERDAY', 'EARLIER'].forEach(grpKey => {
+      const itemsInGroup = groups[grpKey];
+      if (itemsInGroup.length) {
+        bodyContentHtml += `<div class="notif-time-group-label">${grpKey}</div>`;
+        itemsInGroup.forEach(n => {
+          const iconObj = getNotifTypeIcon(n);
+          const page = NOTIF_TOPIC_PAGE[n.topic] || '';
+          const isUnread = !n.seen;
+
+          bodyContentHtml += `
+            <div class="notif-item ${isUnread ? 'unread' : 'read'}" data-id="${esc(n.id)}" ${page ? 'data-page="' + esc(page) + '"' : ''} tabindex="0" role="menuitem">
+              <div class="notif-type-icon ${iconObj.cls}">
+                ${iconObj.svg}
+              </div>
+              <div class="notif-content-col">
+                <div class="notif-item-header">
+                  <div class="notif-item-title">${esc(n.title)}</div>
+                  ${isUnread ? '<span class="notif-item-dot" title="Unread"></span>' : ''}
+                </div>
+                ${n.body ? `<div class="notif-item-body">${esc(n.body)}</div>` : ''}
+                <div class="notif-item-meta">${esc(notifWhen(n))}</div>
+              </div>
+            </div>
+          `;
+        });
+      }
+    });
+  }
+
+  const scrollAreaHtml = `<div class="notif-scroll-area">${bodyContentHtml}</div>`;
+
+  // Footer HTML
+  const footerHtml = `
+    <div class="notif-panel-footer">
+      <button type="button" class="notif-footer-link" id="notifViewAll">
+        View all notifications &rarr;
+      </button>
+    </div>
+  `;
+
+  m.innerHTML = headerHtml + tabsHtml + scrollAreaHtml + footerHtml;
+
+  // Bind Event Listeners
+  // 1. Mark All
+  const btnMarkAll = $('#notifMarkAll');
+  if (btnMarkAll) {
+    btnMarkAll.onclick = async (ev) => {
+      ev.stopPropagation();
+      try {
+        await api('/api/system/notifications/seen', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: '{}'
+        });
+      } catch (e) {}
+      gNotifData.forEach(n => { n.seen = true; });
+      await refreshNotifBadge();
+      renderNotifPanel();
+    };
+  }
+
+  // 2. Settings button
+  const btnSettings = $('#notifSettingsBtn');
+  if (btnSettings) {
+    btnSettings.onclick = (ev) => {
+      ev.stopPropagation();
+      notifSetOpen(false);
+      sysNavigate('settings', 'notifications');
+    };
+  }
+
+  // 3. Tabs
+  const tabAll = $('#notifTabAll');
+  const tabUnread = $('#notifTabUnread');
+  if (tabAll) {
+    tabAll.onclick = (ev) => {
+      ev.stopPropagation();
+      if (gNotifTab !== 'all') {
+        gNotifTab = 'all';
+        renderNotifPanel();
+      }
+    };
+  }
+  if (tabUnread) {
+    tabUnread.onclick = (ev) => {
+      ev.stopPropagation();
+      if (gNotifTab !== 'unread') {
+        gNotifTab = 'unread';
+        renderNotifPanel();
+      }
+    };
+  }
+
+  // 4. View All Footer
+  const btnViewAll = $('#notifViewAll');
+  if (btnViewAll) {
+    btnViewAll.onclick = (ev) => {
+      ev.stopPropagation();
+      notifSetOpen(false);
+      sysNavigate('settings', 'notifications');
+    };
+  }
+
+  // 5. Item click & keydown handlers
+  const handleItemActivate = async (r) => {
+    const id = r.dataset.id;
+    const page = r.dataset.page;
+    const notifObj = gNotifData.find(n => n.id === id);
+
+    if (notifObj && !notifObj.seen) {
+      notifObj.seen = true;
+      try {
+        await api('/api/system/notifications/seen', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ids: [id] })
+        });
+      } catch (e) {}
+      await refreshNotifBadge();
+    }
+
+    notifSetOpen(false);
+    if (page) {
+      const navLink = document.querySelector('nav a[data-page="' + page + '"]');
+      if (navLink) navLink.click();
+    }
+  };
+
+  m.querySelectorAll('.notif-item').forEach(r => {
+    r.onclick = (ev) => {
+      ev.stopPropagation();
+      handleItemActivate(r);
+    };
+    r.onkeydown = (ev) => {
+      if (ev.key === 'Enter' || ev.key === ' ') {
+        ev.preventDefault();
+        ev.stopPropagation();
+        handleItemActivate(r);
+      }
+    };
+  });
+}
+
 async function loadNotifFeed() {
   const m = $('#notifMenu');
-  m.innerHTML = '<div style="padding:12px;color:var(--muted);font-size:12.5px">Loading…</div>';
+  if (!m) return;
+  m.innerHTML = '<div style="padding:20px;text-align:center;color:var(--muted);font-size:12.5px">Loading notifications…</div>';
   try {
-    const d = await api('/api/system/notifications?limit=30');
-    const rows = d.notifications || [];
-    const unseen = (d.counts || {}).unseen || 0;
-    m.innerHTML =
-      '<div style="display:flex;align-items:center;gap:8px;padding:9px 12px;border-bottom:1px solid var(--line)">'
-      + '<b style="font-size:12.5px">Notifications</b>'
-      + '<span style="color:var(--muted);font-size:11.5px">' + (unseen ? unseen + ' unread' : 'all read') + '</span>'
-      + '<span style="flex:1"></span>'
-      + (unseen ? '<button type="button" id="notifSeen" class="secondary" style="margin:0;padding:3px 10px;font-size:11.5px">Mark all as read</button>' : '')
-      + '</div>'
-      + (rows.length
-          ? rows.map(n => {
-              const c = n.severity === 'critical' ? 'var(--red)'
-                : n.severity === 'warning' ? 'var(--amber)'
-                : n.severity === 'success' ? 'var(--green)' : 'var(--ink3)';
-              const page = NOTIF_TOPIC_PAGE[n.topic] || '';
-              return '<div class="notif-row" ' + (page ? 'data-page="' + esc(page) + '" ' : '')
-                + 'style="padding:8px 12px;border-bottom:1px solid var(--line);'
-                + (page ? 'cursor:pointer' : '') + '">'
-                + '<div style="display:flex;gap:7px;align-items:baseline">'
-                + '<span style="color:' + c + ';font-size:14px;line-height:1">•</span>'
-                + '<span style="font-weight:600;font-size:12.5px;flex:1;min-width:0">' + esc(n.title) + '</span>'
-                + (n.seen ? '' : '<span title="Unread" style="width:6px;height:6px;border-radius:50%;background:var(--accent);flex:none"></span>')
-                + '</div>'
-                + (n.body ? '<div style="font-size:11.5px;color:var(--muted);margin:2px 0 0 18px">' + esc(n.body) + '</div>' : '')
-                + '<div style="font-size:11px;color:var(--muted2);margin:2px 0 0 18px">'
-                + esc(notifWhen(n)) + '</div>'
-                + '</div>';
-            }).join('')
-          : '<div style="padding:14px 12px;color:var(--muted);font-size:12.5px">Nothing to catch up on.</div>');
-    const sb = $('#notifSeen');
-    if (sb) sb.onclick = async ev => {
-      ev.stopPropagation();
-      try { await api('/api/system/notifications/seen', {method: 'POST',
-        headers: {'Content-Type': 'application/json'}, body: '{}'}); } catch (e) {}
-      await refreshNotifBadge(); loadNotifFeed();
-    };
-    m.querySelectorAll('.notif-row[data-page]').forEach(r =>
-      r.onclick = () => { notifSetOpen(false);
-        document.querySelector('nav a[data-page="' + r.dataset.page + '"]').click(); });
+    const d = await api('/api/system/notifications?limit=50');
+    gNotifData = d.notifications || [];
+    gNotifCounts = d.counts || { total: 0, unseen: 0 };
+    renderNotifPanel();
   } catch (e) {
-    m.innerHTML = '<div style="padding:12px;color:var(--red);font-size:12.5px">'
-      + esc(e.message) + '</div>';
+    m.innerHTML = '<div style="padding:16px;color:var(--red);font-size:12.5px">' + esc(e.message) + '</div>';
   }
 }
 if ($('#notifBtn')) {
@@ -3733,8 +3985,21 @@ async function loadDashboardBody() {
         desc: 'Execution errors encountered on recent runs — inspect error details or retry.',
         actionText: 'View failed jobs',
         onAction: () => {
-          const tab = $('#dashTabJob'); if (tab) tab.click();
-          const sel = $('#jobStatus'); if (sel) { sel.value = 'failed'; sel.dispatchEvent(new Event('change')); }
+          if (dashView !== 'job') {
+            dashView = 'job';
+            setHash('dashboard/job');
+            applyDashView();
+          }
+          jobStatusFilter = 'failed';
+          localStorage.setItem('mb_job_status', 'failed');
+          pagerState('jobTable').page = 1;
+          renderJobFilters(jobs, renderJobTable);
+          renderJobTable();
+          updateFilterReset();
+          const targetEl = $('#dashViewSeg') || $('#jobFilterWrap') || $('#dashViewJob') || $('.panel');
+          if (targetEl) {
+            targetEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
+          }
         }
       });
     }
@@ -3980,10 +4245,12 @@ async function loadDashboardBody() {
   // Distinguish "nothing ran yet" from "the filter hides everything" —
   // the second needs a way back, not onboarding copy.
   const jobEmpty = () => (jobStatusFilter || jobKindFilter)
-    ? '<tr><td colspan=' + jobCols() + ' style="color:var(--ink3)">No jobs match '
-      + [jobKindFilter && 'type <b>' + esc(jobKindFilter) + '</b>',
-         jobStatusFilter && 'status <b>' + esc(jobStatusFilter) + '</b>']
-        .filter(Boolean).join(' and ') + '. '
+    ? '<tr><td colspan=' + jobCols() + ' style="color:var(--ink3)">'
+      + (jobStatusFilter === 'failed' && !jobKindFilter
+          ? 'No failed jobs found. '
+          : 'No jobs match ' + [jobKindFilter && 'type <b>' + esc(jobKindFilter) + '</b>',
+                               jobStatusFilter && 'status <b>' + esc(jobStatusFilter) + '</b>']
+                             .filter(Boolean).join(' and ') + '. ')
       + '<a id="jobStatusClear" style="color:var(--accent);cursor:pointer">Clear filters</a></td></tr>'
     : '<tr><td colspan=' + jobCols() + ' style="color:var(--ink3)">No jobs yet — run a conversion, scan, or scaffold.</td></tr>';
   const renderJobTable = () => {
@@ -4884,9 +5151,173 @@ function connectionFor(key) {
   return mine.find(x => x.state === 'connected') || mine[0];
 }
 
-// A driver error can be long (a full SQL statement + caret underline) and the
-// card has no room for it — wrap it in a scrollable box with an explicit ×
-// so it doesn't feel stuck open with no way to dismiss it.
+let _activeConfigPopover = null;
+let _activeConfigId = null;
+
+function closeConfigPopover() {
+  if (_activeConfigPopover) {
+    _activeConfigPopover.remove();
+    _activeConfigPopover = null;
+    _activeConfigId = null;
+  }
+}
+
+function positionConfigPopover(popover, cardEl) {
+  if (!popover || !cardEl) return;
+  const rect = cardEl.getBoundingClientRect();
+  const scrollX = window.scrollX || window.pageXOffset || document.documentElement.scrollLeft;
+  const scrollY = window.scrollY || window.pageYOffset || document.documentElement.scrollTop;
+  const viewportWidth = window.innerWidth || document.documentElement.clientWidth;
+  const viewportHeight = window.innerHeight || document.documentElement.clientHeight;
+
+  const popWidth = popover.offsetWidth || 360;
+  const popHeight = popover.offsetHeight || 300;
+
+  let top = rect.bottom + scrollY + 8;
+  const spaceBelow = viewportHeight - rect.bottom;
+  const spaceAbove = rect.top;
+
+  if (spaceBelow < popHeight + 16 && spaceAbove > spaceBelow) {
+    top = rect.top + scrollY - popHeight - 8;
+  }
+
+  let left = rect.left + scrollX;
+  if (rect.left + popWidth > viewportWidth - 16) {
+    left = viewportWidth + scrollX - popWidth - 16;
+  }
+  if (left < scrollX + 16) {
+    left = scrollX + 16;
+  }
+
+  popover.style.top = Math.max(8, top) + 'px';
+  popover.style.left = Math.max(8, left) + 'px';
+}
+
+function openConfigPopover(row, triggerBtn) {
+  const cardEl = triggerBtn.closest('.sc') || triggerBtn;
+  if (_activeConfigId === row.id) {
+    closeConfigPopover();
+    return;
+  }
+  closeConfigPopover();
+
+  const spec = (allConnectors || []).find(k => k.key === row.connector) || { name: row.connector };
+  const specName = spec.name || row.connector || 'Connector';
+
+  const formatKeyName = (k) => {
+    const labels = {
+      account: 'Account', host: 'Host', port: 'Port', user: 'User',
+      database: 'Database', schema: 'Schema', warehouse: 'Warehouse',
+      role: 'Role', project: 'Project', dataset: 'Dataset',
+      region: 'Region', instance: 'Instance', service_account: 'Service Account'
+    };
+    if (labels[k.toLowerCase()]) return labels[k.toLowerCase()];
+    return k.split('_').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
+  };
+
+  const isSensitive = (k) => /password|secret|key|token|credential/i.test(k);
+
+  const paramEntries = Object.entries(row.params || {});
+  const safeRowsHtml = paramEntries.map(([k, v]) => {
+    let displayVal = esc(v);
+    if (isSensitive(k)) {
+      displayVal = '🔒 Stored securely';
+    }
+    return '<div class="config-popover-row">'
+      + '<span class="config-popover-lbl">' + esc(formatKeyName(k)) + '</span>'
+      + '<span class="config-popover-val">' + displayVal + '</span>'
+      + '</div>';
+  }).join('');
+
+  const credText = row.has_secrets
+    ? '🔒 Password stored on this host'
+    : '🔒 Password from environment';
+  const credRowHtml = '<div class="config-popover-row">'
+    + '<span class="config-popover-lbl">Credentials</span>'
+    + '<span class="config-popover-val">' + esc(credText) + '</span>'
+    + '</div>';
+
+  const st = connState(row);
+  const stLabel = STATE_LABELS[st] || 'Unknown';
+  const lastTestText = row.last_test && row.last_test.at ? fmtAgo(row.last_test.at) : 'Not tested yet';
+
+  const popover = document.createElement('div');
+  popover.className = 'config-popover-portal';
+  popover.setAttribute('role', 'dialog');
+  popover.setAttribute('aria-label', specName + ' Configuration');
+
+  popover.innerHTML = '<div class="config-popover-hd">'
+    + '<img src="/static/logos/' + esc(row.connector) + '.svg" alt="" onerror="this.style.display=\'none\'">'
+    + '<span class="config-popover-title">' + esc(specName) + ' Configuration</span>'
+    + '<button type="button" class="config-popover-close" aria-label="Close configuration">&times;</button>'
+    + '</div>'
+    + '<div class="config-popover-body">'
+    + '<div class="config-popover-sec">'
+    + '<div class="config-popover-sec-title">Connection Parameters</div>'
+    + (safeRowsHtml || '<div class="config-popover-row"><span class="config-popover-lbl">Parameters</span><span class="config-popover-val">Default configuration</span></div>')
+    + '</div>'
+    + '<div class="config-popover-sec" style="margin-top:6px">'
+    + '<div class="config-popover-sec-title">Security & Credentials</div>'
+    + credRowHtml
+    + '</div>'
+    + '<div class="config-popover-sec" style="margin-top:6px">'
+    + '<div class="config-popover-sec-title">Health & Status</div>'
+    + '<div class="config-popover-row">'
+    + '<span class="config-popover-lbl">Status</span>'
+    + '<span class="config-popover-badge"><span class="dot"></span>' + esc(stLabel) + '</span>'
+    + '</div>'
+    + '<div class="config-popover-row">'
+    + '<span class="config-popover-lbl">Last Tested</span>'
+    + '<span class="config-popover-val">' + esc(lastTestText) + '</span>'
+    + '</div>'
+    + '</div>'
+    + '<div id="rawJsonSec" style="display:none;margin-top:6px">'
+    + '<div class="config-popover-sec-title">Raw Configuration JSON</div>'
+    + '<div class="config-popover-json-box">' + esc(JSON.stringify(row.params || {}, null, 2)) + '</div>'
+    + '</div>'
+    + '</div>'
+    + '<div class="config-popover-footer">'
+    + '<button type="button" class="config-popover-toggle-json" id="btnToggleJson">Show raw JSON</button>'
+    + '</div>';
+
+  document.body.appendChild(popover);
+  _activeConfigPopover = popover;
+  _activeConfigId = row.id;
+
+  positionConfigPopover(popover, cardEl);
+
+  popover.querySelector('.config-popover-close').onclick = (e) => {
+    e.stopPropagation();
+    closeConfigPopover();
+  };
+
+  const toggleBtn = popover.querySelector('#btnToggleJson');
+  if (toggleBtn) {
+    toggleBtn.onclick = (e) => {
+      e.stopPropagation();
+      const jsonSec = popover.querySelector('#rawJsonSec');
+      const isHidden = jsonSec.style.display === 'none';
+      jsonSec.style.display = isHidden ? 'block' : 'none';
+      toggleBtn.textContent = isHidden ? 'Hide raw JSON' : 'Show raw JSON';
+      positionConfigPopover(popover, cardEl);
+    };
+  }
+}
+
+if (!window._configPopoverGlobalBound) {
+  window._configPopoverGlobalBound = true;
+  document.addEventListener('click', (e) => {
+    if (e.target.closest('.config-popover-portal') || e.target.closest('button[data-act="config"]')) return;
+    closeConfigPopover();
+  });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') closeConfigPopover();
+  });
+  window.addEventListener('resize', () => {
+    closeConfigPopover();
+  });
+}
+
 function connErrBox(msg) {
   return '<div style="position:relative;margin-top:6px">'
     + '<button type="button" title="Dismiss" onclick="this.parentElement.remove()" '
@@ -4956,6 +5387,20 @@ async function loadSavedConnections() {
       : (canLive ? '<button data-act="analyze" data-id="' + x.id + '">Analyze</button>'
                  : '<button data-act="edit" data-id="' + x.id + '">Generate artifacts</button>');
     const liveActs = canLive && (st === 'CONNECTED' || st === 'UNCONNECTED') && st !== 'STOPPED';
+    const creatorObj = x.creator || {};
+    const creatorId = x.creator_id || creatorObj.id;
+    const isMyConn = Boolean(myUser && myUser.id && creatorId && creatorId === myUser.id);
+    let creatorText = '';
+    if (isMyConn) {
+      creatorText = 'Created by: You';
+    } else {
+      const fn = String(creatorObj.first_name || '').trim();
+      const ln = String(creatorObj.last_name || '').trim();
+      const fullName = [fn, ln].filter(Boolean).join(' ');
+      creatorText = 'Created by: ' + esc(fullName || 'Unknown');
+    }
+    const creatorLine = '<div class="sc-creator">' + creatorText + '</div>';
+
     return '<div class="sc" role="group" aria-label="Connection ' + esc(x.name) + ', ' + esc(label) + '">'
       + '<div class="hd"><img src="/static/logos/' + esc(x.connector) + '.svg" alt="" onerror="this.style.display=\'none\'">'
       + '<span class="nm"><strong title="' + esc(x.name) + ' · ' + esc(spec.name) + '">' + esc(x.name)
@@ -4969,6 +5414,7 @@ async function loadSavedConnections() {
       +   '<button data-act="edit" data-id="' + x.id + '">Edit connection</button>'
       +   '<button class="danger" data-act="delete" data-id="' + x.id + '">Delete</button>'
       + '</div>'
+      + creatorLine
       + '<dl class="kv">'
       +   kvRow('Host', x.params.account || x.params.host || x.params.project || '—')
       +   kvRow('Scope', [x.params.database, x.params.warehouse].filter(Boolean).join(' · '))
@@ -5039,8 +5485,7 @@ async function loadSavedConnections() {
       if (act === 'start' || act === 'stop') { await api('/api/v1/connections/' + id + '/' + act, {method:'POST'}); return loadSavedConnections(); }
       if (act === 'fix' || act === 'edit') { return openConnector(row.connector, row.id); }
       if (act === 'config') {
-        out.innerHTML = '<pre style="margin-top:8px">' + esc(JSON.stringify(row.params, null, 2))
-          + '\n\ncredentials: ' + (row.has_secrets ? 'password stored on this host (file mode 0600)' : 'password from MB_* environment variable') + '</pre>';
+        openConfigPopover(row, b);
         return;
       }
       if (act === 'scaffold') {
