@@ -46,3 +46,6 @@ governance_out/
 scratch/
 
 frontend/
+
+# Tooling lockfile
+skills-lock.json
