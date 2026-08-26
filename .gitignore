@@ -44,3 +44,5 @@ docs/UI_AUTOMATION_COVERAGE.md
 # Generated runtime outputs
 governance_out/
 scratch/
+
+frontend/

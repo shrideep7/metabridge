@@ -790,7 +790,14 @@ async def auth_reset(request: Request):
 def me(request: Request):
     user = _request_user(request)
     perms = sorted(permissions_for(user["role"])) if user else []
+    # The whole matrix, not just this caller's row. The console's "View as
+    # role" preview has to answer "what would a viewer see?" without the
+    # caller holding members.view (which /api/users requires and an engineer
+    # does not have), and duplicating the table in the browser would let the
+    # two drift. Publishing it grants nothing: every request is still
+    # authorized server-side against the SESSION's role.
     out = {"user": user, "permissions": perms,
+           "role_permissions": {r: sorted(permissions_for(r)) for r in ROLES},
            "first_run": not AUTH.has_users()}
     if user:
         acct_admin = bool(user.get("account_admin"))
@@ -1448,6 +1455,39 @@ def _finish_job(job_dir: Path, **extra) -> dict:
     return meta
 
 
+def _objects_job_scope(job_dir: Path, meta: dict) -> dict:
+    """The database/schema an `objects` run actually read.
+
+    New runs record this at finish time. Runs made before that only carry it
+    inside output/object_inventory.json, and that artifact is ~200 KB — reading
+    one per row would make the job list proportional to total history rather
+    than to the page returned. So the answer is copied into meta.json the first
+    time it is needed and read from there forever after; a job is opened at
+    most once. A job whose artifact is gone stays unattributed rather than
+    being guessed at, and the console labels it as such.
+    """
+    if "database" in meta:
+        return {}
+    artifact = job_dir / "output" / "object_inventory.json"
+    if not artifact.exists():
+        return {}
+    try:
+        doc = json.loads(artifact.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    inv = doc.get("inventory") or {}
+    scope = {"database": inv.get("database", "") or "",
+             "schema": inv.get("schema", "") or ""}
+    try:
+        meta_file = job_dir / "meta.json"
+        stored = json.loads(meta_file.read_text(encoding="utf-8"))
+        stored.update(scope)
+        meta_file.write_text(json.dumps(stored, indent=2), encoding="utf-8")
+    except (OSError, ValueError):
+        pass          # re-reading the artifact next time beats failing the list
+    return scope
+
+
 def _job_dir(job_id: str) -> Path:
     if not job_id.isalnum():
         raise HTTPException(400, "Bad job id")
@@ -1604,6 +1644,8 @@ def list_jobs(kind: str = "", status: str = "", limit: int = 100):
         except OSError:
             meta.setdefault("has_findings", False)
             meta.setdefault("has_download", False)
+        if meta.get("kind") == "objects":
+            meta.update(_objects_job_scope(job_dir, meta))
         jobs.append(meta)
     return {"jobs": jobs, "total": total, "returned": len(jobs),
             "truncated": total > len(jobs)}
@@ -3639,6 +3681,12 @@ def system_insights(request: Request):
     for j in j7:
         k = j.get("kind", "other")
         by_kind7[k] = by_kind7.get(k, 0) + 1
+    # All-time totals, for the Overview KPI strip. `jobs` is every readable
+    # meta.json in the jobs dir, so both are LOWER BOUNDS: a run whose meta
+    # could not be parsed above was skipped and is counted nowhere. `running`
+    # is current state rather than a window — a job is running or it is not.
+    jobs_total = len(jobs)
+    jobs_running = sum(1 for j in jobs if j.get("status") == "running")
     if fail7:
         note("warning", "%d job(s) failed in the last 7 days" % fail7,
              "Open the job history to see what failed and re-run.",
@@ -3744,6 +3792,9 @@ def system_insights(request: Request):
         "attention": attention[:12],
         "activity": activity,
         "usage": {"jobs_7d": len(j7), "jobs_30d": len(j30),
+                  "jobs_total": jobs_total,
+                  "jobs_running": jobs_running,
+                  "jobs_failed_7d": fail7,
                   "success_rate_7d_pct":
                       int(round(100.0 * done7 / finished7))
                       if finished7 else None,
@@ -4723,10 +4774,17 @@ async def objects_inventory(request: Request):
     out = job_dir / "output"
     out.mkdir(parents=True, exist_ok=True)
     write_inventory_report(inv_doc, classification, str(out))
+    # WHICH system this run read, recorded on the job itself. Without it the
+    # console can only match a stored run to a system by connector, so every
+    # Snowflake system offers every Snowflake run as if it were its own.
     meta = _finish_job(job_dir, source_format=row["connector"],
                        target_format=target,
                        project=str(body.get("project", "") or "")
                        or "%s_objects" % row["connector"],
+                       connection_id=cid,
+                       connection_name=row.get("name", ""),
+                       database=inv_doc.get("database", "") or "",
+                       schema=inv_doc.get("schema", "") or "",
                        summary={"objects": classification["objects_total"],
                                 "automation_pct":
                                     classification["automation_pct"]})
@@ -4775,8 +4833,15 @@ async def objects_convert(request: Request):
     out.mkdir(parents=True, exist_ok=True)
     manifest = generate_object_package(inv, classification, target,
                                        str(out / "objects"))
+    # WHICH classification this package was generated from. Without it a
+    # package can only be matched back by source+target format, and two systems
+    # on the same platform heading for the same target are indistinguishable —
+    # the same coarse key that had every Snowflake system claiming every
+    # Snowflake run as its own. Packages made before this stay unattributed
+    # rather than being guessed at; they remain listed under Modernize.
     meta = _finish_job(job_dir, source_format=inv.connector,
                        target_format=target, summary=manifest,
+                       inventory_id=inv_id,
                        project=str(body.get("project", "") or "")
                        or "%s_objects" % inv.connector)
     return {"package_id": meta["id"], "target": target, **manifest,
@@ -5461,6 +5526,46 @@ async def autofix_apply(job_id: str, request: Request):
 # Governance
 # ---------------------------------------------------------------------------
 
+@app.get("/api/governance/policy")
+def governance_policy():
+    """The residency/masking policy every governance scan here is judged against.
+
+    NOT the agent thresholds: `GET /api/agents`'s `governance` field is
+    `approval_threshold`/`deny_floor`, an unrelated pair of numbers. This is the
+    document `governance/engine.py` evaluates — residency rules, masking
+    obligations, and which classifier categories they actually reach.
+
+    Read-only, and `editable` says so on the wire rather than leaving the client
+    to infer it. `--policy` exists on the CLI but no HTTP route accepts one, so
+    every scan this app runs uses the built-in baseline; the flag flips here on
+    the day that stops being true, and the UI follows without a change.
+
+    `yaml` is rendered server-side so the viewer shows the real document rather
+    than a re-serialisation the client invented — and so no YAML writer has to
+    ship in the browser bundle. It is ~460 bytes.
+    """
+    import yaml as _yaml
+    from metabridge.governance.engine import (
+        DEFAULT_POLICY, POLICY_FINDING_CODES, load_policy, policy_coverage,
+    )
+    policy = load_policy()          # no path -> the built-in baseline
+    coverage = policy_coverage(policy)
+    return {
+        "source": "built-in" if policy is DEFAULT_POLICY else "file",
+        "editable": False,
+        "yaml": _yaml.safe_dump(policy, sort_keys=False, allow_unicode=True),
+        "policy": policy,
+        "codes": POLICY_FINDING_CODES,
+        "coverage": {
+            "categories": coverage,
+            # Classified as sensitive, matched by no rule at all — the gap a
+            # DPO reading this screen is actually looking for.
+            "ungoverned": [c["category"] for c in coverage
+                           if not c["residency"] and not c["masking"]],
+        },
+    }
+
+
 @app.post("/api/govern")
 async def api_govern(
     file: UploadFile = File(...),
@@ -5829,10 +5934,10 @@ def _estate_cards(scope: list, aggregate: bool, convert_jobs: int) -> list:
         return [
             {"n": len(connected) or "--", "label": "Connected systems",
              "sub": "%d saved" % len(scope)},
-            {"n": len(analyzed) or "--", "label": "Systems analyzed",
+            {"n": len(analyzed) or "--", "label": "Systems analysed",
              "sub": ""},
             {"n": tables or "--", "label": "Tables",
-             "sub": "across analyzed systems" if analyzed
+             "sub": "across analysed systems" if analyzed
                     else "run Analyze on a connection"},
             {"n": "{:,}".format(rows) if rows else "--", "label": "Rows",
              "sub": ""},
@@ -5852,7 +5957,7 @@ def _estate_cards(scope: list, aggregate: bool, convert_jobs: int) -> list:
          "sub": c.get("connector", "")},
         {"n": (la.get("tables") if la.get("tables") is not None else "--"),
          "label": "Tables",
-         "sub": "live metadata analysis" if la else "run Analyze on this system"},
+         "sub": "from last analysis" if la else "run Analyze on this system"},
         {"n": (la.get("views") if la.get("views") is not None else "--"),
          "label": "Views", "sub": ""},
         {"n": (other or ("0" if la else "--")), "label": "Other objects",
@@ -5861,7 +5966,7 @@ def _estate_cards(scope: list, aggregate: bool, convert_jobs: int) -> list:
         {"n": "{:,}".format(la["total_rows"]) if la.get("total_rows")
               else ("0" if la else "--"), "label": "Rows", "sub": ""},
         {"n": (la.get("at", "") or "never").split("T")[0],
-         "label": "Last analyzed",
+         "label": "Last analysed",
          "sub": la.get("verdict", "") or ""},
     ]
 

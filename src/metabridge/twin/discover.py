@@ -33,6 +33,28 @@ _MART_RE = re.compile(r"^(fct_|fact_|dim_|mart_|rpt_|agg_)", re.I)
 # parsed pipeline projects (the 18 formats)
 # ===========================================================================
 
+# Two code paths name the same platform differently, so the twin ends up
+# holding both spellings and every consumer that groups by technology sees one
+# platform twice. A streaming job takes its technology from
+# StreamTransformation.engine ("aws_iot"), while the topics and application
+# beside it take cer.source_platform ("awsiot", the registry key). The Wave
+# simulation then offers "awsiot (1)" AND "aws_iot (1)" — two options that each
+# select half the nodes, so either choice silently plans a partial migration.
+#
+# Keys are the off-spelling, values the registry key in connectors/catalog.py.
+# Deliberately explicit rather than a de-underscoring rule: "kafka_connect" is
+# a real engine name with no registry entry and must stay exactly as it is.
+_TECH_ALIASES = {
+    "aws_iot": "awsiot",
+}
+
+
+def _norm_tech(technology: str) -> str:
+    """One spelling per platform, so grouping by technology is trustworthy."""
+    t = (technology or "").strip()
+    return _TECH_ALIASES.get(t.lower(), t)
+
+
 def add_pipeline_project(twin: DigitalTwin, pipeline,
                          source: str = "") -> None:
     from ..ir.model import TransformationType
@@ -101,10 +123,10 @@ def add_pipeline_project(twin: DigitalTwin, pipeline,
 def add_event_estate(twin: DigitalTwin, cer, source: str = "") -> None:
     src = source or ("events:%s" % cer.name)
     app = twin.add_node("application", cer.name, src,
-                        technology=cer.source_platform)
+                        technology=_norm_tech(cer.source_platform))
     for ch in cer.channels:
         t = twin.add_node("topic", ch.name, src,
-                          technology=cer.source_platform,
+                          technology=_norm_tech(cer.source_platform),
                           metadata={"kind": ch.kind,
                                     "partitions": ch.partitions,
                                     "delivery": ch.delivery})
@@ -129,7 +151,8 @@ def add_event_estate(twin: DigitalTwin, cer, source: str = "") -> None:
     # now their own kind and cer.resolve_stream is the single mapping.
     for t in cer.transformations:
         j = twin.add_node("streaming_job", t.name, src,
-                          technology=t.engine or cer.source_platform)
+                          technology=_norm_tech(t.engine
+                                                or cer.source_platform))
         for i in t.inputs:
             resolved = i if node_id("topic", i) in twin.nodes \
                 else cer.resolve_stream(i)
@@ -141,7 +164,7 @@ def add_event_estate(twin: DigitalTwin, cer, source: str = "") -> None:
             twin.add_edge(j.id, out.id, "writes", src)
     for cdc in cer.cdc_sources:
         db = twin.add_node("database", cdc.database or cdc.name, src,
-                           technology=cdc.flavor)
+                           technology=_norm_tech(cdc.flavor))
         for ch in cdc.output_channels:
             cid = node_id("topic", ch)
             if cid in twin.nodes:
