@@ -86,12 +86,13 @@ class DbtGenerator(BaseTargetGenerator):
 
     def _generate(self, ir: IrPipeline, out: Path) -> GenerationResult:
         from .dbt_generator import generate_dbt_project
-        generate_dbt_project(ir, str(out), layout="layered")
+        generate_dbt_project(ir, str(out), layout="standard")
         return GenerationResult(
             format=self.format_name, output_dir=str(out),
-            notes=["layered layout: models/staging|intermediate|marts, "
-                   "snapshots/, macros/, tests/; ref()/source() dependencies "
-                   "resolved"])
+            notes=["dbt Labs' standard structure: staging subfoldered by "
+                   "source system, intermediate and marts by domain, "
+                   "per-folder property files, snapshots/seeds/analyses; "
+                   "ref()/source() dependencies resolved and verified"])
 
 
 class PowerCenterGenerator(BaseTargetGenerator):

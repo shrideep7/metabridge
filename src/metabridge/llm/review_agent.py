@@ -136,11 +136,11 @@ def _generated_artifact(out: Path, target_format: str,
     if target_format == "dbt":
         for f in sorted((out / "dbt").rglob("*.sql")):
             if f.stem == m.name:
-                return str(f.relative_to(out)), f.read_text(encoding="utf-8")
+                return f.relative_to(out).as_posix(), f.read_text(encoding="utf-8")
     elif target_format in SQL_DIALECT_FORMATS:
         for f in sorted((out / "sql").glob("*.sql")):
             if f.stem.split("_", 1)[-1] == m.name:
-                return str(f.relative_to(out)), f.read_text(encoding="utf-8")
+                return f.relative_to(out).as_posix(), f.read_text(encoding="utf-8")
     elif target_format == "powercenter":
         xmls = sorted(out.glob("wf_*.xml")) or sorted(out.glob("*.xml"))
         if xmls:
@@ -148,13 +148,13 @@ def _generated_artifact(out: Path, target_format: str,
             start = text.find('<MAPPING NAME="%s"' % m.name)
             if start >= 0:
                 end = text.find("</MAPPING>", start)
-                return str(xmls[0].relative_to(out)), \
+                return xmls[0].relative_to(out).as_posix(), \
                     text[start:end + len("</MAPPING>")]
-            return str(xmls[0].relative_to(out)), text[:3000]
+            return xmls[0].relative_to(out).as_posix(), text[:3000]
     elif target_format == "idmc":
         for f in sorted((out / "idmc").rglob("*.json")):
             if m.name.lower() in f.stem.lower():
-                return str(f.relative_to(out)), f.read_text(encoding="utf-8")
+                return f.relative_to(out).as_posix(), f.read_text(encoding="utf-8")
     return "", ""
 
 
@@ -665,7 +665,12 @@ def apply_corrections(output_dir: str, approved_ids: List[str],
                             "file": c["file"],
                             "detail": "current_code occurs %d times" % n})
             continue
-        archive = backups / (c["file"].replace("/", "__") + ".orig")
+        # flatten BOTH separators: on Windows the reported path carries a
+        # backslash, which survived the "/" replacement and turned the archive
+        # name into a nested path whose parent had never been created — so
+        # approve-and-apply failed outright for every target whose artifacts
+        # live in a subdirectory, which is all of them
+        archive = backups / (re.sub(r"[\\/]", "__", c["file"]) + ".orig")
         if not archive.exists():
             archive.write_text(text, encoding="utf-8")          # first-touch original
         pre_image = text

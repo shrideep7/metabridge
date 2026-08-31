@@ -49,10 +49,25 @@ def _run(tmp_path, **kw):
     out = tmp_path / "out"
     report = scaffold("oracle", "snowflake", _manifest(tmp_path), str(out),
                       "combined", **kw)
-    models = sorted(f.parent.name + "/" + f.name
-                    for f in (out / "dbt" / "models").rglob("*.sql"))
+    # layer/<file>, with the per-system or per-domain subfolder collapsed —
+    # these tests care about WHICH layer a model landed in, not the grouping
+    models = sorted(
+        f.relative_to(out / "dbt" / "models").parts[0] + "/" + f.name
+        for f in (out / "dbt" / "models").rglob("*.sql"))
     ddl = (out / "ddl" / "01_create_landing.sql").read_text(encoding="utf-8")
     return report, models, ddl
+
+
+def _landed(models, layer, entity):
+    """Whether a model for `entity` landed in `layer`.
+
+    Matched on the entity rather than the full model name: these tests are
+    about which tables the raw layer still carries, and the
+    stg_<system>__<entity> naming belongs to test_dbt_project_generator.py.
+    """
+    entity = entity.lower()
+    return any(m.split("/", 1)[0] == layer and entity in m.split("/", 1)[1].lower()
+               for m in models)
 
 
 # --- the three modes -------------------------------------------------------
@@ -61,15 +76,15 @@ def test_manifest_only_is_unchanged(tmp_path):
     """The regression gate: with no bundle every generator must see exactly
     the pipeline it saw before this argument existed."""
     report, models, ddl = _run(tmp_path)
-    assert "staging/stg_dim_customer.sql" in models
+    assert _landed(models, "staging", "dim_customer")
     assert "DIM_CUSTOMER" in ddl
     assert "etl" not in report
 
 
 def test_bundle_adds_the_curated_layer(tmp_path):
     report, models, _ = _run(tmp_path, etl_bundle=_bundle(tmp_path))
-    assert "marts/dim_customer.sql" in models
-    assert "staging/stg_customers.sql" in models
+    assert _landed(models, "marts", "dim_customer")
+    assert _landed(models, "staging", "customers")
     assert report["etl"]["converted"] == 1
 
 
@@ -77,7 +92,7 @@ def test_produced_table_is_not_landed(tmp_path):
     """DIM_CUSTOMER is in the manifest AND built by the ETL. Landing it too
     yields the same relation twice, diverging the moment either changes."""
     report, models, ddl = _run(tmp_path, etl_bundle=_bundle(tmp_path))
-    assert "staging/stg_dim_customer.sql" not in models
+    assert not _landed(models, "staging", "dim_customer")
     assert "DIM_CUSTOMER" not in ddl
     assert [t["table"] for t in report["etl"]["not_landed"]] == ["DIM_CUSTOMER"]
 
@@ -87,7 +102,7 @@ def test_land_etl_targets_keeps_it(tmp_path):
     sides in parallel to compare them, so it stays available."""
     report, models, ddl = _run(tmp_path, etl_bundle=_bundle(tmp_path),
                                land_etl_targets=True)
-    assert "staging/stg_dim_customer.sql" in models
+    assert _landed(models, "staging", "dim_customer")
     assert "DIM_CUSTOMER" in ddl
     assert report["etl"]["not_landed"] == []
 
@@ -195,15 +210,18 @@ def test_procedure_built_table_is_not_landed_either(tmp_path):
     out = tmp_path / "out"
     report = scaffold("oracle", "snowflake",
                       _manifest(tmp_path, PROC_MANIFEST), str(out), "procs")
-    models = sorted(f.parent.name + "/" + f.name
-                    for f in (out / "dbt" / "models").rglob("*.sql"))
+    # layer/<file>, with the per-system or per-domain subfolder collapsed —
+    # these tests care about WHICH layer a model landed in, not the grouping
+    models = sorted(
+        f.relative_to(out / "dbt" / "models").parts[0] + "/" + f.name
+        for f in (out / "dbt" / "models").rglob("*.sql"))
     ddl = (out / "ddl" / "01_create_landing.sql").read_text(encoding="utf-8")
     unload = (out / "ddl" / "02_unload_from_oracle.sql").read_text(
         encoding="utf-8")
 
-    assert "staging/stg_orders.sql" in models          # raw still landed
+    assert _landed(models, "staging", "orders")        # raw still landed
     assert "ORDERS" in ddl
-    assert "staging/stg_slv_orders.sql" not in models  # rebuilt, so not landed
+    assert not _landed(models, "staging", "slv_orders")  # rebuilt
     assert "SLV_ORDERS" not in ddl
     assert "SLV_ORDERS" not in unload
     assert [t["table"] for t in report["procedures"]["not_landed"]] == \
@@ -244,6 +262,43 @@ def test_oracle_upload_stays_commented_without_a_stage_uri(tmp_path):
     sql = (out / "ddl" / "02_unload_from_oracle.sql").read_text(encoding="utf-8")
     assert "\nHOST aws s3 cp" not in sql
     assert "--   HOST aws s3 cp" in sql
+
+
+def test_the_oracle_unload_pins_its_text_formats(tmp_path):
+    """CSV carries no types, so the session's NLS settings ARE the data — and
+    they default to the server's locale, which this script does not control.
+
+    NLS_DATE_FORMAT defaults to DD-MON-RR on most installs. RR is a two-digit
+    year, so 1959 and 2059 both spool as '59' and the load resolves them by
+    rule rather than by fact: a date of birth in that window arrives a century
+    out with no error raised on either side. NLS_NUMERIC_CHARACTERS is the
+    same trap for numbers — a comma-decimal locale spools 1234,56, which a CSV
+    reader splits into two fields.
+    """
+    out = tmp_path / "out"
+    scaffold("oracle", "snowflake", _manifest(tmp_path, PROC_MANIFEST),
+             str(out), "nls")
+    sql = (out / "ddl" / "02_unload_from_oracle.sql").read_text(
+        encoding="utf-8")
+    assert "ALTER SESSION SET NLS_DATE_FORMAT = 'YYYY-MM-DD HH24:MI:SS';" \
+        in sql
+    assert "NLS_TIMESTAMP_FORMAT = 'YYYY-MM-DD HH24:MI:SS.FF9';" in sql
+    assert "NLS_NUMERIC_CHARACTERS = '.,';" in sql
+    # and they have to be set BEFORE any row is written, or the first table
+    # spools in whatever the server's locale was
+    assert sql.index("NLS_DATE_FORMAT") < sql.index("\nSPOOL ")
+
+
+def test_the_snowflake_csv_load_states_its_date_formats(tmp_path):
+    """Stated rather than left to a silent default, so the pairing with the
+    unload above is visible to whoever reads the two files."""
+    out = tmp_path / "out"
+    scaffold("oracle", "snowflake", _manifest(tmp_path, PROC_MANIFEST),
+             str(out), "fmt")
+    sql = (out / "ddl" / "03_load_into_snowflake.sql").read_text(
+        encoding="utf-8")
+    assert "DATE_FORMAT = AUTO" in sql
+    assert "TIMESTAMP_FORMAT = AUTO" in sql
 
 
 # --- the load carries its own stage setup ----------------------------------
@@ -429,3 +484,38 @@ def test_teradata_nos_location_is_a_path_not_a_url(tmp_path):
     _out, sql = _td_unload(tmp_path, movement={"stage_uri": "s3://b/p"})
     assert "LOCATION('/s3/b.s3.amazonaws.com/p/raw_accounts/')" in sql
     assert "LOCATION('s3://" not in sql
+
+
+# --- a placeholder says why it is one ---------------------------------------
+
+def test_an_unfilled_session_context_says_where_the_value_comes_from(tmp_path):
+    """Generated with a target connection the landing script carries real
+    names; generated without one it carries `<database>`. With nothing
+    saying so, the second reads as a defect in the generator rather than a
+    consequence of how the run was set up — and the operator has no way to
+    tell which of the two they are looking at."""
+    out = tmp_path / "out"
+    scaffold("oracle", "snowflake", _manifest(tmp_path, PROC_MANIFEST),
+             str(out), "noconn")
+    sql = (out / "ddl" / "01_create_landing.sql").read_text(encoding="utf-8")
+    assert "<database>" in sql
+    assert "TARGET CONNECTION" in sql
+    assert "regenerate" in sql
+    # and it is listed as something to substitute, not left to be noticed
+    readme = (out / "ddl" / "README.md").read_text(encoding="utf-8")
+    assert "`<database>`" in readme
+
+
+def test_a_filled_session_context_carries_no_explanation(tmp_path):
+    """The note answers a question that only exists when the value is
+    missing. Printing it beside a real database name is noise."""
+    out = tmp_path / "out"
+    scaffold("oracle", "snowflake", _manifest(tmp_path, PROC_MANIFEST),
+             str(out), "conn",
+             target_params={"database": "RETAIL_BANKING",
+                            "warehouse": "WH1"})
+    sql = (out / "ddl" / "01_create_landing.sql").read_text(encoding="utf-8")
+    assert "USE DATABASE RETAIL_BANKING;" in sql
+    assert "USE WAREHOUSE WH1;" in sql
+    assert "<database>" not in sql
+    assert "TARGET CONNECTION" not in sql

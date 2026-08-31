@@ -445,16 +445,35 @@ def _layer3_semantics(pipeline: Pipeline, out: Path, target_format: str,
                 "output — incremental matching must be verified manually"
                 % ", ".join(m.unique_key), obj=m.name))
 
-    # 3c. expression fidelity — loose count comparison, warning only
+    # 3c. expression fidelity — loose count comparison, warning only.
+    #
+    # Only meaningful when the re-parse actually decomposed the output. A model
+    # the decomposer could not break into a native graph comes back as one SQL
+    # override with NO per-port expressions, so the count is 0 however much
+    # logic the SQL plainly contains — reporting that as "only 0 are visible"
+    # states a loss where the truth is that we could not look.
+    opaque = sum(1 for m in back.mappings
+                 if any(i.code in ("SQL_OVERRIDE_FALLBACK",
+                                   "OUTPUT_SCHEMA_UNKNOWN")
+                        for i in m.issues))
     src_exprs, back_exprs = _expression_count(pipeline), \
         _expression_count(back)
     if src_exprs and back_exprs < src_exprs * 0.5:
-        findings.append(_finding(
-            "WARNING", "EXPRESSION_FIDELITY",
-            "source has %d derived expressions but only %d are visible "
-            "in the generated output — some logic may have been folded "
-            "or dropped; review the riskiest mappings"
-            % (src_exprs, back_exprs)))
+        if opaque:
+            findings.append(_finding(
+                "WARNING", "EXPRESSION_UNVERIFIABLE",
+                "expression fidelity could not be checked: %d generated "
+                "model(s) re-parsed as an opaque SQL statement, so their "
+                "derived columns are not individually visible (source "
+                "declares %d) — spot-check those models by hand"
+                % (opaque, src_exprs)))
+        else:
+            findings.append(_finding(
+                "WARNING", "EXPRESSION_FIDELITY",
+                "source has %d derived expressions but only %d are visible "
+                "in the generated output — some logic may have been folded "
+                "or dropped; review the riskiest mappings"
+                % (src_exprs, back_exprs)))
     return findings
 
 

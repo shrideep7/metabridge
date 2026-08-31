@@ -252,10 +252,18 @@ def test_scaffold_sap_to_snowflake(tmp_path):
 
     # dbt side
     dbt_dir = tmp_path / "dbt"
-    orders = (dbt_dir / "models" / "staging" / "stg_sales_orders.sql").read_text()
+    orders = next((dbt_dir / "models" / "staging").rglob(
+        "stg_*sales_orders.sql")).read_text()
     assert "materialized='incremental'" in orders
     assert "unique_key='VBELN'" in orders
-    assert "{{ var('LAST_RUN_TS') }}" in orders
+    # the manifest's incremental_column becomes dbt's OWN incremental idiom.
+    # It used to render as {{ var('LAST_RUN_TS') }}: a var the project never
+    # declared, so the model either failed to compile or — where the predicate
+    # had been parked in a REVIEW comment — quietly rescanned the whole source
+    # on every run while still calling itself incremental.
+    assert "{% if is_incremental() %}" in orders
+    assert "where AEDAT > (select max(AEDAT) from {{ this }})" in orders
+    assert "{{ var('LAST_RUN_TS') }}" not in orders
     assert (dbt_dir / "profiles.yml").exists()
     profile = (dbt_dir / "profiles.yml").read_text()
     assert "snowflake" in profile
@@ -319,3 +327,91 @@ def test_analysis_recorded_moves_connection_to_analyzed(tmp_path,
     (listed,) = cs.list_connections()
     assert listed["last_analysis"]["tables"] == 31
     assert listed["last_analysis"]["database"] == "SF_SAMPLES_DB"
+
+
+# ---------------------------------------------------------------------------
+# a scaffold IS a conversion: it must ship what `convert` ships
+# ---------------------------------------------------------------------------
+
+def test_scaffold_ships_a_validation_suite(tmp_path):
+    """It generated a dbt project and no way to check it: no reconciliation
+    SQL, no dbt tests, no verdict. Whether the output could be trusted
+    depended on which entry point produced it."""
+    report = scaffold("sap_s4", "snowflake",
+                      str(EXAMPLES / "sap_to_snowflake" / "tables.yml"),
+                      str(tmp_path), governance=False)
+    assert report["validation_tests"]["total_tests"] > 0
+    assert (tmp_path / "validation_tests" / "tests.json").exists()
+    assert (tmp_path / "validation_plan.json").exists()
+    assert list((tmp_path / "validation_tests" / "reconciliation").iterdir())
+    # and the five-layer verdict
+    assert report["migration_validation"]["verdict"]
+    assert (tmp_path / "migration_validation_report.md").exists()
+    assert report["migration_validation"]["layers"]["syntax_validation"] \
+        == "PASS"
+
+
+def test_a_declared_key_is_tested_even_on_a_full_reload(tmp_path):
+    """`unique_key` was read only inside the incremental branch, so a manifest
+    could declare a primary key and the generated project would test nothing
+    — no pk_uniqueness, no unique/not_null on the column."""
+    import yaml
+    manifest = tmp_path / "tables.yml"
+    manifest.write_text(yaml.safe_dump({"tables": [{
+        "name": "CUSTOMER", "schema": "RAW_SCHEMA", "database": "DB",
+        "unique_key": ["CUSTOMER_ID"],          # no incremental_column
+        "columns": [{"name": "CUSTOMER_ID", "type": "NUMBER"},
+                    {"name": "EMAIL", "type": "VARCHAR2(120)"}],
+    }]}), encoding="utf-8")
+    out = tmp_path / "out"
+    report = scaffold("oracle", "snowflake", str(manifest), str(out),
+                      governance=False)
+    assert report["validation_tests"]["by_type"]["pk_uniqueness"] == 1
+    props = next((out / "dbt").rglob("_*__models.yml"))
+    doc = yaml.safe_load(props.read_text(encoding="utf-8"))
+    tests = {c["name"]: c.get("tests")
+             for m in doc["models"] for c in m.get("columns", [])}
+    assert set(tests["CUSTOMER_ID"]) == {"unique", "not_null"}
+
+
+def test_manifest_types_beat_an_etl_export_s_own_typing(tmp_path):
+    """IDMC normalises the catalog into its own platform typesystem before
+    exporting, so Oracle's NUMBER arrives as `double`. The manifest read the
+    real catalog, so it wins — otherwise the project documented `float` for a
+    column the landing DDL creates as DECIMAL(38,6): three answers for one
+    column, none checkable against the others."""
+    import yaml
+    manifest = tmp_path / "tables.yml"
+    manifest.write_text(yaml.safe_dump({"tables": [{
+        "name": "CUSTOMER", "schema": "RAW", "database": "DB",
+        "columns": [{"name": "CUSTOMER_ID", "type": "NUMBER"},
+                    {"name": "EMAIL", "type": "VARCHAR2(120)"}]}]}),
+        encoding="utf-8")
+    out = tmp_path / "out"
+    scaffold("oracle", "snowflake", str(manifest), str(out), governance=False)
+    props = next((out / "dbt").rglob("_*__models.yml"))
+    doc = yaml.safe_load(props.read_text(encoding="utf-8"))
+    types = {c["name"]: c.get("data_type")
+             for m in doc["models"] for c in m.get("columns", [])}
+    assert types == {"CUSTOMER_ID": "decimal(38,6)", "EMAIL": "varchar(120)"}
+    ddl = (out / "ddl" / "01_create_landing.sql").read_text(encoding="utf-8")
+    # documented exactly as the landing table is created
+    assert "DECIMAL(38,6)" in ddl and "VARCHAR(120)" in ddl
+
+
+def test_every_model_documents_its_columns(tmp_path):
+    """Only marts documented columns, so a staging model carried a `columns:`
+    entry naming one column with no type (added to hang a test on it) beside
+    marts that typed all of them."""
+    import yaml
+    report = scaffold("sap_s4", "snowflake",
+                      str(EXAMPLES / "sap_to_snowflake" / "tables.yml"),
+                      str(tmp_path), governance=False)
+    assert report["summary"]["objects_total"] == 3
+    for props in (tmp_path / "dbt").rglob("_*__models.yml"):
+        doc = yaml.safe_load(props.read_text(encoding="utf-8"))
+        for model in doc["models"]:
+            cols = model.get("columns") or []
+            assert cols, model["name"]
+            for col in cols:
+                assert col.get("data_type"), (model["name"], col["name"])

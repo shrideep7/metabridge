@@ -27,6 +27,40 @@ import yaml
 
 _TYPES_FILE = Path(__file__).parent / "semantic_data_types.yaml"
 
+# What every generator writes for a decimal column that declares no
+# precision — Oracle's bare NUMBER, most often.
+#
+# It lives here because five generators needed an answer and each invented
+# its own: the warehouse DDL said decimal(38,6), the PowerCenter XML said
+# decimal(28,0), the IDMC JSON said decimal(10,0). One column, three
+# contradictory types in a single bundle, and the narrowest of them would
+# overflow a 28-digit key on import.
+#
+# Scale 6 rather than 0 is deliberate and it is the safe direction: scale 0
+# asserts the column is integral, so a price or a rate is silently truncated
+# on the way in. Scale 6 costs a padded rendering (1001.000000), which is
+# visible and reversible. Precision 38 is the widest exact numeric every
+# supported warehouse holds.
+#
+# It is still a GUESS, and 00_probe_string_widths.sql measures the real
+# thing — a measured precision makes both sides of the migration declare
+# the same type, which is what the reconciliation checksum needs.
+DECIMAL_FALLBACK = (38, 6)
+
+
+def decimal_fallback(max_precision: int = 0) -> Tuple[int, int]:
+    """DECIMAL_FALLBACK clamped to a format's own precision limit.
+
+    PowerCenter's decimal tops out at 28 without high precision enabled, so
+    it cannot simply take 38 — but it must take the same SCALE, or the
+    bundle goes back to disagreeing with itself about whether the column has
+    a fractional part at all.
+    """
+    p, s = DECIMAL_FALLBACK
+    if max_precision and max_precision < p:
+        p = max_precision
+    return p, min(s, p)
+
 CANONICAL_TYPES = ("STRING", "FIXED_STRING", "INTEGER", "BIG_INTEGER",
                    "DECIMAL", "FLOAT", "BOOLEAN", "DATE", "TIME", "TIMESTAMP",
                    "TIMESTAMP_TZ", "BINARY", "JSON", "VARIANT", "ARRAY",

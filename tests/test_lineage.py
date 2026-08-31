@@ -124,7 +124,7 @@ def test_build_and_write(retail, tmp_path):
     assert doc["mermaid"]["table_lineage"].startswith("graph LR")
     path = write_lineage(doc, str(tmp_path))
     assert Path(path).exists()
-    md = (tmp_path / "lineage.md").read_text()
+    md = (tmp_path / "lineage.md").read_text(encoding="utf-8")
     assert "```mermaid" in md
     assert "## customer_orders — transformation lineage" in md
     assert "**TGT_stg_customers.email**" in md or "TGT_stg_customers.email" in md

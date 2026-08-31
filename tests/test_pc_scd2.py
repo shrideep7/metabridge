@@ -188,9 +188,12 @@ def test_merge_based_scd2_on_warehouses(tmp_path, monkeypatch, target):
 
 def test_dbt_snapshot_when_semantics_match(tmp_path, monkeypatch):
     _convert(tmp_path, "dbt", monkeypatch)
-    snap = next((tmp_path / "out" / "dbt").rglob("snapshots/scd2.sql"))
+    snap = next((tmp_path / "out" / "dbt" / "snapshots").glob("snap_*.sql"))
     text = snap.read_text()
-    assert "{% snapshot scd2 %}" in text
+    # dbt reads a snapshot's node name from the TAG, not the filename, so the
+    # two have to agree — they drifted once and every ref to the snapshot
+    # pointed at a node that did not exist
+    assert "{%% snapshot %s %%}" % snap.stem in text
     assert "unique_key='cust_id'" in text
     assert "strategy='check'" in text
     assert "check_cols=['cust_name']" in text
@@ -199,7 +202,7 @@ def test_dbt_snapshot_when_semantics_match(tmp_path, monkeypatch):
 def test_dbt_incremental_scd2_when_surrogate_key(tmp_path, monkeypatch):
     rep = _convert(tmp_path, "dbt", monkeypatch, with_surrogate=True)
     root = tmp_path / "out" / "dbt"
-    assert not list(root.rglob("snapshots/scd2.sql"))
+    assert not list((root / "snapshots").glob("snap_*.sql"))
     model = next(root.rglob("models/**/dim_customer.sql")).read_text()
     # versions merge on the SURROGATE key — business key would erase history
     assert "materialized='incremental'" in model

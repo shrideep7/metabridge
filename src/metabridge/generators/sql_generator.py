@@ -33,7 +33,7 @@ _CANONICAL_TO_SQL = {
 }
 
 # Documented fallback when a decimal declares no precision/scale.
-_SQL_DECIMAL_FALLBACK = (38, 6)
+from ..sqlx.type_engine import DECIMAL_FALLBACK as _SQL_DECIMAL_FALLBACK
 
 
 def _sql_type(port) -> str:

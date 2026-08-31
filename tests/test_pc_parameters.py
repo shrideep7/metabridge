@@ -5,6 +5,7 @@ import pytest
 from metabridge.engine import parse_input
 from metabridge.ir.model import IssueSeverity
 from metabridge.parsers.pc_parameters import classify
+from conftest import model_sql
 
 
 def _xml() -> str:
@@ -143,11 +144,41 @@ def _convert(tmp_path, target, monkeypatch):
     return tmp_path / "out"
 
 
+def _nested_block_comment(sql: str):
+    """Offset of a `/*` opened inside an already-open `/* ... */`, else None.
+
+    Only PostgreSQL, Snowflake and Redshift nest block comments. On BigQuery
+    and plain ANSI the inner `*/` closes the outer comment and the trailing
+    `*/` is a syntax error — so a generated model must never contain one.
+    """
+    depth = i = 0
+    while i < len(sql) - 1:
+        pair = sql[i:i + 2]
+        if pair == "/*":
+            depth += 1
+            if depth > 1:
+                return i
+            i += 2
+        elif pair == "*/":
+            depth = max(0, depth - 1)
+            i += 2
+        else:
+            i += 1
+    return None
+
+
 def test_dbt_substitution_by_classification(tmp_path, monkeypatch):
     out = _convert(tmp_path, "dbt", monkeypatch)
-    sql = next((out / "dbt").rglob("models/**/int_sales.sql")).read_text()
-    # stateful: substituted BUT loudly marked — never a silent static var
-    assert "{{ var('LAST_RUN_DATE') }} /* STATEFUL" in sql
+    sql = model_sql(out / "dbt", "sales")
+    # Stateful is still never silent — but the loud marking is the
+    # STATEFUL_VARIABLE review item (test_stateful_variables_raise_manual_review
+    # pins it, with the watermark recipe in its suggestion), NOT an inline
+    # /* ... */ note. That note was substituted at whatever point the variable
+    # appeared, which was routinely inside an existing comment, and a nested
+    # block comment does not parse on BigQuery or plain ANSI.
+    assert "{{ var('LAST_RUN_DATE') }}" in sql
+    assert "/* STATEFUL" not in sql
+    assert _nested_block_comment(sql) is None, "nested /* */ in generated SQL"
     # system variable -> dbt run context
     assert "{{ invocation_id }}" in sql
     assert "$PMWorkflowRunId" not in sql

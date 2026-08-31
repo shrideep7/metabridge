@@ -53,9 +53,12 @@ def test_snowflake_to_dbt(tmp_path):
     report = convert(SNOW, str(tmp_path), source_format="snowflake",
                      target_format="dbt")
     assert report["summary"]["automated_conversion_rate"] == 100.0
-    ua = (tmp_path / "dbt" / "models" / "intermediate" / "int_user_activity.sql").read_text()
-    assert "{{ ref('stg_events') }}" in ua
-    mart = (tmp_path / "dbt" / "models" / "marts" / "fct_user_activity.sql").read_text()
+    # one model per mapping: the logic and the incremental config are in the
+    # same file, and the layer follows what the mapping does
+    mart = next((tmp_path / "dbt" / "models").rglob(
+        "*user_activity.sql")).read_text()
+    events = next((tmp_path / "dbt" / "models").rglob("*events*.sql")).stem
+    assert "{{ ref('%s') }}" % events in mart
     assert "materialized='incremental'" in mart
     assert "unique_key='USER_ID'" in mart
 

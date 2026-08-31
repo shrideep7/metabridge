@@ -111,6 +111,11 @@ class Dataset(_Entity):
     kind: str = "dataset"           # dataset | table | view
     schema: str = ""
     database: str = ""
+    # the source SYSTEM (see ir.model.SourceTable.system). Carried here so a
+    # CIR round trip produces the same artifacts as the IR did directly —
+    # without it the dbt source name fell back to the schema and the generated
+    # project changed shape depending on whether it went through the CIR.
+    system: str = ""
     columns: List[Column] = field(default_factory=list)
     description: str = ""
 

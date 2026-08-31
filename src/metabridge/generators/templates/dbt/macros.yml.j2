@@ -1,0 +1,12 @@
+version: 2
+
+macros:
+<% for macro in macros %>  - name: << macro.name >>
+    description: >
+      << macro.description >>
+<% if macro.arguments %>    arguments:
+<% for arg in macro.arguments %>      - name: << arg.name >>
+        type: << arg.type >>
+        description: << arg.description >>
+<% endfor %><% endif %>
+<% endfor %>

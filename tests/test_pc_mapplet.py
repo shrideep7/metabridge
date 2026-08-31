@@ -9,6 +9,7 @@ from metabridge.parsers.pc_mapplet import (
     compose_mapplet_outputs, mapplet_component, render_dbt_macro,
 )
 from metabridge.parsers.pc_model import build_pc_model
+from conftest import model_sql
 
 EXAMPLES = Path(__file__).resolve().parent.parent / "examples"
 REPO_XML = EXAMPLES / "powercenter_repo" / "repo_export.xml"
@@ -146,8 +147,7 @@ def test_dbt_macro_written_once_and_called_by_models(tmp_path,
              "mapplet_mplt_name.sql").read_text()
     assert "INITCAP" in macro
     for i in (1, 2):
-        model = next((tmp_path / "out" / "dbt").rglob(
-            "int_use%d.sql" % i)).read_text()
+        model = model_sql(tmp_path / "out" / "dbt", "use%d" % i)
         assert "{{ mapplet_mplt_name('sq_%d') }}" % i in model
         assert "INITCAP" not in model      # logic NOT duplicated
     assert rep["conversion_output"]["errors"]["count"] == 0
@@ -178,7 +178,6 @@ def test_bypass_folded_instance_keeps_inline(tmp_path, monkeypatch):
     from metabridge.engine import convert
     convert(str(REPO_XML), str(tmp_path / "out"),
             source_format="powercenter", target_format="dbt")
-    model = next((tmp_path / "out" / "dbt").rglob(
-        "int_sales.sql")).read_text()
+    model = model_sql(tmp_path / "out" / "dbt", "load_sales")
     assert "LTRIM(RTRIM(region))" in model     # inline logic preserved
     assert "mapplet_mplt_clean" not in model

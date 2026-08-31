@@ -84,7 +84,7 @@ def test_project_level_and_markdown(retail, tmp_path):
     assert len(result["pipelines"]) == 5
     assert result["ai_used"] is False
     path = write_documentation(result, str(tmp_path))
-    md = Path(path).read_text()
+    md = Path(path).read_text(encoding="utf-8")
     assert "# Pipeline documentation — retail_analytics" in md
     assert "## customer_orders" in md
     assert "**Business logic**" in md

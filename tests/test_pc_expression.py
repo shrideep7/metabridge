@@ -11,6 +11,7 @@ from metabridge.parsers.pc_expression import (
 )
 from metabridge.sqlx.expressions import infa_to_sql
 from metabridge.sqlx.infa_registry import get_infa_function_registry
+from conftest import model_sql
 
 EXAMPLES = Path(__file__).resolve().parent.parent / "examples"
 
@@ -136,8 +137,7 @@ def test_generated_sql_never_references_variable_ports(tmp_path,
     convert(str(EXAMPLES / "powercenter_repo" / "repo_export.xml"),
             str(tmp_path / "out"), source_format="powercenter",
             target_format="dbt")
-    sql = next((tmp_path / "out" / "dbt").rglob(
-        "int_customer_enrich.sql")).read_text()
+    sql = model_sql(tmp_path / "out" / "dbt", "customer_enrich")
     assert "v_name_trim" not in sql
     assert "UPPER((LTRIM(RTRIM(name))))" in sql
 

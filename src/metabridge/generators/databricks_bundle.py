@@ -170,10 +170,14 @@ def generate_databricks_bundle(pipeline: Pipeline, bundle_root: Path,
         if not stmt:
             continue                     # manual queue — never fake a file
         p = plan[m.name]
-        if p["mart"]:
-            rel = "src/sql/marts/%s.sql" % p["mart"]
+        # keyed on the LAYER, not on whether the dbt plan happened to split the
+        # mapping into a logic model plus a thin mart — the standard layout does
+        # not split, and reading p["mart"] there filed every mart under
+        # transformations/
+        if p["layer"] == "marts":
+            rel = "src/sql/marts/%s.sql" % p["ref"]
         else:
-            rel = "src/sql/transformations/%s.sql" % p["int"]
+            rel = "src/sql/transformations/%s.sql" % p["ref"]
         header = ("-- PowerCenter mapping: %s (folder: %s)\n"
                   "-- CIR mapping: %s\n"
                   % (m.origin or m.name,

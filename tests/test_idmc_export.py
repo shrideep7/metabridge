@@ -288,7 +288,7 @@ def _generated(tmp_path, template, model, dialect="snowflake"):
     pl.metadata["dialect"] = dialect
     out = pathlib.Path(tempfile.mkdtemp()) / "dbt"
     generate_dbt_project(pl, str(out))
-    return (out / "models" / "marts" / ("%s.sql" % model)).read_text(
+    return next(out.rglob("models/**/*%s*.sql" % model)).read_text(
         encoding="utf-8"), pl
 
 
@@ -412,3 +412,65 @@ def test_cyclic_reference_terminates(tmp_path):
     root = _package(tmp_path, {"m": _asset_zip(_template("m_C", [a, b], []))})
     doc = read_export(str(root))[0]
     assert [t["name"] for t in doc["transformations"]] == ["A", "B"]
+
+
+# ---------------------------------------------------------------------------
+# simple-mode conditions: the designer's normal way of building a filter
+# ---------------------------------------------------------------------------
+
+def test_filter_built_the_normal_way_is_read():
+    """A FILTER row compares one field against a literal VALUE
+    (fieldName/filterValue); only the JOINER spelling
+    (leftOperand/rightOperand) was read, so `AGE >= 18` built in the designer
+    came through empty and the generated model did not filter at all."""
+    from metabridge.parsers.idmc_export import _condition
+    node = {"advancedFilterCondition": "",
+            "filterConditions": [{"fieldName": "AGE", "filterValue": "18",
+                                  "operator": ">="}]}
+    assert _condition(node, "advancedFilterCondition",
+                      "filterConditions") == "AGE >= 18"
+
+
+def test_advanced_mode_still_wins():
+    from metabridge.parsers.idmc_export import _condition
+    node = {"advancedFilterCondition": "AGE >= 18 AND STATUS = 'A'",
+            "filterConditions": [{"fieldName": "X", "filterValue": "1",
+                                  "operator": "="}]}
+    assert _condition(node, "advancedFilterCondition",
+                      "filterConditions") == "AGE >= 18 AND STATUS = 'A'"
+
+
+def test_a_literal_is_quoted_only_when_it_is_not_numeric():
+    """IDMC stores every value as TEXT, so 18 and 'active' arrive identically.
+    Quoting both breaks numeric comparisons; quoting neither breaks strings."""
+    from metabridge.parsers.idmc_export import _condition
+
+    def cond(field, value, op="="):
+        return _condition({"filterConditions": [
+            {"fieldName": field, "filterValue": value, "operator": op}]},
+            "adv", "filterConditions")
+
+    assert cond("AGE", "18", ">=") == "AGE >= 18"
+    assert cond("RATE", "1.5", ">") == "RATE > 1.5"
+    assert cond("STATUS", "active") == "STATUS = 'active'"
+    assert cond("NOTE", "it's") == "NOTE = 'it''s'"
+    assert cond("FLAG", "true") == "FLAG = TRUE"
+
+
+def test_joiner_rows_keep_both_sides_as_fields():
+    from metabridge.parsers.idmc_export import _condition
+    node = {"joinConditions": [{"leftOperand": "L.ID",
+                                "rightOperand": "R.ID", "operator": "="}]}
+    assert _condition(node, "advancedJoinCondition",
+                      "joinConditions") == "L.ID = R.ID"
+
+
+def test_an_untranslatable_row_voids_the_whole_condition():
+    """Half a predicate silently selects a different set of rows, which is
+    worse than reporting nothing — the generator flags an empty condition as
+    unreadable and routes it to the manual queue."""
+    from metabridge.parsers.idmc_export import _condition
+    node = {"filterConditions": [
+        {"fieldName": "AGE", "filterValue": "18", "operator": ">="},
+        {"fieldName": "X", "filterValue": "1", "operator": "SOUNDS_LIKE"}]}
+    assert _condition(node, "adv", "filterConditions") == ""

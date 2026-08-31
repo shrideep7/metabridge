@@ -67,12 +67,14 @@ functions:
   example: SELECT TO_DATE(s, 'YYYY-MM-DD') FROM t
   risk_level: medium
   notes: format-model differences per target; invalid strings raise on some targets
-    and return NULL on others
+    and return NULL on others. Databricks/Spark takes the format in its own
+    pattern syntax (yyyy-M-d), not Oracle's — the model is translated, not
+    dropped, so a non-ISO input string still parses.
   null_semantics_warning: ''
   timezone_warning: ''
   target_implementations:
     snowflake: DATE(s, 'yyyy-mm-DD')
-    databricks: TO_DATE(s)
+    databricks: TO_DATE(s, 'yyyy-M-d')
     bigquery: PARSE_DATE('%F', s)
     redshift: TO_DATE(s, 'YYYY-MM-DD')
     synapse_fabric: STR_TO_DATE(s, '%Y-%m-%d')

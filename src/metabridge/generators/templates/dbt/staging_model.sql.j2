@@ -1,0 +1,6 @@
+<% if projection %><< projection >>
+<% else %>-- WARNING: no column metadata for this source; using
+-- SELECT * passthrough. Add columns to the manifest or
+-- introspect the live system for an explicit projection.
+select *
+<% endif %>from {{ source('<< source >>', '<< table >>') }}

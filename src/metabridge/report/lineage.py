@@ -270,19 +270,83 @@ def build_lineage(pipeline: Pipeline) -> dict:
             "column_lineage": column_lineage(m),
             "mermaid": mermaid_transformations(m),
         })
+    # the GENERATED project's own lineage, when one was generated. Present
+    # only for a dbt target, and only after generation has run.
+    dbt = dbt_lineage(pipeline)
+    if dbt is not None:
+        doc["dbt_project"] = dbt
     return doc
 
 
+def _mmd_document(doc: dict) -> str:
+    """The lineage diagram as a standalone .mmd file.
+
+    Mermaid fenced inside markdown only renders where the VIEWER supports it.
+    A .mmd file is the diagram itself: mermaid.live, the mermaid CLI, the VS
+    Code extension and GitHub all take it directly, it diffs cleanly, and it
+    needs no renderer at generate time — which matters for an air-gapped
+    install where a headless browser is not on the table.
+
+    `%%` comment lines carry the provenance with the picture, so a diagram
+    that travels on its own still says what it is and what it does not claim.
+    """
+    dbt = doc.get("dbt_project") or {}
+    graph = dbt.get("mermaid") or doc["mermaid"]["table_lineage"]
+    scope = "the generated dbt project" if dbt else "the source estate"
+
+    # `%` is Mermaid's comment character, so these lines are built by
+    # concatenation: %-formatting would collapse the `%%` marker to a single
+    # `%` and the comment would stop being one.
+    notes = []
+
+    def note(text):
+        notes.append("%% " + text)
+
+    note("MetaBridge lineage")
+    note("Project : " + str(doc["project"]))
+    note("Scope   : " + scope)
+    note("Source  : " + str(doc.get("source_platform") or "unknown"))
+    if dbt:
+        note("Built from the ref()/source() calls the generator emitted —")
+        note("not re-derived, so it cannot claim an edge the artifacts")
+        note("do not have.")
+        if dbt.get("terminal_models"):
+            note("Heavy border = terminal model: nothing downstream in this")
+            note("project reads it, so this is where the estate's consumers")
+            note("attach. Topology, not telemetry — it says nothing about")
+            note("who actually does.")
+        if dbt.get("unmanaged_relations"):
+            note("Dashed = a relation this project reads but neither builds")
+            note("nor declares as a source: a HOLE in the DAG. dbt cannot")
+            note("see these at all, since `from SOME_TABLE` is valid SQL.")
+    # comments go AFTER the graph directive, which every renderer accepts
+    head, _, rest = graph.partition("\n")
+    return "\n".join([head] + notes + ([rest] if rest else [])) + "\n"
+
+
 def write_lineage(doc: dict, out_dir: str) -> str:
-    """lineage.json + lineage.md with embedded Mermaid blocks."""
+    """lineage.json + lineage.md + lineage.mmd (the diagram on its own)."""
     import json
     from pathlib import Path
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
     (out / "lineage.json").write_text(json.dumps(doc, indent=2), encoding="utf-8")
-    lines = ["# Data lineage — %s" % doc["project"], "",
-             "## Table-level lineage", "", "```mermaid",
-             doc["mermaid"]["table_lineage"], "```", ""]
+    (out / "lineage.mmd").write_text(_mmd_document(doc), encoding="utf-8")
+    # the diagram DRAWN, for a reader who wants the picture rather than the
+    # code for one. Silently skipped when reportlab is absent — PDF export
+    # lives in the `web` extra and a core install still gets the rest.
+    try:
+        from .lineage_pdf import write_lineage_pdf
+        write_lineage_pdf(doc, str(out / "lineage.pdf"))
+    except Exception:                                    # noqa: BLE001
+        pass
+    lines = ["# Data lineage — %s" % doc["project"], ""]
+    # The generated project first: it is what the reader has in front of them.
+    # The legacy estate's own lineage follows, in its own names.
+    if doc.get("dbt_project"):
+        lines += _dbt_section(doc["dbt_project"])
+    lines += ["## Table-level lineage (source estate)", "", "```mermaid",
+              doc["mermaid"]["table_lineage"], "```", ""]
     for p in doc["pipelines"]:
         lines += ["## %s — transformation lineage" % p["name"], "",
                   "```mermaid", p["mermaid"], "```", "",
@@ -295,3 +359,164 @@ def write_lineage(doc: dict, out_dir: str) -> str:
         lines.append("")
     (out / "lineage.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
     return str(out / "lineage.json")
+
+
+# ---------------------------------------------------------------------------
+# Lineage over the GENERATED dbt project
+#
+# Distinct from everything above, which describes the LEGACY estate in its own
+# names — PowerCenter mappings, source and target tables. Useful for the estate
+# conversation, and useless to the engineer holding the converted project, who
+# needs to know that stg_crm__customers feeds fct_customer_orders.
+#
+# Built from the refs the generator actually emitted
+# (pipeline.metadata['dbt_graph']), not re-derived from the IR. A lineage
+# diagram computed a second way drifts from the artifacts it claims to
+# describe, and the drift is invisible: the picture still looks complete.
+# ---------------------------------------------------------------------------
+
+_DBT_LAYERS = (
+    ("sources", "Sources — source()"),
+    ("staging", "Staging — stg_"),
+    ("intermediate", "Intermediate — int_"),
+    ("marts", "Marts — dim_ / fct_"),
+    ("snapshots", "Snapshots — snap_"),
+    ("unmanaged", "Unmanaged relations"),
+)
+
+_DBT_SHAPES = {"source": '[("%s")]', "model": '["%s"]',
+               "snapshot": '[/"%s"/]', "unmanaged": '{{"%s"}}'}
+
+
+def mermaid_dbt(graph: dict) -> str:
+    """The dbt DAG as layered swimlanes.
+
+    Unmanaged relations get a dashed edge and a dashed border, so a model that
+    reads something dbt does not manage reads as a BREAK in the graph rather
+    than as an ordinary upstream. Terminal models get a heavy border: nothing
+    downstream in the project reads them, so that is where the estate's
+    consumers attach.
+    """
+    lines = ["graph LR"]
+    by_layer: Dict[str, List[dict]] = {}
+    for n in graph.get("nodes", []):
+        by_layer.setdefault(n.get("layer") or "other", []).append(n)
+    for layer, title in _DBT_LAYERS:
+        members = by_layer.get(layer)
+        if not members:
+            continue
+        # prefixed: a bare `unmanaged` subgraph id collides with the
+        # classDef of the same name below
+        lines.append('  subgraph layer_%s["%s"]' % (_mid(layer), title))
+        for n in members:
+            shape = _DBT_SHAPES.get(n["kind"], '["%s"]')
+            lines.append("    %s%s" % (_mid(n["name"]),
+                                       shape % (n.get("label") or n["name"])))
+        lines.append("  end")
+    for e in graph.get("edges", []):
+        lines.append("  %s %s %s" % (_mid(e["from"]),
+                                     "-.->" if e["kind"] == "unmanaged"
+                                     else "-->", _mid(e["to"])))
+
+    def _style(names, cls, style):
+        if names:
+            lines.append("  classDef %s %s" % (cls, style))
+            lines.append("  class %s %s"
+                         % (",".join(sorted(_mid(n) for n in names)), cls))
+
+    _style([n["name"] for n in graph.get("nodes", []) if n.get("terminal")],
+           "terminal", "stroke-width:3px")
+    _style([n["name"] for n in graph.get("nodes", [])
+            if n["kind"] == "unmanaged"],
+           "unmanaged", "stroke-dasharray:4 3")
+    return "\n".join(lines)
+
+
+def dbt_lineage(pipeline: Pipeline) -> Optional[dict]:
+    """The generated project's own lineage, or None when nothing was emitted.
+
+    Returns the typed graph plus a Mermaid rendering, the terminal models (the
+    consumption boundary), and any relation the project reads but does not
+    manage.
+    """
+    graph = (pipeline.metadata or {}).get("dbt_graph") or {}
+    if not graph.get("nodes"):
+        return None
+    doc = dict(graph)
+    doc["mermaid"] = mermaid_dbt(graph)
+    doc["terminal_models"] = sorted(n["name"] for n in graph["nodes"]
+                                    if n.get("terminal"))
+    # model name -> the relation it actually builds, where the two differ
+    doc["relation_of"] = {n["name"]: n["relation"] for n in graph["nodes"]
+                          if n.get("relation")
+                          and n["relation"] != n["name"]}
+    return doc
+
+
+def _dbt_section(dbt: dict) -> List[str]:
+    counts = dbt.get("counts", {})
+    lines = [
+        "## dbt project lineage",
+        "",
+        "%d source(s), %d model(s), %d snapshot(s) and %d edge(s), read from "
+        "the ref() and source() calls the generator emitted."
+        % (counts.get("source", 0), counts.get("model", 0),
+           counts.get("snapshot", 0), len(dbt.get("edges", []))),
+        "",
+        "```mermaid",
+        dbt["mermaid"],
+        "```",
+        "",
+    ]
+    if dbt.get("terminal_models"):
+        lines += [
+            "### Consumption boundary",
+            "",
+            "Nothing downstream in this project reads these models, so this "
+            "is where the estate's own consumers — dashboards, extracts, "
+            "downstream systems — attach:",
+            "",
+        ]
+        relation_of = dbt.get("relation_of") or {}
+        for name in dbt["terminal_models"]:
+            relation = relation_of.get(name)
+            lines.append(
+                "- `%s` — builds the relation `%s`" % (name, relation)
+                if relation else "- `%s`" % name)
+        if any(relation_of.get(n) for n in dbt["terminal_models"]):
+            lines += [
+                "",
+                "The model and the relation are named differently on "
+                "purpose. The project keeps dbt's conventions in its own "
+                "files; the warehouse keeps the name the estate already "
+                "uses, so a consumer reading the legacy relation keeps "
+                "working after cutover instead of being repointed on the "
+                "same day everything else moves.",
+            ]
+        lines += [
+            "",
+            "This is **topology, not telemetry**: it says nothing about who "
+            "actually reads them. No dbt `exposure` is generated for that "
+            "reason — an exposure is a record about a real downstream asset, "
+            "and inventing one per terminal model would fabricate consumers "
+            "and owners that do not exist.",
+            "",
+        ]
+    if dbt.get("unmanaged_relations"):
+        lines += [
+            "### Unmanaged relations",
+            "",
+            "These are read by a model but neither built by this project nor "
+            "declared as a source, so dbt has no node for them and draws no "
+            "edge. They are the **holes** in the DAG above, shown dashed:",
+            "",
+        ]
+        lines += ["- `%s`" % r for r in dbt["unmanaged_relations"]]
+        lines += [
+            "",
+            "Each one is resolved by adding it to the source manifest, "
+            "converting the object that builds it, or — for a small static "
+            "reference table — checking it in as a dbt seed.",
+            "",
+        ]
+    return lines

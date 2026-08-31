@@ -54,7 +54,13 @@ metabridge = "metabridge.cli:app"
 where = ["src"]
 
 [tool.setuptools.package-data]
-metabridge = ["**/*.yaml"]
+# *.j2 are the generated-artifact templates (generators/templates/). Without
+# them here they are absent from a wheel and every generation raises
+# TemplateNotFound — see test_dbt_templates.py, which pins the declaration.
+metabridge = ["**/*.yaml", "**/*.j2"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+    "slow: shells out to an external tool (e.g. `dbt parse`); skipped when the tool is absent",
+]

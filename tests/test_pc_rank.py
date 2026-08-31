@@ -94,7 +94,7 @@ def _convert(tmp_path, target, monkeypatch, **kw):
     rep = convert(str(f), str(tmp_path / "out"),
                   source_format="powercenter", target_format=target)
     sub = "dbt" if target == "dbt" else "sql"
-    pat = "int_*top*.sql" if target == "dbt" else "*top*.sql"
+    pat = "*top*.sql"
     hit = next((tmp_path / "out" / sub).rglob(pat))
     return hit.read_text(), rep
 

@@ -636,14 +636,21 @@ def test_scaffold_generates_models_that_carry_the_logic(scaffolded):
     assert report["procedures"]["models"] == 2
 
     # staging still reads the source
-    stg = (out / "dbt" / "models" / "staging" / "stg_customers.sql").read_text()
-    assert "{{ source('RAW', 'CUSTOMERS') }}" in stg
+    stg = next((out / "dbt" / "models" / "staging").rglob(
+        "stg_*customers.sql")).read_text()
+    # A dbt source resolves to exactly ONE schema, so the source name is 1:1
+    # with a schema. Naming it after the CONNECTOR collapsed every schema on
+    # that connection into one source pinned to whichever sorted first, so an
+    # Oracle estate with RAW/SILVER/GOLD schemas got a single `oracle` source
+    # claiming RAW and two thirds of its tables resolved somewhere they are not.
+    assert "{{ source('raw', 'CUSTOMERS') }}" in stg
+    stg_name = next((out / "dbt" / "models" / "staging").rglob(
+        "stg_*customers.sql")).stem
 
     # the curated model carries the procedure's real SQL, and reads the
     # STAGING model rather than naming the raw relation a second time
-    logic = (out / "dbt" / "models" / "intermediate"
-             / "int_customer.sql").read_text()
-    assert "{{ ref('stg_customers') }}" in logic
+    logic = next((out / "dbt" / "models").rglob("*customer.sql")).read_text()
+    assert "{{ ref('%s') }}" % stg_name in logic
     assert "UPPER(last_name)" in logic
     assert "CASE status WHEN 'A' THEN 'ACTIVE'" in logic
     # the INSERT's column list names the output — not col_1/col_2
@@ -651,7 +658,8 @@ def test_scaffold_generates_models_that_carry_the_logic(scaffolded):
     assert "col_1" not in logic
 
     # the MERGE keeps its load semantics
-    fct = (out / "dbt" / "models" / "marts" / "fct_order.sql").read_text()
+    fct = next((out / "dbt" / "models" / "marts").rglob(
+        "fct_order.sql")).read_text()
     assert "incremental_strategy='merge'" in fct
     assert "unique_key='order_id'" in fct
 

@@ -48,10 +48,15 @@ def test_generators_receive_cir_round_trip(retail_ir, retail_cir, tmp_path):
     generate_dbt_project(retail_ir, str(direct))          # flat, from IR
     from metabridge.cir.reverse import cir_to_ir
     generate_dbt_project(cir_to_ir(retail_cir), str(via_cir))
-    for rel in ("models/staging/stg_customers.sql",
-                "models/intermediate/int_customer_orders.sql",
-                "models/staging/stg_orders.sql"):
-        assert (direct / rel).read_text() == (via_cir / rel).read_text(), rel
+    # every generated file, compared by path AND content: a CIR round trip
+    # must not change the project's shape. It silently did, until SourceTable's
+    # source system was carried through the CIR — the dbt source name fell back
+    # to the schema and every staging model's source() call changed.
+    def tree(root):
+        return {p.relative_to(root).as_posix(): p.read_text()
+                for p in root.rglob("*") if p.is_file()}
+
+    assert tree(direct) == tree(via_cir)
 
 
 def test_generate_accepts_cir_project(retail_cir, tmp_path):
@@ -69,24 +74,32 @@ def test_generate_rejects_wrong_type(tmp_path):
 # dbt: complete layered project
 # ---------------------------------------------------------------------------
 
-def test_dbt_layered_project(retail_ir, tmp_path):
+def test_dbt_standard_project(retail_ir, tmp_path):
     r = get_generator("dbt").generate(retail_ir, str(tmp_path))
-    files = set(r.files)
+    files = {f.replace("\\", "/") for f in r.files}
     assert "dbt_project.yml" in files
-    assert "models/staging/sources.yml" in files
-    assert "models/schema.yml" in files
-    # layers by dependency position
-    assert "models/staging/stg_customers.sql" in files
-    assert "models/staging/stg_orders.sql" in files
-    assert "models/intermediate/int_customer_orders.sql" in files   # has a dependent
-    assert "models/marts/fct_customer_ranking.sql" in files     # terminal
-    assert "macros/.gitkeep" in files and "tests/.gitkeep" in files
+    for f in ("packages.yml", "selectors.yml", ".gitignore"):
+        assert f in files, f
+    # sources and properties in the folder they describe, not one flat file
+    assert any(f.endswith("__sources.yml") for f in files), files
+    assert any(f.endswith("__models.yml") for f in files), files
+    assert "models/schema.yml" not in files
+    assert "models/staging/sources.yml" not in files
+    # one model per mapping, in the layer its target declares
+    marts = {f for f in files if f.startswith("models/marts/")
+             and f.endswith(".sql")}
+    staging = {f for f in files if f.startswith("models/staging/")
+               and f.endswith(".sql")}
+    assert marts and staging, files
+    assert not [f for f in files
+                if f.startswith("models/") and "/int_" in f]
     # dependencies as ref()/source()
-    co = (tmp_path / "models/intermediate/int_customer_orders.sql").read_text()
-    assert "{{ ref('stg_customers') }}" in co
-    stg = (tmp_path / "models/staging/stg_customers.sql").read_text()
-    assert "{{ source('RAW', 'raw_customers') }}" in stg
-    # staging materializes as views in project config
+    stg = next(tmp_path.rglob("models/staging/**/stg_*customers.sql"))
+    assert "{{ source(" in stg.read_text()
+    assert "'raw_customers') }}" in stg.read_text()
+    mart = next(tmp_path.rglob("models/marts/**/*customer_orders.sql"))
+    assert "{{ ref('%s') }}" % stg.stem in mart.read_text()
+    # the layer defaults are still declared in project config
     proj = (tmp_path / "dbt_project.yml").read_text()
     assert "staging" in proj and "view" in proj
 

@@ -188,9 +188,13 @@ def unland_built_tables(pipeline: Pipeline, built: Dict[str, str],
                    "so copying it as raw data too would produce the same "
                    "table twice"
                    % (s.schema or "?", s.name, origin, producer),
-                   suggestion="Tick 'land those tables anyway' to keep it — "
-                              "useful only while running both sides in "
-                              "parallel to compare them."))
+                   suggestion="Tick 'land those tables anyway' to keep it "
+                              "— useful only while running both sides in "
+                              "parallel to compare them. While it is on, "
+                              "the model that rebuilds this table keeps its "
+                              "own dbt name rather than taking this one, so "
+                              "the two can sit side by side; turning it off "
+                              "is what hands the estate's name back."))
     if not dropped:
         return dropped
 

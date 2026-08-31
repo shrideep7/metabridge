@@ -313,8 +313,8 @@ def convert(input_path: str, output_dir: str, source_format: str = "",
 
     options (all optional):
         generate_tests    default True  — validation_tests/ suite
+        generate_lineage  default True  — lineage.json + lineage.md
         generate_docs     default False — pipeline_documentation.md
-        generate_lineage  default False — lineage.json + lineage.md
         ai_review         default False — ai_review/ (propose-only)
     """
     opts = dict(options or {})
@@ -411,8 +411,10 @@ def convert(input_path: str, output_dir: str, source_format: str = "",
         "ai_reviewed": mv["ai_reviewed"],
     }
 
-    # optional extras from the conversion-request options block
-    if opts.get("generate_lineage"):
+    # Lineage ships with every conversion. It used to be opt-in, which meant
+    # the default output could not answer "where does this column come from"
+    # — the question a migration is judged on.
+    if opts.get("generate_lineage", True):
         from .report.lineage import build_lineage, write_lineage
         write_lineage(build_lineage(pipeline), str(out))
         report["lineage_generated"] = True

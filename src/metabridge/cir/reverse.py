@@ -59,6 +59,7 @@ def cir_to_ir(project: cir.Project) -> IrPipeline:
         if isinstance(d, cir.Table) or d.kind == "table":
             pipeline.sources.append(SourceTable(
                 name=d.name, schema=d.schema, database=d.database,
+                system=getattr(d, "system", ""),
                 columns=[Port(name=c.name, datatype=c.data_type,
                               precision=c.precision, scale=c.scale)
                          for c in d.columns]))

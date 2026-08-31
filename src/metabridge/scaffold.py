@@ -73,6 +73,12 @@ def _port(spec: ConnectorSpec, col: dict) -> Port:
                 datatype=_canonical(spec, native),
                 precision=prec, scale=scale,
                 type_declared=declared,
+                # Nullability is catalog fact, the same as the type beside
+                # it — introspection reads it off the real constraint. Left
+                # on the default every column landed nullable, so a NOT NULL
+                # column in the source arrived as one that merely happened
+                # to have no nulls yet.
+                nullable=col.get("nullable", True) is not False,
                 # Carry the source's own type through to the generators. The
                 # canonical above is 9 values wide and cannot distinguish
                 # TIME from VARCHAR or keep a time-zone offset; the DDL is
@@ -95,8 +101,17 @@ def build_pipeline(project: str, source: ConnectorSpec,
         if not cols:
             cols = [Port(name="ROW_DATA")]
         db = str(spec.get("database", "") or "")
-        src_table = SourceTable(name=tname, schema=str(spec.get("schema", "")),
-                                database=db, columns=cols)
+        # A dbt source resolves to exactly ONE schema, so the source name has
+        # to be 1:1 with a schema. Naming it after the CONNECTOR collapsed
+        # every schema on that connection into one source pinned to whichever
+        # schema sorted first — so an Oracle estate with RAW_SCHEMA,
+        # SILVER_SCHEMA and GOLD_SCHEMA got one `oracle` source claiming
+        # RAW_SCHEMA, and two thirds of its tables resolved to a schema they
+        # are not in. The connector key is only the fallback, for a source
+        # that declares no schema at all.
+        schema = str(spec.get("schema", "") or "")
+        src_table = SourceTable(name=tname, schema=schema, database=db,
+                                system=schema or source.key, columns=cols)
         if all(s.name != tname for s in pipeline.sources):
             pipeline.sources.append(src_table)
 
@@ -114,6 +129,15 @@ def build_pipeline(project: str, source: ConnectorSpec,
         m.links.append(Link(src_t.name, sq.name))
         terminal = sq.name
 
+        # The declared key is a fact about the TABLE — introspection reads it
+        # off the real primary key — so it holds whatever the load strategy
+        # is. Applying it only in the incremental branch dropped it for every
+        # full-load table, and with it the pk_uniqueness reconciliation test
+        # and the unique/not_null dbt tests on that column: a manifest could
+        # declare `unique_key: [CUSTOMER_ID]` and the generated project would
+        # test nothing.
+        m.unique_key = [str(k) for k in spec.get("unique_key", []) or []]
+
         inc_col = str(spec.get("incremental_column", "") or "")
         if inc_col:
             fil = Transformation(
@@ -124,7 +148,6 @@ def build_pipeline(project: str, source: ConnectorSpec,
             m.links.append(Link(terminal, fil.name))
             terminal = fil.name
             m.load_strategy = LoadStrategy.MERGE
-            m.unique_key = [str(k) for k in spec.get("unique_key", []) or []]
             if not m.unique_key:
                 m.load_strategy = LoadStrategy.APPEND
                 m.add_issue(IssueSeverity.WARNING, "NO_UNIQUE_KEY",
@@ -151,8 +174,15 @@ def build_pipeline(project: str, source: ConnectorSpec,
                              properties={"virtual": True, "upstream": terminal})
         m.transformations.append(out)
         m.links.append(Link(terminal, "__OUTPUT__"))
+        # `landed_from` records that this target is SYNTHESISED: nothing in
+        # the source estate is called stg_customer, so anything looking for
+        # this model's legacy counterpart — reconciliation above all — has to
+        # be pointed at the table it lands, not at its own name.
         tgt = Transformation(name="TGT_" + model, type=TransformationType.TARGET,
-                             ports=list(cols), properties={"table": model})
+                             ports=list(cols),
+                             properties={"table": model,
+                                         "landed_from": tname,
+                                         "landed_from_schema": schema})
         m.transformations.append(tgt)
         m.links.append(Link("__OUTPUT__", tgt.name))
         if not spec.get("columns"):
@@ -418,6 +448,10 @@ def scaffold(source_key: str, target_key: str, tables_file: str, out_dir: str,
     # changes the output (and its labels), never a hardcoded default.
     pipeline.metadata["source_platform"] = source.name or source.key
     pipeline.metadata["target_platform"] = target.name or target.key
+    # the SOURCE's own dialect, kept apart from the target's. Generators that
+    # resolve a landed column's type need both ends: what the source declared
+    # it as, and what the landing DDL creates it as.
+    pipeline.metadata["source_dialect"] = source.dialect or ""
     pipeline.metadata["source_pc_dbtype"] = source.powercenter_dbtype or ""
     pipeline.metadata["target_pc_dbtype"] = target.powercenter_dbtype or ""
     # Cross-platform landing: the manifest's `database` names the SOURCE
@@ -464,6 +498,14 @@ def scaffold(source_key: str, target_key: str, tables_file: str, out_dir: str,
             logic["not_landed"] = unland_built_tables(
                 pipeline, _target_tables(pipeline, only=names), stage_of,
                 origin="the converted stored-procedure logic")
+
+    # A manifest declares the key for every table it introspected, including
+    # the curated ones. A mapping lifted out of an ETL bundle or a procedure
+    # arrives with no key of its own, so a table whose PK we already know
+    # ended up with no pk_uniqueness check and no unique/not_null test on the
+    # column — the key was in the manifest the whole time, just never handed
+    # to the mapping that rebuilds it.
+    _reconcile_with_manifest(pipeline, source, tables)
 
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
@@ -513,6 +555,40 @@ def scaffold(source_key: str, target_key: str, tables_file: str, out_dir: str,
     if manifest_notes:
         report["manifest_notes"] = manifest_notes
     report["ddl"] = ddl
+
+    # Lineage, as every conversion gets. A scaffold produces a dbt project
+    # exactly like `convert` does, and had no lineage document at all — so the
+    # one output that answers "where does this column come from" depended on
+    # which entry point the user happened to take.
+    from .report.lineage import build_lineage, write_lineage
+    write_lineage(build_lineage(pipeline), str(out))
+    report["lineage_generated"] = True
+
+    # The validation suite and the five-layer verdict, for the same reason.
+    # A scaffold IS a conversion — it parses an estate and generates a dbt
+    # project — but it shipped no reconciliation SQL, no dbt tests and no
+    # PASS/FAIL verdict, so whether the output could be trusted depended
+    # entirely on which entry point produced it.
+    from .report.testgen import generate_tests, write_tests
+    tests_doc = generate_tests(pipeline,
+                               source_platform=source.dialect or "",
+                               target_platform=target.dialect or "",
+                               target_format="dbt")
+    write_tests(tests_doc, str(out))
+    report["validation_tests"] = tests_doc["summary"]
+
+    from .validate.conversion_validator import (validate_conversion,
+                                                write_validation_report)
+    mv = validate_conversion(pipeline, str(out), "dbt",
+                             dialect=target.dialect or "")
+    write_validation_report(mv, str(out))
+    report["migration_validation"] = {
+        "verdict": mv["verdict"],
+        "layers": {L["name"]: L["status"] for L in mv["layers"]},
+        "totals": mv["totals"],
+        "ai_reviewed": mv["ai_reviewed"],
+    }
+
     if procs:
         from .procedures import write_logic_pack
         pack = write_logic_pack(logic, str(out), procs)
@@ -530,6 +606,65 @@ def scaffold(source_key: str, target_key: str, tables_file: str, out_dir: str,
         write_governance_report(gov, str(out))
         report["governance"] = gov["summary"]
     return report
+
+
+def _reconcile_with_manifest(pipeline, source: ConnectorSpec, tables) -> None:
+    """Give every mapping what the MANIFEST knows about the tables it touches.
+
+    The manifest is introspected straight from the source catalog, so it is
+    the best evidence available about a table. A mapping lifted out of an ETL
+    bundle or a procedure knows only what that export chose to record, which
+    is routinely less:
+
+    * the KEY — an ETL mapping carries none, so a curated table whose primary
+      key the manifest already knew ended up with no pk_uniqueness check and
+      no unique/not_null test on the column;
+    * the column TYPES — IDMC normalises the catalog into its own platform
+      typesystem before exporting, so Oracle's ``NUMBER`` arrives as
+      ``double`` and the generated project documented ``float`` for a column
+      the landing DDL creates as ``DECIMAL(38,6)``. Three different answers
+      for one column, none of them checkable against the others.
+
+    Only fills gaps in: a key the mapping already carries came from the source
+    object itself and wins, and a derived column the manifest never saw
+    (EMAIL_LOWER, say) is left exactly as the mapping computed it.
+    """
+    from .ir.model import TransformationType
+    by_table = {str(t.get("name", "")).lower(): t for t in tables}
+    keys = {name: [str(k) for k in (t.get("unique_key") or [])]
+            for name, t in by_table.items()}
+    types = {name: {str(c["name"]).lower(): _port(source, c)
+                    for c in (t.get("columns") or []) if c.get("name")}
+             for name, t in by_table.items()}
+
+    for m in pipeline.mappings:
+        tgts = m.by_type(TransformationType.TARGET)
+        for node in tgts + m.by_type(TransformationType.SOURCE):
+            declared = types.get(
+                str(node.properties.get("table", "")).lower())
+            if not declared:
+                continue
+            for port in node.ports:
+                col = declared.get(port.name.lower())
+                if col is None or not col.type_declared:
+                    continue
+                port.datatype = col.datatype
+                port.precision = col.precision
+                port.scale = col.scale
+                port.native_type = col.native_type
+                port.type_declared = True
+
+        if m.unique_key or not tgts:
+            continue
+        table = str(tgts[0].properties.get("table", "")).lower()
+        declared_key = keys.get(table)
+        if not declared_key:
+            continue
+        ports = {p.name.lower() for t in tgts for p in t.ports}
+        # only if the model actually projects the key: a mapping that drops it
+        # cannot be tested on it, and claiming otherwise would fail at run time
+        if all(k.lower() in ports for k in declared_key):
+            m.unique_key = list(declared_key)
 
 
 def _default_region(spec: ConnectorSpec) -> str:

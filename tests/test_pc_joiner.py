@@ -5,6 +5,7 @@ import pytest
 
 from metabridge.engine import parse_input
 from metabridge.parsers.pc_joiner import PC_JOIN_TYPES
+from conftest import model_sql
 
 
 def _joiner_xml(join_type: str, sorted_input: str = "NO",
@@ -156,7 +157,7 @@ def test_dbt_join_orientation(tmp_path, monkeypatch):
     from metabridge.engine import convert
     convert(str(f), str(tmp_path / "out"), source_format="powercenter",
             target_format="dbt")
-    sql = next((tmp_path / "out" / "dbt").rglob("int_join.sql")).read_text()
+    sql = model_sql(tmp_path / "out" / "dbt")
     # all detail (orders) rows preserved: orders LEFT JOIN customers
     assert "left join" in sql
     assert sql.index("sq_orders") < sql.index("left join")

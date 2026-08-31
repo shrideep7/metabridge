@@ -5,6 +5,7 @@ import pytest
 
 from metabridge.engine import parse_input
 from metabridge.ir.model import TransformationType
+from conftest import model_sql
 
 
 def _norm_xml(occurs: int = 4, drop_instance: bool = False,
@@ -174,7 +175,7 @@ def test_union_all_unpivot_on_warehouses(tmp_path, monkeypatch, target):
 
 def test_dbt_union_all_model(tmp_path, monkeypatch):
     _convert(tmp_path, "dbt", monkeypatch)
-    sql = next((tmp_path / "out" / "dbt").rglob("int_norm.sql")).read_text()
+    sql = model_sql(tmp_path / "out" / "dbt")
     assert sql.count("union all") == 3
     assert "SALES3 as SALES" in sql
     assert "3 as GCID_SALES" in sql

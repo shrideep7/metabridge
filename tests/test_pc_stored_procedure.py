@@ -5,6 +5,7 @@ import pytest
 
 from metabridge.engine import parse_input
 from metabridge.parsers.pc_stored_procedure import classify_procedure_sql
+from conftest import model_sql
 
 
 # ---------------------------------------------------------------------------
@@ -111,7 +112,7 @@ def test_preload_sql_becomes_hook(tmp_path, monkeypatch):
     from metabridge.engine import convert
     convert(str(tmp_path / "sp.xml"), str(tmp_path / "out"),
             source_format="powercenter", target_format="dbt")
-    sql = next((tmp_path / "out" / "dbt").rglob("*_sp.sql")).read_text()
+    sql = model_sql(tmp_path / "out" / "dbt")
     assert 'pre_hook="DELETE FROM stage_orders"' in sql
 
 

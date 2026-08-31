@@ -74,6 +74,7 @@ def build_cir(pipeline: IrPipeline,
         dataset_ids[s.name.lower()] = did
         project.datasets.append(cir.Table(
             id=did, name=s.name, schema=s.schema, database=s.database,
+            system=s.system,
             columns=[_column(did, c.name, c.datatype, c.precision, c.scale)
                      for c in s.columns]))
 

@@ -18,6 +18,7 @@ from ..ir.model import (
     TransformationType,
 )
 from ..sqlx.expressions import ExpressionError, sql_to_infa
+from ..sqlx.type_engine import decimal_fallback
 
 AssistFn = Optional[Callable[[str, str], Optional[str]]]
 
@@ -81,11 +82,18 @@ def _safe(name: str) -> str:
 
 
 def _field(p: Port) -> dict:
+    precision, scale = p.precision, p.scale
+    if p.datatype == "decimal" and not precision:
+        # not 10 — that overflows any key wider than ten digits, and said
+        # scale 0 about a column the warehouse DDL gives a fractional part
+        precision, scale = decimal_fallback()
+    elif not precision:
+        precision = 255 if p.datatype == "string" else 10
     return {
         "name": p.name,
         "type": _IDMC_DATATYPE.get(p.datatype, "string"),
-        "precision": p.precision or (255 if p.datatype == "string" else 10),
-        "scale": p.scale,
+        "precision": precision,
+        "scale": scale,
         "nullable": p.nullable,
     }
 

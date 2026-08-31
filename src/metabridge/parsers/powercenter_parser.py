@@ -96,7 +96,8 @@ def _collect_source_defs(folder: ET.Element, pipeline: Pipeline) -> Dict[str, So
                      precision=int(f.get("PRECISION") or 0), scale=int(f.get("SCALE") or 0))
                 for f in s.findall("SOURCEFIELD")]
         st = SourceTable(name=s.get("NAME", ""), schema=s.get("OWNERNAME", ""),
-                         database=s.get("DBDNAME", ""), columns=cols)
+                         database=s.get("DBDNAME", ""),
+                         system=s.get("DBDNAME", ""), columns=cols)
         defs[st.name.lower()] = st
         if all(x.name != st.name for x in pipeline.sources):
             pipeline.sources.append(st)
@@ -112,15 +113,39 @@ def _collect_target_keys(folder: ET.Element) -> Dict[str, List[str]]:
     return keys
 
 
-def _collect_target_columns(folder: ET.Element) -> Dict[str, List[str]]:
-    """ALL declared TARGETFIELD names per target — the TARGET node's ports
-    only carry the CONNECTED columns, but pattern detection (SCD) needs the
-    full declared shape (effective dates and flags are often unmapped)."""
-    cols: Dict[str, List[str]] = {}
+def _collect_target_columns(folder: ET.Element) -> Dict[str, List[Port]]:
+    """ALL declared TARGETFIELD ports per target.
+
+    Two things need this. Pattern detection (SCD) needs the full declared
+    SHAPE, because effective dates and current-row flags are routinely left
+    unmapped and so never appear on a CONNECTOR.
+
+    And the TARGET node's ports need the declared TYPES. Those ports are built
+    from the connector list, which carries column NAMES and nothing else, so
+    every target column used to arrive as an untyped string — and each
+    generated artifact then documented a decimal(28,0) or a date/time as a
+    varchar, while the real type sat unread in the export all along.
+    """
+    cols: Dict[str, List[Port]] = {}
     for t in folder.findall("TARGET"):
-        cols[t.get("NAME", "").lower()] = [
-            f.get("NAME", "") for f in t.findall("TARGETFIELD")]
+        cols[t.get("NAME", "").lower()] = _ports_from_fields(t, "TARGETFIELD")
     return cols
+
+
+def _target_port(name: str, declared: Optional[Port]) -> Port:
+    """A connected target column, carrying its declared type where there is
+    one — and honestly marked as untyped where there is not.
+
+    `type_declared=False` matters downstream: without it an unread type is
+    indistinguishable from a genuine string column, so generators had no way
+    to tell "this really is a VARCHAR" from "nobody ever told us".
+    """
+    if declared is None:
+        return Port(name=name, type_declared=False)
+    return Port(name=name, datatype=declared.datatype,
+                precision=declared.precision, scale=declared.scale,
+                native_type=declared.native_type,
+                type_declared=declared.type_declared)
 
 
 def _ports_from_fields(x: ET.Element, tag: str) -> List[Port]:
@@ -192,7 +217,7 @@ def _parse_mapping(mxml: ET.Element, source_defs: Dict[str, SourceTable],
                    target_keys: Dict[str, List[str]], pipeline: Pipeline,
                    reusable_tx: Optional[Dict[str, ET.Element]] = None,
                    mapplets: Optional[Dict[str, ET.Element]] = None,
-                   target_columns: Optional[Dict[str, List[str]]] = None,
+                   target_columns: Optional[Dict[str, List[Port]]] = None,
                    ) -> Mapping:
     raw_name = mxml.get("NAME", "mapping")
     name = raw_name[2:] if raw_name.startswith("m_") else raw_name
@@ -267,7 +292,7 @@ def _parse_mapping(mxml: ET.Element, source_defs: Dict[str, SourceTable],
             props = {"table": info["tx_name"]}
             declared = (target_columns or {}).get(info["tx_name"].lower())
             if declared:
-                props["declared_columns"] = declared
+                props["declared_columns"] = [p.name for p in declared]
             mapping.transformations.append(Transformation(
                 name=iname, type=TransformationType.TARGET, ports=[],
                 properties=props))
@@ -390,8 +415,12 @@ def _parse_mapping(mxml: ET.Element, source_defs: Dict[str, SourceTable],
             mapping.links.append(link)
     for tname, cols in tgt_ports.items():
         t = mapping.transformation(tname)
-        if t is not None and not t.ports:
-            t.ports = [Port(name=c) for c in cols]
+        if t is None or t.ports:
+            continue
+        declared = {p.name.lower(): p
+                    for p in (target_columns or {}).get(
+                        str(t.properties.get("table", "")).lower(), [])}
+        t.ports = [_target_port(c, declared.get(c.lower())) for c in cols]
 
     _fold_mapplet_bypasses(mapping, mapplet_rewire, edge_fields)
 

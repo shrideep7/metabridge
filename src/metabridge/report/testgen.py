@@ -48,7 +48,8 @@ from sqlglot import exp
 
 import yaml
 
-from ..ir.model import LoadStrategy, Mapping, Pipeline, TransformationType
+from ..ir.model import (ConversionIssue, IssueSeverity, LoadStrategy,
+                        Mapping, Pipeline, TransformationType)
 from ..parsers.sql_parser import SQL_DIALECT_FORMATS
 
 TEST_TYPES = (
@@ -72,73 +73,97 @@ _SQL_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_$#]*$")
 #   native:  fast same-platform checksum ({cols} = column list, {row} = row expr)
 #   md5num:  numeric slice of an MD5 row hash — portable across platforms
 #   except_op: set-difference operator
-#   schema_q:  information-schema query template ({table})
+#   schema_q:  information-schema query template ({table},
+#              {schema_pred})
+#   schema_col: how that catalog spells the schema. Filtering on table name
+#              alone was safe only while one schema existed: an estate with
+#              RAW/SILVER/GOLD, or a parallel-run copy of the same table,
+#              returns several rows and the comparison reads whichever the
+#              engine returns first.
 _P: Dict[str, dict] = {
     "snowflake": dict(
+        schema_col="table_schema",
         concat="||", cast="VARCHAR", except_op="EXCEPT",
         native="HASH_AGG({cols})",
         md5num="SUM(TO_NUMBER(SUBSTR(MD5({row}), 1, 8), 'XXXXXXXX'))",
         schema_q="SELECT LOWER(column_name) AS column_name, LOWER(data_type) "
                  "AS data_type FROM information_schema.columns "
-                 "WHERE LOWER(table_name) = '{table}' ORDER BY 1"),
+                 "WHERE LOWER(table_name) = '{table}'{schema_pred} "
+                 "ORDER BY 1"),
     "databricks": dict(
+        schema_col="table_schema",
         concat="||", cast="STRING", except_op="EXCEPT",
         native="SUM(XXHASH64({row}))",
         md5num="SUM(CAST(CONV(SUBSTR(MD5({row}), 1, 8), 16, 10) AS BIGINT))",
         schema_q="SELECT LOWER(column_name) AS column_name, LOWER(data_type) "
                  "AS data_type FROM information_schema.columns "
-                 "WHERE LOWER(table_name) = '{table}' ORDER BY 1"),
+                 "WHERE LOWER(table_name) = '{table}'{schema_pred} "
+                 "ORDER BY 1"),
     "bigquery": dict(
+        schema_col="table_schema",
         concat="CONCAT", cast="STRING", except_op="EXCEPT DISTINCT",
         native="BIT_XOR(FARM_FINGERPRINT({row}))",
         md5num="SUM(CAST(CONCAT('0x', SUBSTR(TO_HEX(MD5({row})), 1, 8)) "
                "AS INT64))",
         schema_q="SELECT LOWER(column_name) AS column_name, LOWER(data_type) "
                  "AS data_type FROM INFORMATION_SCHEMA.COLUMNS "
-                 "WHERE LOWER(table_name) = '{table}' ORDER BY 1"),
+                 "WHERE LOWER(table_name) = '{table}'{schema_pred} "
+                 "ORDER BY 1"),
     "redshift": dict(
+        schema_col="table_schema",
         concat="||", cast="VARCHAR", except_op="EXCEPT",
         native="SUM(FNV_HASH({row}))",
         md5num="SUM(STRTOL(SUBSTRING(MD5({row}), 1, 8), 16))",
         schema_q="SELECT LOWER(column_name) AS column_name, LOWER(data_type) "
                  "AS data_type FROM information_schema.columns "
-                 "WHERE LOWER(table_name) = '{table}' ORDER BY 1"),
+                 "WHERE LOWER(table_name) = '{table}'{schema_pred} "
+                 "ORDER BY 1"),
     "synapse": dict(
+        schema_col="table_schema",
         concat="CONCAT", cast="NVARCHAR(4000)", except_op="EXCEPT",
         native="CHECKSUM_AGG(CHECKSUM({cols}))",
         md5num="SUM(CAST(CONVERT(INT, SUBSTRING(HASHBYTES('MD5', {row}), 1, "
                "4)) AS BIGINT))",
         schema_q="SELECT LOWER(column_name) AS column_name, LOWER(data_type) "
                  "AS data_type FROM information_schema.columns "
-                 "WHERE LOWER(table_name) = '{table}' ORDER BY 1"),
+                 "WHERE LOWER(table_name) = '{table}'{schema_pred} "
+                 "ORDER BY 1"),
     "oracle": dict(
+        schema_col="owner",
         concat="||", cast="VARCHAR2(4000)", except_op="MINUS",
         native="SUM(ORA_HASH({row}))",
         md5num="SUM(TO_NUMBER(SUBSTR(STANDARD_HASH({row}, 'MD5'), 1, 8), "
                "'XXXXXXXX'))",
         schema_q="SELECT LOWER(column_name) AS column_name, LOWER(data_type) "
                  "AS data_type FROM all_tab_columns "
-                 "WHERE LOWER(table_name) = '{table}' ORDER BY 1"),
+                 "WHERE LOWER(table_name) = '{table}'{schema_pred} "
+                 "ORDER BY 1"),
     "postgres": dict(
+        schema_col="table_schema",
         concat="||", cast="TEXT", except_op="EXCEPT",
         native="SUM(HASHTEXT({row}))",
         md5num="SUM(('x' || SUBSTR(MD5({row}), 1, 8))::BIT(32)::BIGINT)",
         schema_q="SELECT LOWER(column_name) AS column_name, LOWER(data_type) "
                  "AS data_type FROM information_schema.columns "
-                 "WHERE LOWER(table_name) = '{table}' ORDER BY 1"),
+                 "WHERE LOWER(table_name) = '{table}'{schema_pred} "
+                 "ORDER BY 1"),
     "teradata": dict(
+        schema_col="DatabaseName",
         concat="||", cast="VARCHAR(4000)", except_op="MINUS",
         native="SUM(CAST(HASHBUCKET(HASHROW({cols})) AS BIGINT))",
         md5num=None,   # no native MD5 — declared limitation, never a wrong query
         schema_q="SELECT LOWER(ColumnName) AS column_name, ColumnType "
                  "AS data_type FROM dbc.ColumnsV "
-                 "WHERE LOWER(TableName) = '{table}' ORDER BY 1"),
+                 "WHERE LOWER(TableName) = '{table}'{schema_pred} "
+                 "ORDER BY 1"),
     "ansi": dict(
+        schema_col="table_schema",
         concat="||", cast="VARCHAR(4000)", except_op="EXCEPT",
         native=None, md5num=None,
         schema_q="SELECT LOWER(column_name) AS column_name, LOWER(data_type) "
                  "AS data_type FROM information_schema.columns "
-                 "WHERE LOWER(table_name) = '{table}' ORDER BY 1"),
+                 "WHERE LOWER(table_name) = '{table}'{schema_pred} "
+                 "ORDER BY 1"),
 }
 _P["sqlserver"] = _P["synapse"]
 
@@ -186,6 +211,25 @@ def _columns(m: Mapping) -> List[Tuple[str, str]]:
     return [(p.name, p.datatype) for p in ports
             if _SQL_NAME_RE.match(p.name.strip())
             and p.name.strip().upper() != "ROW_DATA"]
+
+
+def _undeclared_decimals(m: Mapping) -> List[str]:
+    """Numeric columns whose precision the source never declared.
+
+    These are the columns the landing DDL had to guess at, so they are the
+    ones where the two sides of the migration end up with DIFFERENT numeric
+    types — and a fingerprint hashes the RENDERING of a number, not its
+    value. Naming them turns a reconciliation failure somebody has to chase
+    into one the report predicted.
+    """
+    tgts = m.by_type(TransformationType.TARGET)
+    ports = tgts[0].ports if tgts and tgts[0].ports else []
+    if not ports:
+        out = m.transformation("__OUTPUT__")
+        ports = out.ports if out else []
+    return [p.name for p in ports
+            if p.datatype == "decimal" and not p.precision
+            and _SQL_NAME_RE.match(p.name.strip())]
 
 
 def _flatten_and(node: exp.Expression) -> List[exp.Expression]:
@@ -378,6 +422,17 @@ def _duplicate_sql(table: str, cols: List[str]) -> str:
             % (col_list, table, col_list))
 
 
+def _schema_pred(spec: dict, schema: str) -> str:
+    """The AND that pins an information-schema lookup to one schema.
+
+    Empty when the schema is unknown, because a predicate against a guessed
+    schema returns nothing at all — which reads as "the table has no
+    columns" rather than as "I could not tell you"."""
+    if not schema or not spec.get("schema_col"):
+        return ""
+    return " AND LOWER(%s) = '%s'" % (spec["schema_col"], schema.lower())
+
+
 def _fingerprint_sql(table: str, cols: List[str], spec: dict) -> Optional[str]:
     if not spec["md5num"]:
         return None
@@ -403,9 +458,29 @@ def _native_checksum_sql(table: str, cols: List[str],
 def _mapping_tests(m: Mapping, sp: str, tp: str,
                    table_to_model: Dict[str, str],
                    keys_by_table: Dict[str, List[str]],
+                   relations: Optional[dict] = None,
                    ) -> Tuple[List[dict], List[dict]]:
-    """-> (tests, untestable_rules)"""
+    """-> (tests, untestable_rules)
+
+    ``relations`` says what this mapping's target is CALLED on each side.
+    Those are two different names as soon as the target format is dbt: the
+    legacy estate holds GOLD_SCHEMA.ANALYSIS and the migrated project builds
+    GOLD_SCHEMA.FCT_ANALYSIS. A reconciliation query naming ANALYSIS on both
+    sides compares nothing — it fails to resolve on one side, and on the
+    other it reads whatever unqualified ANALYSIS happens to mean there.
+    """
     table = _target_table(m)
+    here = ((relations or {}).get("per_mapping") or {}).get(m.name) or {}
+    src_rel = here.get("legacy") or table
+    tgt_rel = here.get("migrated") or table
+    src_bare = here.get("legacy_bare") or table
+    tgt_bare = here.get("migrated_bare") or table
+    # other relations this mapping's target-side SQL names — a lookup
+    # dataset, a join parent — have moved with it
+    moved = (relations or {}).get("tables") or {}
+
+    def migrated(name: str) -> str:
+        return moved.get(str(name).lower(), name)
     cols = _columns(m)
     col_names = [c for c, _ in cols]
     numeric = [c for c, t in cols if t in NUMERIC_TYPES]
@@ -426,8 +501,8 @@ def _mapping_tests(m: Mapping, sp: str, tp: str,
         "Row counts of %s must match between the legacy (%s) and migrated "
         "(%s) environments." % (table, sp, tp),
         "source_value == target_value",
-        source_sql="SELECT COUNT(*) AS row_count FROM %s" % table,
-        target_sql="SELECT COUNT(*) AS row_count FROM %s" % table)
+        source_sql="SELECT COUNT(*) AS row_count FROM %s" % src_rel,
+        target_sql="SELECT COUNT(*) AS row_count FROM %s" % tgt_rel)
 
     # 2. primary key uniqueness — from the declared unique key
     if m.unique_key:
@@ -439,7 +514,7 @@ def _mapping_tests(m: Mapping, sp: str, tp: str,
             key_columns=list(m.unique_key),
             target_sql="SELECT %s, COUNT(*) AS duplicates FROM %s "
                        "GROUP BY %s HAVING COUNT(*) > 1"
-                       % (key_list, table, key_list))
+                       % (key_list, tgt_rel, key_list))
 
     if col_names:
         # 3. null comparison
@@ -447,16 +522,16 @@ def _mapping_tests(m: Mapping, sp: str, tp: str,
             "Per-column null counts of %s must match on both sides." % table,
             "source_row == target_row (all columns)",
             columns=col_names,
-            source_sql=_null_profile_sql(table, col_names),
-            target_sql=_null_profile_sql(table, col_names))
+            source_sql=_null_profile_sql(src_rel, col_names),
+            target_sql=_null_profile_sql(tgt_rel, col_names))
 
         # 4. full-row duplicate comparison
         add("duplicate_comparison",
             "Count of fully-duplicated rows in %s must match on both sides."
             % table,
             "source_value == target_value",
-            source_sql=_duplicate_sql(table, col_names),
-            target_sql=_duplicate_sql(table, col_names))
+            source_sql=_duplicate_sql(src_rel, col_names),
+            target_sql=_duplicate_sql(tgt_rel, col_names))
 
     # 5. aggregate comparison over numeric columns
     if numeric:
@@ -465,8 +540,8 @@ def _mapping_tests(m: Mapping, sp: str, tp: str,
             % ", ".join(numeric),
             "source_row == target_row",
             columns=numeric,
-            source_sql=_aggregate_sql(table, numeric),
-            target_sql=_aggregate_sql(table, numeric))
+            source_sql=_aggregate_sql(src_rel, numeric),
+            target_sql=_aggregate_sql(tgt_rel, numeric))
 
     # 6. min/max comparison over numeric + temporal columns
     if ordered:
@@ -475,13 +550,13 @@ def _mapping_tests(m: Mapping, sp: str, tp: str,
             % ", ".join(ordered),
             "source_row == target_row",
             columns=ordered,
-            source_sql=_min_max_sql(table, ordered),
-            target_sql=_min_max_sql(table, ordered))
+            source_sql=_min_max_sql(src_rel, ordered),
+            target_sql=_min_max_sql(tgt_rel, ordered))
 
     # 7. checksum — portable fingerprint + native (same-platform only)
     if col_names:
-        s_fp = _fingerprint_sql(table, col_names, s_spec)
-        t_fp = _fingerprint_sql(table, col_names, t_spec)
+        s_fp = _fingerprint_sql(src_rel, col_names, s_spec)
+        t_fp = _fingerprint_sql(tgt_rel, col_names, t_spec)
         limitations = []
         for pf, fp in ((sp, s_fp), (tp, t_fp)):
             if fp is None:
@@ -489,15 +564,30 @@ def _mapping_tests(m: Mapping, sp: str, tp: str,
                     "%s has no native MD5 — portable fingerprint not "
                     "available; rely on aggregate/min-max/column-level "
                     "checks (Teradata: install an MD5 UDF to enable)" % pf)
+        loose = _undeclared_decimals(m)
+        if loose:
+            limitations.append(
+                "%s declare no precision in the source, so each side creates "
+                "them with a different numeric type — this fingerprint "
+                "hashes '1001.000000' against '1001' and WILL report a "
+                "mismatch on identical data. Measure them with "
+                "ddl/00_probe_string_widths.sql, declare the result in the "
+                "manifest and regenerate; then both sides agree and this "
+                "test means something. Until then read the column-level "
+                "comparison instead — it compares values, not their "
+                "rendering." % ", ".join(loose))
         add("checksum_comparison",
             "Portable MD5 row fingerprint of %s, comparable across "
             "platforms. Cast rendering of float/timestamp values can "
             "differ between engines — treat a mismatch as a trigger for "
             "the column-level comparison, not proof of corruption." % table,
-            "source_row == target_row" if s_fp and t_fp else "see limitations",
+            "source_row == target_row"
+            if s_fp and t_fp and not loose else "see limitations",
             source_sql=s_fp, target_sql=t_fp,
-            native_source_sql=_native_checksum_sql(table, col_names, s_spec),
-            native_target_sql=_native_checksum_sql(table, col_names, t_spec),
+            native_source_sql=_native_checksum_sql(src_rel, col_names,
+                                                   s_spec),
+            native_target_sql=_native_checksum_sql(tgt_rel, col_names,
+                                                   t_spec),
             native_note="native checksums use different hash functions per "
                         "platform — compare them only within the SAME "
                         "platform (e.g. before/after a reload), never "
@@ -508,7 +598,10 @@ def _mapping_tests(m: Mapping, sp: str, tp: str,
     if col_names:
         col_list = ", ".join(col_names)
         op = t_spec["except_op"]
-        legacy, migrated = "{{LEGACY_%s}}" % table.upper(), table
+        # named for the LEGACY object, since that is what has to be made
+        # reachable from the target engine — the migrated model's name would
+        # send whoever fills the placeholder looking for the wrong table
+        legacy, mig_rel = "{{LEGACY_%s}}" % src_bare.upper(), tgt_rel
         add("column_level_comparison",
             "Full column-level set difference in both directions. Requires "
             "the legacy table to be reachable from the %s engine (external "
@@ -523,8 +616,8 @@ def _mapping_tests(m: Mapping, sp: str, tp: str,
                 "SELECT %s FROM %s %s SELECT %s FROM %s;\n"
                 "-- rows in migrated not present in legacy\n"
                 "SELECT %s FROM %s %s SELECT %s FROM %s;"
-                % (col_list, legacy, op, col_list, migrated,
-                   col_list, migrated, op, col_list, legacy)))
+                % (col_list, legacy, op, col_list, mig_rel,
+                   col_list, mig_rel, op, col_list, legacy)))
 
     # 9. business rules — from filter conditions (watermarks excluded:
     #    they parametrize a run, they are not invariants of the data).
@@ -584,7 +677,7 @@ def _mapping_tests(m: Mapping, sp: str, tp: str,
                 rule=rule,
                 target_sql=_render(
                     "SELECT COUNT(*) AS violations FROM %s WHERE %s"
-                    % (table, check), tp)))
+                    % (tgt_rel, check), tp)))
 
     # 9b. accepted values from CASE expressions — closed output domains
     for col, values in _case_accepted_values(m):
@@ -602,7 +695,8 @@ def _mapping_tests(m: Mapping, sp: str, tp: str,
             target_sql=_render(
                 "SELECT COUNT(*) AS violations FROM %s WHERE %s IS NOT NULL "
                 "AND %s NOT IN (%s)"
-                % (table, col, col, ", ".join("'%s'" % v for v in values)),
+                % (tgt_rel, col, col,
+                   ", ".join("'%s'" % v for v in values)),
                 tp)))
 
     # 9c. SCD Type 2 validation — detected dimensions get history-integrity
@@ -628,7 +722,7 @@ def _mapping_tests(m: Mapping, sp: str, tp: str,
             target_sql=_render(
                 "SELECT COUNT(*) AS violations FROM (SELECT %s FROM %s "
                 "WHERE %s GROUP BY %s HAVING COUNT(*) > 1) dup"
-                % (bk, table, current, bk), tp)))
+                % (bk, tgt_rel, current, bk), tp)))
         if start_c and end_c:
             rule_no += 1
             tests.append(dict(
@@ -644,7 +738,7 @@ def _mapping_tests(m: Mapping, sp: str, tp: str,
                 target_sql=_render(
                     "SELECT COUNT(*) AS violations FROM %s WHERE %s IS "
                     "NOT NULL AND %s < %s"
-                    % (table, end_c, end_c, start_c), tp)))
+                    % (tgt_rel, end_c, end_c, start_c), tp)))
         if flag and end_c:
             rule_no += 1
             tests.append(dict(
@@ -660,7 +754,8 @@ def _mapping_tests(m: Mapping, sp: str, tp: str,
                 target_sql=_render(
                     "SELECT COUNT(*) AS violations FROM %s WHERE "
                     "(%s = 'Y' AND %s IS NOT NULL) OR (%s = 'N' AND %s "
-                    "IS NULL)" % (table, flag, end_c, flag, end_c), tp)))
+                    "IS NULL)" % (tgt_rel, flag, end_c, flag, end_c),
+                    tp)))
 
     # 9d. transformation validation (module 30): filter counts, join
     # cardinality, lookup match rate, aggregator totals, router distribution
@@ -703,7 +798,7 @@ def _mapping_tests(m: Mapping, sp: str, tp: str,
             source_sql="SELECT COUNT(*) AS row_count FROM %s WHERE %s"
             % (single_src, cond),
             target_sql=_render("SELECT COUNT(*) AS row_count FROM %s"
-                               % table, tp))
+                               % tgt_rel, tp))
 
     # join cardinality — the join must not multiply detail rows
     for j in m.by_type(TransformationType.JOINER):
@@ -744,7 +839,7 @@ def _mapping_tests(m: Mapping, sp: str, tp: str,
             target_sql=_render(
                 "SELECT COUNT(*) AS unmatched FROM %s t LEFT JOIN %s l "
                 "ON t.%s = l.%s WHERE l.%s IS NULL"
-                % (table, ds, inp, lcol, lcol), tp))
+                % (tgt_rel, migrated(ds), inp, lcol, lcol), tp))
 
     # aggregator totals — SUM measures must balance source vs target
     for a in m.by_type(TransformationType.AGGREGATOR):
@@ -801,7 +896,8 @@ def _mapping_tests(m: Mapping, sp: str, tp: str,
             expectation="orphans == 0", relationship=rel,
             target_sql="SELECT COUNT(*) AS orphans FROM %s c LEFT JOIN %s p "
                        "ON c.%s = p.%s WHERE p.%s IS NULL AND c.%s IS NOT NULL"
-                       % (rel["child_table"], rel["parent_table"],
+                       % (migrated(rel["child_table"]),
+                          migrated(rel["parent_table"]),
                           rel["child_column"], rel["parent_column"],
                           rel["parent_column"], rel["child_column"])))
 
@@ -814,8 +910,12 @@ def _mapping_tests(m: Mapping, sp: str, tp: str,
             "query output matches expected_columns",
             expected_columns=[{"column": c, "canonical_type": t}
                               for c, t in cols],
-            source_sql=s_spec["schema_q"].format(table=table.lower()),
-            target_sql=t_spec["schema_q"].format(table=table.lower()))
+            source_sql=s_spec["schema_q"].format(
+                table=src_bare.lower(),
+                schema_pred=_schema_pred(s_spec, here.get("legacy_schema"))),
+            target_sql=t_spec["schema_q"].format(
+                table=tgt_bare.lower(),
+                schema_pred=_schema_pred(t_spec, here.get("migrated_schema"))))
 
     return tests, untestable
 
@@ -824,11 +924,174 @@ def _mapping_tests(m: Mapping, sp: str, tp: str,
 # dbt-native tests                                                             #
 # --------------------------------------------------------------------------- #
 
+# Stands in for the schema a dbt profile supplies at run time. Spelled like
+# the {{LEGACY_...}} placeholder beside it so one convention covers both.
+TARGET_SCHEMA_TOKEN = "{{TARGET_SCHEMA}}"
+
+
+def _qualify(schema: str, name: str) -> str:
+    return "%s.%s" % (schema, name) if schema and name else name
+
+
+def _relations(pipeline: Pipeline, target_format: str = "") -> dict:
+    """What each mapping's target is called on each side of the migration.
+
+    Reconciliation compares two environments, so it needs two names. Before
+    this it used one — the legacy target table — for both, which held only
+    while the migrated object kept the legacy name. It does not: a dbt
+    project builds ANALYSIS as fct_analysis, and CUSTOMER as
+    stg_raw_schema__customer.
+
+    Both sides are also qualified with the schema the estate declared, since
+    an unqualified name resolves against whatever schema the session happens
+    to be pointed at — which on the migrated side is rarely the one holding
+    the model.
+    """
+    from ..generators.dbt_naming import target_schema
+    model_of = _dbt_relation_names(pipeline) \
+        if (target_format or "").lower() == "dbt" else {}
+
+    per_mapping: Dict[str, dict] = {}
+    tables: Dict[str, str] = {}
+    for m in pipeline.mappings:
+        table = _target_table(m)
+        schema = target_schema(m)
+        migrated_bare = model_of.get(m.name, table)
+        # A landing mapping's target is a name this generator invented; the
+        # legacy estate has no stg_customer. What it reproduces 1:1 is the
+        # SOURCE table, and that is what its counts and checksums have to be
+        # compared against.
+        tgts = m.by_type(TransformationType.TARGET)
+        landed = str(tgts[0].properties.get("landed_from", "")) if tgts else ""
+        if landed:
+            legacy_bare = landed
+            legacy_schema = str(tgts[0].properties.get(
+                "landed_from_schema", "") or "")
+        else:
+            legacy_bare, legacy_schema = table, schema
+        # A staging model builds into the schema the dbt PROFILE names, and
+        # the generated profile reads that from an environment variable — so
+        # it genuinely is not known here. Left unqualified the query still
+        # runs, against whatever the session's schema happens to be, and
+        # quietly reconciles against the wrong relation or none. A named
+        # placeholder fails loudly instead, which is the better of the two.
+        migrated_schema = schema or (TARGET_SCHEMA_TOKEN if model_of else "")
+        per_mapping[m.name] = {
+            "legacy": _qualify(legacy_schema, legacy_bare),
+            "migrated": _qualify(migrated_schema, migrated_bare),
+            "legacy_bare": legacy_bare,
+            "migrated_bare": migrated_bare,
+            "legacy_schema": legacy_schema,
+            "migrated_schema": schema,
+        }
+        if table:
+            tables[table.lower()] = per_mapping[m.name]["migrated"]
+    # a raw source table is not rebuilt by the project, so on the migrated
+    # side it is still itself — in the schema the landing DDL created
+    for s in pipeline.sources:
+        tables.setdefault(s.name.lower(), _qualify(s.schema, s.name))
+    return {"per_mapping": per_mapping, "tables": tables}
+
+
+def _model_output_columns(m: Optional[Mapping]) -> set:
+    """Lowercased columns a mapping's MODEL projects.
+
+    __OUTPUT__ before TARGET, and the order is the point: the TARGET
+    describes the target TABLE, __OUTPUT__ is what the mapping actually
+    populates, and the model renders __OUTPUT__. A table can carry a column
+    the mapping never fills.
+    """
+    if m is None:
+        return set()
+    out = m.transformation("__OUTPUT__")
+    ports = out.ports if out is not None and out.ports else []
+    if not ports:
+        tgts = m.by_type(TransformationType.TARGET)
+        ports = tgts[0].ports if tgts and tgts[0].ports else []
+    return {p.name.lower() for p in ports}
+
+
+def _resolve_parent_field(field: str, columns: set) -> str:
+    """The column on the PARENT model that `field` refers to, or "".
+
+    A join condition is written against the names that exist DOWNSTREAM of
+    the join, which is after a bulk rename has prefixed them — so the parent
+    of `ACC_CUSTOMER_ID` is a model whose column is `CUSTOMER_ID`. Emitting
+    the prefixed name as a `relationships` test's `field:` produces a test
+    that compiles and then fails on `dbt test` with an invalid identifier,
+    which is worse than no test: it reports a referential problem that is
+    really a naming one.
+    """
+    low = field.lower()
+    if low in columns:
+        return field
+    # longest suffix that sits on a `_` boundary — resolves ACC_, AC_ and the
+    # doubled ACCACC_ alike, without letting TOTAL_ID match a column called ID
+    best = ""
+    for col in columns:
+        if low.endswith("_" + col) and len(col) > len(best):
+            best = col
+    return best.upper() if best else ""
+
+
+def _dbt_relation_names(pipeline: Pipeline) -> Dict[str, str]:
+    """Mapping name -> the RELATION dbt builds, which is not always the model.
+
+    A model carrying `alias='ANALYSIS'` is called fct_analysis inside the
+    project and ANALYSIS in the warehouse. Reconciliation queries the
+    warehouse, so it needs the second one; the dbt schema.yml tests patch
+    project nodes, so they need the first. Conflating them puts one of the
+    two in front of a relation that does not exist.
+    """
+    try:
+        from ..generators.dbt_naming import plan_names
+        plan, _stg = plan_names(pipeline)
+    except Exception:                                    # pragma: no cover
+        return {}
+    return {name: (entry.get("alias") or entry["ref"])
+            for name, entry in plan.items()}
+
+
+def _dbt_model_names(pipeline: Pipeline) -> Dict[str, str]:
+    """Mapping name -> the dbt model it was actually generated as.
+
+    The rest of testgen names things after the MAPPING. The dbt
+    tests are different — they have to name the models dbt knows about.
+
+    The two matched only by coincidence, while the generator emitted flat
+    `stg_<base>` names. Once a model is named for its source system and layer
+    (`stg_crm__customers`), a schema.yml written against mapping names patches
+    models that do not exist and `dbt test` fails on every entry.
+    """
+    try:
+        from ..generators.dbt_naming import plan_names
+        plan, _stg = plan_names(pipeline)
+    except Exception:                                    # pragma: no cover
+        return {}
+    return {name: entry["ref"] for name, entry in plan.items()}
+
+
+def _emitted_models(pipeline: Pipeline) -> set:
+    """Models the generator actually wrote, when it has already run.
+
+    A mapping routed to the manual queue still has a name in the plan but no
+    file, and patching it would be another dangling reference.
+    """
+    graph = (pipeline.metadata or {}).get("dbt_graph") or {}
+    return {n["name"] for n in graph.get("nodes", [])
+            if n.get("kind") in ("model", "snapshot")}
+
+
 def _dbt_tests(pipeline: Pipeline, all_tests: List[dict]) -> dict:
-    """schema.yml (not_null / unique / relationships / accepted_values) +
+    """Column tests (not_null / unique / relationships / accepted_values) +
     custom SQL tests for rules the builtins cannot express."""
     models: Dict[str, dict] = {}
     custom: Dict[str, str] = {}
+    dbt_name = _dbt_model_names(pipeline)
+    emitted = _emitted_models(pipeline)
+
+    def model_of(mapping_name: str) -> str:
+        return dbt_name.get(mapping_name, mapping_name)
 
     def col_entry(model: str, column: str) -> dict:
         entry = models.setdefault(model, {"name": model, "columns": {}})
@@ -836,7 +1099,7 @@ def _dbt_tests(pipeline: Pipeline, all_tests: List[dict]) -> dict:
                                                     "tests": []})
 
     for t in all_tests:
-        model = t["mapping"]
+        model = model_of(t["mapping"])
         if t["test_type"] == "pk_uniqueness":
             for k in t["key_columns"]:
                 ce = col_entry(model, k)
@@ -851,41 +1114,151 @@ def _dbt_tests(pipeline: Pipeline, all_tests: List[dict]) -> dict:
                     ce["tests"].append("not_null")
             elif rule.get("kind") == "accepted_values":
                 ce = col_entry(model, rule["column"])
-                ce["tests"].append({"accepted_values":
-                                    {"values": list(rule["values"])}})
+                # kwargs nested under `arguments:` — dbt deprecated the
+                # flat form in 1.10 (MissingArgumentsPropertyInGenericTest)
+                # and a deprecation becomes an error in a later release
+                ce["tests"].append({"accepted_values": {
+                    "arguments": {"values": list(rule["values"])}}})
             else:
                 fname = "assert_%s.sql" % t["name"]
                 custom[fname] = (
                     "-- %s\n-- expectation: no rows\n"
                     "select *\nfrom {{ ref('%s') }}\nwhere not (%s)\n"
                     % (t["description"], model, rule.get("condition", "1=1")))
+                continue
         elif t["test_type"] == "referential_integrity":
             rel = t["relationship"]
             if not rel["parent_model"] or not rel["child_model"]:
                 continue   # parent is a raw table, not a model — SQL test only
-            ce = col_entry(rel["child_model"], rel["child_column"])
-            ce["tests"].append({"relationships": {
-                "to": "ref('%s')" % rel["parent_model"],
-                "field": rel["parent_column"]}})
+            parent = next((x for x in pipeline.mappings
+                           if x.name == rel["parent_model"]), None)
+            field = _resolve_parent_field(
+                rel["parent_column"], _model_output_columns(parent))
+            if not field:
+                # No column on the parent answers to this name. A test that
+                # cannot resolve does not fail safe — it fails loudly on
+                # `dbt test` and reads as a data problem. Say so instead.
+                pipeline.issues.append(ConversionIssue(
+                    severity=IssueSeverity.WARNING,
+                    code="RELATIONSHIP_TEST_UNRESOLVED",
+                    message="Not generating a relationships test from %s.%s "
+                            "to %s: the parent model projects no column "
+                            "matching '%s'."
+                            % (rel["child_model"], rel["child_column"],
+                               rel["parent_model"], rel["parent_column"]),
+                    obj=rel["child_model"],
+                    suggestion="Check the join this was inferred from — the "
+                               "parent column may be renamed downstream of "
+                               "the join rather than on the parent itself."))
+                continue
+            ce = col_entry(model_of(rel["child_model"]),
+                           rel["child_column"])
+            ce["tests"].append({"relationships": {"arguments": {
+                "to": "ref('%s')" % model_of(rel["parent_model"]),
+                "field": field}}})
 
     model_docs = []
     for m in pipeline.mappings:
         if m.load_strategy == LoadStrategy.EPHEMERAL:
             continue
-        entry = models.get(m.name)
+        name = model_of(m.name)
+        if emitted and name not in emitted:
+            continue          # routed to the manual queue — no model to patch
+        entry = models.get(name)
         if not entry or not entry["columns"]:
             continue
         model_docs.append({
-            "name": m.name,
+            "name": name,
             "columns": [c for c in entry["columns"].values() if c["tests"]]})
     schema_yml = yaml.safe_dump({"version": 2, "models": model_docs},
                                 sort_keys=False, default_flow_style=False)
-    return {"schema_yml": schema_yml, "custom_tests": custom,
+    return {"schema_yml": schema_yml, "models": model_docs,
+            "custom_tests": custom,
             "counts": {"models": len(model_docs),
                        "column_tests": sum(len(c["tests"])
                                            for md in model_docs
                                            for c in md["columns"]),
                        "custom_sql_tests": len(custom)}}
+
+
+def _merge_column_tests(existing: List[dict], wanted: List[dict]) -> List[dict]:
+    """Union the generated tests onto a model's existing column entries.
+
+    The generator already documents each mart's columns (name, data_type, and
+    unique/not_null on the key). These add to that rather than replacing it —
+    a column keeps its documented type and gains the tests.
+    """
+    by_name = {c["name"]: c for c in existing}
+    for col in wanted:
+        entry = by_name.get(col["name"])
+        if entry is None:
+            entry = {"name": col["name"]}
+            existing.append(entry)
+            by_name[col["name"]] = entry
+        have = entry.setdefault("tests", [])
+        for test in col["tests"]:
+            if test not in have:
+                have.append(test)
+    return existing
+
+
+def install_dbt_tests(dbt_doc: dict, project_dir: str) -> dict:
+    """Add the generated tests to a dbt project in place.
+
+    They used to be written to `validation_tests/dbt/schema.yml` with a README
+    telling the reader to merge them into the project by hand. That is no
+    longer possible: the generator writes a property file per folder that
+    already patches every model, so a second file defining the same models
+    makes dbt refuse the project outright ("duplicate patch for model").
+
+    Merging here is also the only place that knows which property file a given
+    model's entry lives in. Singular tests go straight into the project's own
+    `tests/` directory, which is where dbt looks for them.
+
+    Returns what was installed; an empty result means there was no generated
+    project to install into (testgen run on its own), and the caller keeps the
+    standalone copy so the tests are not silently lost.
+    """
+    from pathlib import Path
+    project = Path(project_dir)
+    if not (project / "dbt_project.yml").exists():
+        return {}
+
+    wanted = {m["name"]: m for m in dbt_doc.get("models", [])}
+    patched, files = 0, []
+    for prop in sorted(project.rglob("models/**/*.yml")):
+        doc = yaml.safe_load(prop.read_text(encoding="utf-8")) or {}
+        models = doc.get("models")
+        if not models:
+            continue                       # a sources file, not a model patch
+        touched = False
+        for entry in models:
+            col_tests = wanted.pop(entry.get("name"), None)
+            if col_tests is None:
+                continue
+            entry["columns"] = _merge_column_tests(
+                entry.get("columns") or [], col_tests["columns"])
+            touched = True
+            patched += 1
+        if touched:
+            prop.write_text(yaml.safe_dump(doc, sort_keys=False,
+                                           default_flow_style=False),
+                            encoding="utf-8")
+            files.append(prop.relative_to(project).as_posix())
+
+    singular = []
+    if dbt_doc.get("custom_tests"):
+        tests_dir = project / "tests"
+        tests_dir.mkdir(parents=True, exist_ok=True)
+        for fname, sql in sorted(dbt_doc["custom_tests"].items()):
+            (tests_dir / fname).write_text(sql, encoding="utf-8")
+            singular.append("tests/%s" % fname)
+
+    return {"models_patched": patched, "property_files": files,
+            "singular_tests": singular,
+            # a model in the suite with no entry in any property file: it was
+            # not generated, so say so rather than leave a silent gap
+            "unplaced": sorted(wanted)}
 
 
 # --------------------------------------------------------------------------- #
@@ -912,6 +1285,7 @@ def generate_tests(pipeline: Pipeline, source_platform: str = "",
     table_to_model = {v: k for k, v in target_of.items()}
     keys_by_table = {target_of[m.name]: list(m.unique_key)
                      for m in pipeline.mappings if m.unique_key}
+    relations = _relations(pipeline, target_format)
 
     all_tests: List[dict] = []
     per_mapping: List[dict] = []
@@ -922,7 +1296,7 @@ def generate_tests(pipeline: Pipeline, source_platform: str = "",
                                           "to validate"})
             continue
         tests, untestable = _mapping_tests(m, sp, tp, table_to_model,
-                                           keys_by_table)
+                                           keys_by_table, relations)
         all_tests.extend(tests)
         entry = {"mapping": m.name,
                  "target_table": _target_table(m),
@@ -1045,8 +1419,16 @@ def write_tests(doc: dict, out_dir: str) -> str:
                   "-- %%s\n"
                   "-- Run the paired file against the other environment and "
                   "diff the outputs.\n"
-                  "-- Adjust schema/database qualification per environment "
-                  "before running.\n\n" % name)
+                  "-- Relations are qualified with the schema the estate "
+                  "declares.\n"
+                  "-- {{TARGET_SCHEMA}} is the one it cannot know: a dbt "
+                  "profile supplies\n"
+                  "-- that at run time. Substitute it before running — "
+                  "unqualified, the\n"
+                  "-- query would resolve against the session's schema and "
+                  "reconcile\n"
+                  "-- against the wrong relation without saying so.\n\n"
+                  % name)
         (recon / ("%s.legacy_%s.sql" % (name, sp))).write_text(
             header % ("LEGACY environment (%s)" % sp)
             + "\n".join(_recon_sections(tests, "legacy")), encoding="utf-8")
@@ -1069,11 +1451,18 @@ def write_tests(doc: dict, out_dir: str) -> str:
     (root / "README.md").write_text(_readme(doc), encoding="utf-8")
 
     if doc.get("dbt"):
-        dbt_dir = root / "dbt"
-        (dbt_dir / "tests").mkdir(parents=True, exist_ok=True)
-        (dbt_dir / "schema.yml").write_text(doc["dbt"]["schema_yml"], encoding="utf-8")
-        for fname, sql in doc["dbt"]["custom_tests"].items():
-            (dbt_dir / "tests" / fname).write_text(sql, encoding="utf-8")
+        installed = install_dbt_tests(doc["dbt"],
+                                      str(Path(out_dir) / "dbt"))
+        doc["dbt"]["installed"] = installed
+        if not installed:
+            # no generated project here (testgen run on its own) — keep the
+            # standalone copy rather than drop the tests on the floor
+            dbt_dir = root / "dbt"
+            (dbt_dir / "tests").mkdir(parents=True, exist_ok=True)
+            (dbt_dir / "schema.yml").write_text(doc["dbt"]["schema_yml"],
+                                                encoding="utf-8")
+            for fname, sql in doc["dbt"]["custom_tests"].items():
+                (dbt_dir / "tests" / fname).write_text(sql, encoding="utf-8")
     return str(root)
 
 
@@ -1110,13 +1499,43 @@ def _readme(doc: dict) -> str:
         "comparison, not that data is corrupt.",
         "- Column-level comparison needs both tables reachable from one "
         "engine — replace the `{{LEGACY_...}}` placeholder.",
+        "- `{{TARGET_SCHEMA}}` stands for the schema your dbt profile "
+        "builds into, for the models that have no schema of their own. "
+        "Substitute it; do not just delete it.",
+        "- A numeric column whose precision the source never declared is "
+        "created on the documented fallback, so the two sides declare "
+        "DIFFERENT types for it. The checksum hashes the RENDERING of a "
+        "number, so `1001.000000` and `1001` differ and the test reports a "
+        "mismatch on identical data. Run `ddl/00_probe_string_widths.sql`, "
+        "put the measured precision in the manifest and regenerate — then "
+        "both sides declare the same type and the checksum means something.",
     ]
     if doc.get("dbt"):
-        lines += ["", "## dbt tests", "",
-                  "`dbt/schema.yml` (%d column tests over %d models) and "
-                  "`dbt/tests/` (%d custom SQL tests) — merge into your "
-                  "generated project and run `dbt test`."
-                  % (doc["dbt"]["counts"]["column_tests"],
-                     doc["dbt"]["counts"]["models"],
-                     doc["dbt"]["counts"]["custom_sql_tests"])]
+        installed = doc["dbt"].get("installed") or {}
+        if installed:
+            lines += ["", "## dbt tests", "",
+                      "%d column test(s) over %d model(s) were added to the "
+                      "generated project's own property files, and %d "
+                      "singular test(s) to its `tests/`. Nothing to merge — "
+                      "run `dbt test`."
+                      % (doc["dbt"]["counts"]["column_tests"],
+                         installed.get("models_patched", 0),
+                         len(installed.get("singular_tests", [])))]
+            if installed.get("unplaced"):
+                lines += ["",
+                          "Not installed (no such model in the generated "
+                          "project): %s."
+                          % ", ".join("`%s`" % m
+                                      for m in installed["unplaced"])]
+        else:
+            lines += ["", "## dbt tests", "",
+                      "`dbt/schema.yml` (%d column tests over %d models) and "
+                      "`dbt/tests/` (%d custom SQL tests). No generated dbt "
+                      "project was found beside this suite, so they are here "
+                      "instead — add them to the property file of the folder "
+                      "each model lives in, NOT as a new schema.yml, or dbt "
+                      "reports a duplicate patch."
+                      % (doc["dbt"]["counts"]["column_tests"],
+                         doc["dbt"]["counts"]["models"],
+                         doc["dbt"]["counts"]["custom_sql_tests"])]
     return "\n".join(lines) + "\n"

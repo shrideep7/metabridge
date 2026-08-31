@@ -70,14 +70,15 @@ def test_powercenter_roundtrip_to_dbt(pipeline, tmp_path):
 
     out = tmp_path / "dbt_out"
     generate_dbt_project(p2, str(out))
-    stg = (out / "models" / "staging" / "stg_customers.sql").read_text()
-    assert "{{ source('RAW', 'raw_customers') }}" in stg
+    stg_path = next(out.rglob("models/staging/**/stg_*customers.sql"))
+    stg = stg_path.read_text()
+    assert "{{ source(" in stg and "'raw_customers') }}" in stg
     assert "UPPER(LTRIM(RTRIM(first_name)))" in stg
-    co = (out / "models" / "intermediate" / "int_customer_orders.sql").read_text()
-    assert "{{ ref('stg_customers') }}" in co
+    co = next(out.rglob("models/**/*customer_orders.sql")).read_text()
+    assert "{{ ref('%s') }}" % stg_path.stem in co
     assert "left join" in co
     assert "group by" in co
-    inc = (out / "models" / "staging" / "stg_orders.sql").read_text()
+    inc = next(out.rglob("models/staging/**/stg_*orders.sql")).read_text()
     assert "materialized='incremental'" in inc
     assert "unique_key='order_id'" in inc
 
@@ -85,7 +86,7 @@ def test_powercenter_roundtrip_to_dbt(pipeline, tmp_path):
     # attribute round-trip (newlines normalize to spaces on parse)
     import re
     import sqlglot
-    ranking = (out / "models" / "intermediate" / "int_customer_ranking.sql").read_text()
+    ranking = next(out.rglob("models/**/*customer_ranking.sql")).read_text()
     stripped = re.sub(r"\{\{\s*config.*?\}\}", "", ranking, flags=re.DOTALL)
     stripped = re.sub(r"\{\{.*?\}\}", "placeholder_rel", stripped, flags=re.DOTALL)
     sqlglot.parse_one(stripped)  # raises if the override was mangled

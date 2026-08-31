@@ -179,13 +179,51 @@ def _rename_rules(node: dict) -> Dict[str, dict]:
     return out
 
 
+# Comparisons a simple-mode row can carry. An operator outside this set is
+# not translated on a guess: the row is dropped and the whole condition comes
+# back empty, which the generator reports as unreadable.
+_SIMPLE_OPS = frozenset({"=", "==", "!=", "<>", ">", ">=", "<", "<=",
+                         "LIKE", "NOT LIKE", "IN", "NOT IN"})
+_NULL_OPS = {"IS NULL": "IS NULL", "ISNULL": "IS NULL",
+             "IS NOT NULL": "IS NOT NULL", "ISNOTNULL": "IS NOT NULL"}
+
+
+def _simple_literal(value: str) -> str:
+    """A simple-filter value rendered as a SQL literal.
+
+    IDMC stores the value as TEXT whatever the field's type is, so `18` and
+    `active` arrive identically and only the shape of the value says which is
+    which. Quoting everything breaks numeric comparisons; quoting nothing
+    breaks string ones.
+    """
+    v = value.strip()
+    if not v or v.upper() in ("TRUE", "FALSE", "NULL"):
+        return v.upper()
+    try:
+        float(v)
+        return v                                # numeric: never quote
+    except ValueError:
+        pass
+    if v[:1] in ("'", '"'):
+        return v                                # already a literal
+    return "'%s'" % v.replace("'", "''")
+
+
 def _condition(node: dict, advanced_key: str, simple_key: str) -> str:
     """Filter/Joiner conditions come out of the designer two ways.
 
-    Advanced mode stores the expression verbatim; simple mode stores a list of
-    {leftOperand, operator, rightOperand} rows that the UI ANDs together. Only
-    one is populated, and reading just the advanced key silently produced an
-    empty condition for every mapping built the normal (simple) way."""
+    Advanced mode stores the expression verbatim. Simple mode stores a list of
+    rows the UI ANDs together — and it spells them two different ways: a
+    JOINER row compares two FIELDS (leftOperand/rightOperand), a FILTER row
+    compares one field against a literal VALUE (fieldName/filterValue). Only
+    the first spelling was read, so a filter built the normal way in the
+    designer — `AGE >= 18` — came through as an empty condition and the
+    generated model did not filter at all.
+
+    A row that cannot be rendered faithfully voids the WHOLE condition rather
+    than contributing a partial one: half a predicate silently selects a
+    different set of rows, which is worse than reporting nothing.
+    """
     adv = str(node.get(advanced_key, "") or "").strip()
     if adv:
         return adv
@@ -193,11 +231,22 @@ def _condition(node: dict, advanced_key: str, simple_key: str) -> str:
     for row in node.get(simple_key, []) or []:
         if not isinstance(row, dict):
             continue
-        left = str(row.get("leftOperand", "") or "").strip()
-        right = str(row.get("rightOperand", "") or "").strip()
         op = str(row.get("operator", "=") or "=").strip()
-        if left and right:
-            parts.append("%s %s %s" % (left, op, right))
+        left = str(row.get("leftOperand", "") or "").strip()
+        if left:                                # joiner: field vs field
+            right = str(row.get("rightOperand", "") or "").strip()
+        else:                                   # filter: field vs literal
+            left = str(row.get("fieldName", "") or "").strip()
+            right = _simple_literal(str(row.get("filterValue", "") or ""))
+        if not left:
+            return ""
+        null_op = _NULL_OPS.get(op.upper().replace("_", " "))
+        if null_op:
+            parts.append("%s %s" % (left, null_op))
+            continue
+        if not right or op.upper() not in _SIMPLE_OPS:
+            return ""
+        parts.append("%s %s %s" % (left, "=" if op == "==" else op, right))
     return " AND ".join(parts)
 
 

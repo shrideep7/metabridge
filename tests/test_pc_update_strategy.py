@@ -4,6 +4,8 @@ from pathlib import Path
 
 import pytest
 
+from conftest import model_sql
+
 from metabridge.engine import parse_input
 from metabridge.ir.model import LoadStrategy
 from metabridge.parsers.pc_update_strategy import parse_dml_routing
@@ -175,12 +177,12 @@ def test_merge_clauses_on_every_warehouse(tmp_path, monkeypatch, target):
 
 def test_dbt_incremental_with_delete_warning(tmp_path, monkeypatch):
     _convert(tmp_path, "dbt", monkeypatch)
-    sql = next((tmp_path / "out" / "dbt").rglob("*_dml.sql")).read_text()
+    sql = model_sql(tmp_path / "out" / "dbt", "dml")
     assert "materialized='incremental'" in sql
     assert "incremental_strategy='merge'" in sql
-    # rejects model exists as its own dbt model
-    assert next((tmp_path / "out" / "dbt").rglob("*dml__rejects.sql"),
-                None) is not None
+    # the DD_REJECT exception dataset is its own dbt model, and it sits beside
+    # the table it protects rather than in staging/
+    assert model_sql(tmp_path / "out" / "dbt", "dml__rejects")
     # dbt-core merge cannot delete: flagged, hook only where necessary
     import json
     report = json.loads(

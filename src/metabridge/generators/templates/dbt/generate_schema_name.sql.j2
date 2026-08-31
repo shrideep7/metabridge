@@ -1,0 +1,24 @@
+{#-
+  Schema names are taken LITERALLY.
+
+  dbt ships this macro so that a `+schema: silver` config becomes
+  `<target.schema>_silver` — deliberately, so two developers pointed at the
+  same warehouse build into separate schemas.
+
+  A migrated estate needs the opposite. Its schemas are not suffixes somebody
+  chose; they are the names the legacy system used, the names the landing DDL
+  creates, and the names every downstream consumer already references. Left
+  concatenated, `+schema: SILVER_SCHEMA` would build ANALYTICS_SILVER_SCHEMA
+  and nothing would find it.
+
+  The cost is that developer isolation now has to come from the PROFILE — give
+  each developer their own database (or their own set of schemas) in
+  profiles.yml, because it can no longer come from the schema suffix.
+-#}
+{% macro generate_schema_name(custom_schema_name, node) -%}
+    {%- if custom_schema_name is none -%}
+        {{ target.schema }}
+    {%- else -%}
+        {{ custom_schema_name | trim }}
+    {%- endif -%}
+{%- endmacro %}

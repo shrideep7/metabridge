@@ -6,6 +6,7 @@ import pytest
 
 from metabridge.engine import parse_input
 from metabridge.sqlx.expressions import infa_to_sql
+from conftest import model_sql
 
 EXAMPLES = Path(__file__).resolve().parent.parent / "examples"
 REPO_XML = EXAMPLES / "powercenter_repo" / "repo_export.xml"
@@ -98,7 +99,7 @@ def test_dbt_group_by_cte(tmp_path, monkeypatch):
     from metabridge.engine import convert
     convert(str(REPO_XML), str(tmp_path / "out"),
             source_format="powercenter", target_format="dbt")
-    sql = next((tmp_path / "out" / "dbt").rglob("int_agg_sales.sql")).read_text()
+    sql = model_sql(tmp_path / "out" / "dbt", "agg_sales")
     assert "group by" in sql
     assert "SUM(amount) as total_amount" in sql
     assert "MAX(amount) as max_amount" in sql

@@ -4,6 +4,7 @@ from pathlib import Path
 import pytest
 
 from metabridge.engine import parse_input
+from conftest import model_sql
 
 
 def _union_xml(g2_fields: str = "", out_extra: str = "") -> str:
@@ -140,7 +141,7 @@ def test_union_all_with_explicit_projection(tmp_path, monkeypatch):
     from metabridge.engine import convert
     convert(str(f), str(tmp_path / "out"), source_format="powercenter",
             target_format="dbt")
-    sql = next((tmp_path / "out" / "dbt").rglob("int_union.sql")).read_text()
+    sql = model_sql(tmp_path / "out" / "dbt")
     assert "union all" in sql
     assert "select id, amount from sq_hist" in sql
     assert "select id, amount from sq_fresh" in sql

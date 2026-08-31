@@ -1,0 +1,16 @@
+{% docs source_<< group >> %}
+
+## << group >>
+
+Source system landed for the `<< project >>` project, converted from << platform >>.
+
+| | |
+|---|---|
+| Database | << databases >> |
+| Schema | << schemas >> |
+| Tables | << table_count >> |
+| Columns documented | << column_count >> |
+
+Column types are the ones the SOURCE declares. Where this system is landed into another platform before dbt reads it, the landed types are the ones in the generated DDL.
+
+{% enddocs %}

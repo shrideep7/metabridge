@@ -74,7 +74,7 @@ _BY_DIALECT: Dict[str, Dict[str, str]] = {
 # over-long value unless TRUNCATECOLUMNS is set. So the default is moderate,
 # the failure mode is loud, and 00_probe_string_widths.sql measures the real
 # widths in one query.
-_DECIMAL_FALLBACK = (38, 6)
+from ..sqlx.type_engine import DECIMAL_FALLBACK as _DECIMAL_FALLBACK
 _VARCHAR_FALLBACK = {"redshift": 4000, "tsql": 4000, "oracle": 4000,
                      "teradata": 4000}
 # Dialects where an unbounded VARCHAR is legal, so no width is emitted at all
@@ -185,18 +185,20 @@ def _type_of(port: Port, dialect: str, source_platform: str = "") -> str:
 
 
 def _quote(dialect: str, ident: str) -> str:
-    """Quote identifiers if they contain special characters (like `#` or `-`) that
-    are invalid in unquoted identifiers for the target dialect."""
-    if not ident:
-        return ident
-    if re.search(r"[^A-Za-z0-9_$]", ident):
-        if dialect in ("bigquery", "databricks"):
-            return "`%s`" % ident
-        elif dialect == "tsql":
-            return "[%s]" % ident
-        else:
-            return '"%s"' % ident
-    return ident
+    """Quote an identifier for `dialect`, only where it has to be.
+
+    Delegated to sqlx.identifiers so the LANDING DDL and the models that read
+    it apply exactly the same rule. They must: an unquoted identifier folds to
+    upper case on Snowflake and Oracle and a quoted one does not, so a table
+    created with a bare `ORDER` column and a model selecting `"order"` would
+    disagree about a column that exists.
+
+    This used to cover only characters illegal in a bare identifier, which
+    left every RESERVED WORD — `ORDER`, `GROUP`, `USER`, `DATE` — emitted bare
+    on both sides: consistent, and consistently invalid SQL.
+    """
+    from ..sqlx.identifiers import quote_identifier
+    return quote_identifier(dialect, ident)
 
 
 def _qualified(dialect: str, schema: str, name: str) -> str:
@@ -284,6 +286,26 @@ def _probe_widths(spec: Optional[ConnectorSpec], dialect: str,
                      for c in t.columns
                      if c.datatype == "decimal" and not (c.scale or 0)
                      and c.precision > _INT64_DIGITS]
+        # A decimal that declares NO precision at all — Oracle's bare NUMBER.
+        # This is the column the landing DDL had to guess at, so it is the
+        # one worth measuring: the guess is what makes the two sides of the
+        # migration declare different types, and a reconciliation checksum
+        # compares the RENDERING of a number, so a column stored as
+        # NUMBER(38,6) on one side and NUMBER on the other never matches
+        # however equal the values are.
+        #
+        # `= FLOOR(x)` rather than a scale function because it is true on
+        # every engine and correct for negatives (FLOOR(-1.5) is -2, so a
+        # fractional negative still reports 1).
+        for c in t.columns:
+            if c.datatype != "decimal" or c.precision:
+                continue
+            col, safe = (_quote(dialect, c.name),
+                         re.sub(r"[^A-Za-z0-9_]", "_", c.name)[:105])
+            measures.append("       MAX(ABS(%s)) AS %s_max" % (col, safe))
+            measures.append(
+                "       MAX(CASE WHEN %s = FLOOR(%s) THEN 0 ELSE 1 END) "
+                "AS %s_frac" % (col, col, safe))
         if not measures:
             continue
         parts.append("SELECT '%s' AS table_name,\n%s\nFROM %s;"
@@ -299,10 +321,23 @@ def _probe_widths(spec: Optional[ConnectorSpec], dialect: str,
             "--           declare; 01_create_landing.sql used a documented\n"
             "--           default. Narrow columns keep Redshift/Synapse\n"
             "--           queries in memory instead of spilling to disk.\n"
-            "--   *_max   integral columns wider than 18 digits, so they had\n"
-            "--           to stay DECIMAL. If the real maximum fits in\n"
-            "--           9.2e18, declare them NUMBER(18,0) and they become\n"
-            "--           BIGINT — much cheaper to join and distribute on.\n\n"
+            "--   *_max   how large the column actually gets. For an\n"
+            "--           integral column wider than 18 digits: if the real\n"
+            "--           maximum fits in 9.2e18, declare NUMBER(18,0) and it\n"
+            "--           becomes BIGINT — much cheaper to join and\n"
+            "--           distribute on. For a column with no declared\n"
+            "--           precision, this is the precision to declare.\n"
+            "--   *_frac  0 means every value in that column is a whole\n"
+            "--           number, so declare it NUMBER(<*_max digits>,0).\n"
+            "--           1 means it really does carry decimals — declare\n"
+            "--           the scale the business uses.\n"
+            "--\n"
+            "--           Worth doing even when the default looks harmless:\n"
+            "--           an undeclared decimal lands as %s and the source\n"
+            "--           keeps its own type, so the reconciliation checksum\n"
+            "--           hashes '1001.000000' against '1001' and reports a\n"
+            "--           mismatch on data that is identical.\n\n"
+            % ("decimal(%d,%d)" % _DECIMAL_FALLBACK)
             + "\n\n".join(parts) + "\n")
 
 
@@ -321,17 +356,29 @@ def _target_context(dialect: str,
     unknown one a commented line naming what to set. Dialects that resolve
     the database at CONNECT time (PostgreSQL, Redshift) or carry it in every
     identifier (BigQuery) get a note rather than a statement they cannot run.
+
+    A placeholder also says WHY it is one. These values come from the target
+    CONNECTION, so a bundle generated with a connection selected has real
+    names here and one generated without has `<database>` — and with nothing
+    saying so, the second looks like a defect in the generator rather than a
+    consequence of how the run was set up.
     """
     p = target_params or {}
+    unfilled: List[str] = []
 
     def val(name: str) -> str:
         return str(p.get(name, "") or "").strip()
+
+    def missing(token: str) -> str:
+        unfilled.append(token)
+        return token
 
     lines: List[str] = []
     if dialect == "snowflake":
         db, wh = val("database"), val("warehouse")
         lines.append("USE DATABASE %s;" % db if db
-                     else "-- USE DATABASE <database>;    -- uncomment and set")
+                     else "-- USE DATABASE %s;    -- uncomment and set"
+                     % missing("<database>"))
         # CREATE SCHEMA/TABLE are metadata-only on Snowflake and need no
         # running warehouse, so this is emitted only when one is known —
         # a commented placeholder would imply a requirement that is not real.
@@ -340,15 +387,18 @@ def _target_context(dialect: str,
     elif dialect == "databricks":
         cat = val("catalog")
         lines.append("USE CATALOG %s;" % cat if cat
-                     else "-- USE CATALOG <catalog>;      -- uncomment and set")
+                     else "-- USE CATALOG %s;      -- uncomment and set"
+                     % missing("<catalog>"))
     elif dialect == "tsql":
         db = val("database")
         lines.append("USE %s;" % db if db
-                     else "-- USE <database>;             -- uncomment and set")
+                     else "-- USE %s;             -- uncomment and set"
+                     % missing("<database>"))
     elif dialect == "teradata":
         db = val("database")
         lines.append("DATABASE %s;" % db if db
-                     else "-- DATABASE <database>;        -- uncomment and set")
+                     else "-- DATABASE %s;        -- uncomment and set"
+                     % missing("<database>"))
     elif dialect in ("postgres", "redshift"):
         db = val("database")
         lines.append("-- Connect to database %s before running — %s selects "
@@ -359,15 +409,33 @@ def _target_context(dialect: str,
                      "to switch it.")
     if not lines:
         return []
+    why: List[str] = []
+    if unfilled:
+        many = len(unfilled) > 1
+        why = ["-- %s below %s a placeholder, and %s from the TARGET "
+               "CONNECTION." % (", ".join(unfilled),
+                                "are" if many else "is",
+                                "they come" if many else "it comes"),
+               "-- This bundle was generated without one selected. Choose a "
+               "target connection",
+               "-- and regenerate to have %s filled in, or substitute %s "
+               "here." % (("them", "them") if many else ("it", "it"))]
     return ["-- Session context, so this runs the same from any worksheet:"] \
-        + lines + [""]
+        + why + lines + [""]
 
 
 def _create_table(src: SourceTable, dialect: str, hint: dict,
                   source_platform: str = "") -> str:
-    cols = ",\n".join("    %-32s %s" % (_quote(dialect, c.name),
-                                        _type_of(c, dialect, source_platform))
-                      for c in src.columns)
+    # NOT NULL travels with the column. It is not decoration: a landing
+    # table that accepts nulls where the source rejected them turns a load
+    # that should have failed loudly into rows that quietly break every
+    # downstream join, and the reconciliation null_comparison would then be
+    # the first thing to notice — after the data was already in.
+    cols = ",\n".join(
+        "    %-32s %s%s" % (_quote(dialect, c.name),
+                            _type_of(c, dialect, source_platform),
+                            "" if getattr(c, "nullable", True) else " NOT NULL")
+        for c in src.columns)
     stmt = "CREATE TABLE IF NOT EXISTS %s (\n%s\n)" % (
         _qualified(dialect, src.schema, src.name), cols)
     if dialect == "redshift":
@@ -472,6 +540,20 @@ def _mv(movement: Optional[dict]) -> dict:
                 str(m.get("target_stage", "") or "").strip().lstrip("@")}
 
 
+# One unambiguous textual shape for every temporal value that travels
+# through CSV. The load side reads these too — the two ends of the move
+# cannot be allowed to disagree about what a date looks like, so they read
+# the same constants rather than each spelling out a format.
+#
+# Oracle DATE carries seconds but no fraction, so it cannot use the FF form;
+# that is why there are two, and why the load stays on AUTO rather than
+# pinning one of them and rejecting the other. AUTO is only a guess when the
+# input is ambiguous, and ISO-8601 with a four-digit year is not.
+_ISO_DATE_ORACLE = "YYYY-MM-DD HH24:MI:SS"
+_ISO_TIMESTAMP_ORACLE = "YYYY-MM-DD HH24:MI:SS.FF9"
+_ISO_TIMESTAMP_TZ_ORACLE = "YYYY-MM-DD HH24:MI:SS.FF9 TZH:TZM"
+
+
 def _unload(spec: Optional[ConnectorSpec], dialect: str,
             tables: List[SourceTable],
             source_params: Optional[Dict[str, str]] = None,
@@ -540,8 +622,15 @@ def _unload(spec: Optional[ConnectorSpec], dialect: str,
         db = next((db_of(t) for t in tables if db_of(t)), "")
         wh = str(sp.get("warehouse", "") or "")
         head += ["-- Context is set explicitly so this runs from any "
-                 "worksheet/session:",
-                 "USE DATABASE %s;" % db if db
+                 "worksheet/session:"]
+        if not db or not wh:
+            head += ["-- The commented value(s) below come from the SOURCE "
+                     "CONNECTION, and this",
+                     "-- bundle was generated without one supplying them. "
+                     "Connect the source",
+                     "-- and regenerate to have them filled in, or "
+                     "substitute them here."]
+        head += ["USE DATABASE %s;" % db if db
                  else "-- USE DATABASE <database>;   -- uncomment and set",
                  "USE WAREHOUSE %s;" % wh if wh
                  else "-- USE WAREHOUSE <warehouse>;  -- uncomment and set "
@@ -604,6 +693,28 @@ def _unload(spec: Optional[ConnectorSpec], dialect: str,
             "SET FEEDBACK OFF",
             "SET HEADING ON",
             "SET TERMOUT OFF",
+            "",
+            "-- Pin the session's text formats before a single row is",
+            "-- written. CSV carries no types, so whatever these say IS the",
+            "-- data — and they default to the SERVER's locale, not to",
+            "-- anything this script controls.",
+            "--",
+            "-- NLS_DATE_FORMAT defaults to DD-MON-RR on most installs, and",
+            "-- RR is a two-digit year: 1959 and 2059 both spool as '59',",
+            "-- and the load resolves them by rule, not by fact. A date of",
+            "-- birth in that window arrives off by a century with no error",
+            "-- on either side. ISO-8601 has no such window.",
+            "--",
+            "-- NLS_NUMERIC_CHARACTERS is the same trap for numbers: a",
+            "-- comma-decimal locale spools 1234,56, which a CSV reader",
+            "-- splits into two fields.",
+            "ALTER SESSION SET NLS_DATE_FORMAT = "
+            "'%s';" % _ISO_DATE_ORACLE,
+            "ALTER SESSION SET NLS_TIMESTAMP_FORMAT = "
+            "'%s';" % _ISO_TIMESTAMP_ORACLE,
+            "ALTER SESSION SET NLS_TIMESTAMP_TZ_FORMAT = "
+            "'%s';" % _ISO_TIMESTAMP_TZ_ORACLE,
+            "ALTER SESSION SET NLS_NUMERIC_CHARACTERS = '.,';",
             "",
         ]
         # One file per table, in its own folder: step 3 loads FROM
@@ -857,8 +968,22 @@ def _load(spec: Optional[ConnectorSpec], dialect: str,
             # positionally instead. 01_create_landing.sql emits columns in
             # source order precisely so that works. SKIP_HEADER pairs with
             # the exporter's header row.
+            # DATE_FORMAT/TIMESTAMP_FORMAT are stated rather than left to
+            # their defaults — which are these values, but silently. AUTO
+            # infers a format per file, so it is a guess exactly as far as
+            # the input is ambiguous: DD-MON-RR would be read by rule, and
+            # a 1959 date of birth would land in 2059 with no error raised
+            # anywhere. Step 2 pins its exporter to ISO-8601 with a
+            # four-digit year, which leaves AUTO nothing to guess at.
+            # ON_ERROR is stated for the same reason: it is the
+            # default, but a load that stops on a bad row and one
+            # that skips it are different operations, and the file
+            # should not leave the reader to know which.
             fmt = ("  FILE_FORMAT = (TYPE = CSV "
-                   "FIELD_OPTIONALLY_ENCLOSED_BY = '\"' SKIP_HEADER = 1);")
+                   "FIELD_OPTIONALLY_ENCLOSED_BY = '\"' SKIP_HEADER = 1\n"
+                   "                 DATE_FORMAT = AUTO "
+                   "TIMESTAMP_FORMAT = AUTO)\n"
+                   "  ON_ERROR = ABORT_STATEMENT;")
         else:
             fmt = ("  FILE_FORMAT = (TYPE = PARQUET)\n"
                    "  MATCH_BY_COLUMN_NAME = CASE_INSENSITIVE;")
@@ -989,8 +1114,16 @@ def _readme(pipeline: Pipeline, source: Optional[ConnectorSpec],
             "<aws-secret-key>": "the matching AWS secret access key — "
                                 "substitute it in the file you run, never "
                                 "in the one you keep",
-            "<database>": "source database to unload from",
-            "<warehouse>": "source warehouse (an unload needs compute)",
+            "<database>": "the database to work in. In "
+                          "`02_unload_*` it is the SOURCE database to "
+                          "unload from; in `01_create_landing.sql` it is "
+                          "the TARGET database to create into. Both come "
+                          "from the connection you select — generate with "
+                          "one connected and this token does not appear",
+            "<catalog>": "the target Unity Catalog to create into — comes "
+                         "from the target connection",
+            "<warehouse>": "source warehouse (an unload needs compute) — "
+                           "comes from the source connection",
             "<region>": "the bucket's AWS region, e.g. `ap-south-1`. SAP "
                         "HANA puts it in the URI scheme "
                         "(`s3-ap-south-1://`) where the target takes a "
@@ -1018,17 +1151,52 @@ def _readme(pipeline: Pipeline, source: Optional[ConnectorSpec],
     lines += [
         "## Types here vs. types in `sources.yml`", "",
         "`sources.yml` documents each column's logical type exactly as the "
-        "source declares it (`decimal(9,0)`). `01_create_landing.sql` "
-        "creates the narrowest exact type that holds it (`INTEGER`) — same "
-        "values, different notation, chosen because a native integer is "
-        "materially cheaper to join and distribute on than a decimal. dbt "
-        "neither creates nor validates source columns from `data_type`, so "
-        "nothing depends on the two strings being identical.", "",
-        "## Why the schema names match the source", "",
+        "source declares it (`decimal(9,0)`). The CREATE TABLE may spell the "
+        "same type differently. dbt neither creates nor validates source "
+        "columns from `data_type`, so nothing depends on the two strings "
+        "being identical.", "",
+    ]
+    if dialect in _INT_NARROWING:
+        i32, i64 = _INT_NARROWING[dialect]
+        lines += [
+            "A scale-0 numeric becomes the narrowest exact integer that "
+            "holds it — `decimal(9,0)` becomes `%s`, `decimal(18,0)` "
+            "becomes `%s` — because a native integer is materially cheaper "
+            "to join and distribute on than a decimal, and the narrowing is "
+            "loss-free in that direction. Above 18 digits the decimal "
+            "stays." % (i32, i64), "",
+        ]
+    else:
+        lines += [
+            "Integers are NOT narrowed on %s: `INT` and `BIGINT` are "
+            "aliases here, so narrowing would gain nothing and discard the "
+            "declared precision." % dialect, "",
+        ]
+    lines += [
+        "A numeric the source declares with NO precision at all (Oracle's "
+        "bare `NUMBER`) has no precision to preserve, so it lands on the "
+        "documented widest-exact fallback rather than a guess. Every column "
+        "that took it is raised as `NUMERIC_PRECISION_FALLBACK` — narrow "
+        "them by hand where the real range is known, because the fallback "
+        "is wider and more expensive than any real column needs.", "",
+        "## Nullability", "",
+        "`NOT NULL` is carried through from the manifest, so a load that "
+        "would put a null in a column the source rejects fails here rather "
+        "than downstream. Columns the manifest does not mark are created "
+        "nullable — absence of a constraint in the manifest is not evidence "
+        "of one in the source.", "",
+        "## Schemas", "",
         "The landing tables keep the source schema names, because that is "
         "what the generated `sources.yml` references — so the dbt models "
         "resolve unchanged. To land somewhere else, change both together.",
         "",
+        "This file also creates the schemas the dbt MODELS build into, "
+        "which are the target schemas the source estate declared. dbt does "
+        "not create a schema it was not pointed at, and it derives nothing "
+        "from a folder name — `dbt_project.yml` carries a `+schema:` per "
+        "folder and `macros/generate_schema_name.sql` makes dbt take those "
+        "names literally instead of concatenating them onto the profile's "
+        "schema.", "",
     ]
     if dialect == "redshift":
         lines += [
@@ -1098,6 +1266,15 @@ def generate_target_ddl(pipeline: Pipeline, out_dir: str,
 
     # schemas + tables in ONE file: one connection, one run, in order
     schemas = sorted({s.schema for s in tables if s.schema})
+    # The schemas dbt BUILDS into are not the schemas we land into, and until
+    # they exist the first `dbt run` fails on the first model. They are the
+    # target schemas the estate itself declared, so an estate that separated
+    # RAW / SILVER / GOLD gets that separation back rather than one flat
+    # schema. (dbt does not create a schema it was not pointed at, and it
+    # derives nothing from a folder name.)
+    from .dbt_naming import target_schema as _model_schema
+    built = sorted({_model_schema(m) for m in pipeline.mappings
+                    if _model_schema(m)} - set(schemas))
     body = ["-- Step 1: landing schemas + tables, typed from the source "
             "metadata.",
             "-- Column names and order match the source, so a bulk load",
@@ -1107,6 +1284,10 @@ def generate_target_ddl(pipeline: Pipeline, out_dir: str,
         body += ["-- schemas the dbt sources.yml expects "
                  "(needs CREATE SCHEMA privilege):",
                  _create_schemas(dialect, schemas)]
+    if built:
+        body += ["-- schemas the dbt MODELS build into, from the target "
+                 "schemas the source estate declared:",
+                 _create_schemas(dialect, built)]
     for s_ in tables:
         body.append("-- %s (%s)" % (
             _qualified(dialect, s_.schema, s_.name),
@@ -1138,7 +1319,8 @@ def generate_target_ddl(pipeline: Pipeline, out_dir: str,
     placeholders = [t for t in ("<stage-uri>", "<iam-role-arn>",
                                 "<credentials>", "<aws-key-id>",
                                 "<aws-secret-key>", "<database>",
-                                "<warehouse>", "<region>") if t in both]
+                                "<catalog>", "<warehouse>",
+                                "<region>") if t in both]
     prefilled = []
     if mv["stage_uri"]:
         prefilled.append("stage URI")

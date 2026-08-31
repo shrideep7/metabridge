@@ -10,6 +10,7 @@ from metabridge.parsers.pc_source_qualifier import (
     condition_to_cir, normalize_override, parse_sq_attributes,
     validate_hook_sql,
 )
+from conftest import model_sql
 
 EXAMPLES = Path(__file__).resolve().parent.parent / "examples"
 REPO_XML = EXAMPLES / "powercenter_repo" / "repo_export.xml"
@@ -219,13 +220,13 @@ def test_dbt_generates_where_distinct_and_hooks(tmp_path, monkeypatch):
     from metabridge.engine import convert
     convert(str(REPO_XML), str(tmp_path / "out"),
             source_format="powercenter", target_format="dbt")
-    sql = next((tmp_path / "out" / "dbt").rglob(
-        "int_sales__finance.sql")).read_text()
+    sql = model_sql(tmp_path / "out" / "dbt", "load_sales__finance")
     assert "where balance > 0" in sql
     assert "select distinct" in sql
-    mart = next((tmp_path / "out" / "dbt").rglob("fct_gl.sql")).read_text()
-    assert 'pre_hook="DELETE FROM etl_audit' in mart
-    assert 'post_hook="INSERT INTO etl_audit' in mart
+    # one model per mapping: the Source Qualifier pre/post SQL becomes hooks on
+    # the same model that carries the logic, not on a separate thin wrapper
+    assert 'pre_hook="DELETE FROM etl_audit' in sql
+    assert 'post_hook="INSERT INTO etl_audit' in sql
 
 
 def test_databricks_generates_where_and_hook_statements(tmp_path,

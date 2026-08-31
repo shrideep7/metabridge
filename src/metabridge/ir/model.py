@@ -194,6 +194,14 @@ class SourceTable:
     schema: str = ""
     database: str = ""
     columns: List[Port] = field(default_factory=list)
+    # The SOURCE SYSTEM this table belongs to — a connection/database identity
+    # rather than a physical schema. dbt groups staging models by source system
+    # (models/staging/<system>/stg_<system>__<entity>.sql), and the schema is a
+    # poor stand-in for it: two different databases routinely use the same
+    # schema name, which collapsed them into one dbt source whose name differed
+    # only in capitalisation. Set by the parsers that know it; generators fall
+    # back to database, then schema.
+    system: str = ""
 
 
 @dataclass

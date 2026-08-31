@@ -189,9 +189,11 @@ def _parse_yaml_docs(root: Path, project: dict
                              datatype=canonical_type(str(c.get("data_type", "string"))),
                              type_declared=bool(str(c.get("data_type", "")).strip()))
                         for c in tbl.get("columns", []) or []]
+                # a dbt project already names its source systems, so a
+                # round trip keeps the author's own grouping
                 st = SourceTable(name=tbl.get("identifier", tbl["name"]),
                                  schema=schema, database=src.get("database", ""),
-                                 columns=cols)
+                                 system=src.get("name", ""), columns=cols)
                 sources[st.name.lower()] = st
         for mdl in doc.get("models", []) or []:
             if (mdl.get("description") or "").strip():
@@ -438,9 +440,26 @@ def _convert_snapshot(name: str, body: str, pipeline: Pipeline,
 def _attach_target(mapping: Mapping, model_name: str,
                    target_columns: Optional[List[Port]]) -> None:
     out = mapping.transformation("__OUTPUT__")
-    ports = [Port(name=p.name, datatype=p.datatype, precision=p.precision,
-                  scale=p.scale, type_declared=p.type_declared)
-             for p in (target_columns or (out.ports if out else []))]
+    derived = list(out.ports) if out is not None else []
+    declared = {p.name.lower(): p for p in (target_columns or [])}
+    if derived:
+        # The SQL says WHICH columns the model produces; the property file says
+        # what their TYPES are. dbt does not require that file to list them all
+        # — documenting a single column (to hang a test on it, say) is normal
+        # and legal. Letting it replace the projection made a model that
+        # selects six columns look like it produced one, and the round-trip
+        # check then reported five columns "lost" that were never missing.
+        ports = []
+        for p in derived:
+            d = declared.get(p.name.lower())
+            src = d if d is not None else p
+            ports.append(Port(name=p.name, datatype=src.datatype,
+                              precision=src.precision, scale=src.scale,
+                              type_declared=src.type_declared))
+    else:
+        ports = [Port(name=p.name, datatype=p.datatype, precision=p.precision,
+                      scale=p.scale, type_declared=p.type_declared)
+                 for p in (target_columns or [])]
     if not ports:
         # a model with no declared/derivable columns is untyped by definition
         ports = [Port(name="ROW_DATA", type_declared=False)]

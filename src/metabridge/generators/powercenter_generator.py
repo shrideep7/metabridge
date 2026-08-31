@@ -23,6 +23,7 @@ from ..ir.model import (
     TransformationType,
 )
 from ..sqlx.expressions import ExpressionError, sql_to_infa
+from ..sqlx.type_engine import decimal_fallback
 
 # canonical -> (PC datatype, default precision)
 _PC_TYPES = {
@@ -147,10 +148,21 @@ def _scrub_control_chars(root: ET.Element) -> None:
 # Definitions
 # ---------------------------------------------------------------------------
 
+# PowerCenter's decimal tops out here unless the session enables high
+# precision, so the shared fallback has to be clamped rather than copied.
+_PC_MAX_DECIMAL = 28
+
+
 def _pc_type(port: Port) -> Dict[str, str]:
     dtype, default_prec = _PC_TYPES.get(port.datatype, ("string", 255))
     prec = port.precision or default_prec
-    return {"DATATYPE": dtype, "PRECISION": str(prec), "SCALE": str(port.scale or 0)}
+    scale = port.scale or 0
+    if port.datatype == "decimal" and not port.precision:
+        # An undeclared decimal is not an integer. Emitting SCALE="0" here
+        # asserted it was, which contradicted the warehouse DDL for the same
+        # column and would truncate every fractional value on import.
+        prec, scale = decimal_fallback(_PC_MAX_DECIMAL)
+    return {"DATATYPE": dtype, "PRECISION": str(prec), "SCALE": str(scale)}
 
 
 def _emit_source_and_target_defs(folder: ET.Element, mapping: Mapping,

@@ -40,6 +40,7 @@ from ..ir.model import (
 )
 from .powercenter_parser import (
     _PC_TO_IR_TYPE, _canonical, _infer_dependencies, _parse_mapping,
+    _ports_from_fields,
     _parse_transformation,
 )
 
@@ -129,7 +130,7 @@ class PowerCenterMappingParser:
                  target_keys: Dict[str, List[str]],
                  reusable_tx: Dict[str, ET.Element],
                  mapplets: Dict[str, ET.Element],
-                 target_columns: Optional[Dict[str, List[str]]] = None):
+                 target_columns: Optional[Dict[str, List[Port]]] = None):
         self.source_defs = source_defs
         self.target_keys = target_keys
         self.reusable_tx = reusable_tx
@@ -249,7 +250,7 @@ class PowerCenterFolderParser:
         self.pipeline = pipeline
         self.source_defs: Dict[str, SourceTable] = {}
         self.target_keys: Dict[str, List[str]] = {}
-        self.target_columns: Dict[str, List[str]] = {}
+        self.target_columns: Dict[str, List[Port]] = {}
         self.reusable_tx: Dict[str, ET.Element] = {}
         self.mapplets: Dict[str, ET.Element] = {}
         self.sessions: Dict[str, dict] = {}
@@ -272,7 +273,8 @@ class PowerCenterFolderParser:
                     for f in elem.findall("SOURCEFIELD")]
             st = SourceTable(name=elem.get("NAME", ""),
                              schema=elem.get("OWNERNAME", ""),
-                             database=elem.get("DBDNAME", ""), columns=cols)
+                             database=elem.get("DBDNAME", ""),
+                             system=elem.get("DBDNAME", ""), columns=cols)
             self.source_defs[st.name.lower()] = st
             if all(x.name != st.name for x in self.pipeline.sources):
                 self.pipeline.sources.append(st)
@@ -282,7 +284,9 @@ class PowerCenterFolderParser:
             self.target_keys[tname] = [
                 f.get("NAME", "") for f in fields
                 if "PRIMARY KEY" in (f.get("KEYTYPE") or "")]
-            self.target_columns[tname] = [f.get("NAME", "") for f in fields]
+            # the declared PORTS, not just their names: the TARGET node's
+            # ports come from the connector list, which has no types
+            self.target_columns[tname] = _ports_from_fields(elem, "TARGETFIELD")
         elif tag == "TRANSFORMATION":       # folder-level reusable
             self.reusable_tx[elem.get("NAME", "")] = copy.deepcopy(elem)
         elif tag == "MAPPLET":

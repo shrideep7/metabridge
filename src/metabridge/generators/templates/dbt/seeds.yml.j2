@@ -1,0 +1,16 @@
+# Seeds — small, static reference data checked into version control.
+#
+# Nothing here is generated. MetaBridge does not invent seeds: the IR carries
+# no signal that separates a static lookup table from any other relation, and
+# guessing would put fabricated data into your project.
+#
+# What DOES point here: anything the lineage report lists under "Unmanaged
+# relations" — a relation this project reads but neither builds nor declares
+# as a source. A small, rarely-changing one is a seed candidate; a large or
+# live one belongs in the source manifest instead.
+#
+# seeds:
+#   - name: <file>                # <file>.csv, beside this file
+#     description: ""
+#     columns:
+#       - name: <column>

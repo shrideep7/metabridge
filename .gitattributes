@@ -1,0 +1,3 @@
+# Generated-artifact templates produce SQL: keep them LF on every platform,
+# or carriage returns end up inside a customer's dbt models.
+*.j2 text eol=lf

@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from metabridge.engine import parse_input
+from conftest import model_sql
 
 EXAMPLES = Path(__file__).resolve().parent.parent / "examples"
 REPO_XML = EXAMPLES / "powercenter_repo" / "repo_export.xml"
@@ -196,7 +197,7 @@ def test_dbt_dedup_cte_and_qualified_join(tmp_path, monkeypatch):
     from metabridge.engine import convert
     convert(str(f), str(tmp_path / "out"), source_format="powercenter",
             target_format="dbt")
-    sql = next((tmp_path / "out" / "dbt").rglob("int_lkp.sql")).read_text()
+    sql = model_sql(tmp_path / "out" / "dbt")
     assert "row_number() over (partition by ACC_CUST" in sql
     assert "_mb_lkp_rn = 1" in sql
     assert "l.cust_id = lkp.ACC_CUST" in sql     # key-aware orientation

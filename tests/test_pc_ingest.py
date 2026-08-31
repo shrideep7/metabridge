@@ -10,6 +10,7 @@ from metabridge.ir.model import LoadStrategy, TransformationType
 from metabridge.parsers.powercenter_ingest import (
     PowerCenterRepositoryParser, PowerCenterXMLReader,
 )
+from conftest import model_sql
 
 EXAMPLES = Path(__file__).resolve().parent.parent / "examples"
 REPO_XML = EXAMPLES / "powercenter_repo" / "repo_export.xml"
@@ -238,6 +239,6 @@ def test_end_to_end_conversion_of_repository_export(tmp_path, monkeypatch):
                                            "load_sales__finance",
                                            "report_sales",
                                            "customer_enrich"}
-    sql = next((tmp_path / "out" / "dbt").rglob("int_sales.sql")).read_text()
+    sql = model_sql(tmp_path / "out" / "dbt", "load_sales")
     assert "LTRIM(RTRIM(region))" in sql        # mapplet logic survived
     assert "incremental" in sql                 # session semantics survived
