@@ -11,9 +11,25 @@
         "--host",
         "127.0.0.1",
         "--port",
-        "8377"
+        "8000"
       ],
-      "port": 8377
+      "port": 8000
+    },
+    {
+      "name": "metabridge-frontend",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": [
+        "run",
+        "dev",
+        "--prefix",
+        "frontend"
+      ],
+      "port": 3000
+    },
+    {
+      "name": "metabridge-frontend-attach",
+      "url": "http://localhost:3000",
+      "port": 3000
     }
   ]
 }

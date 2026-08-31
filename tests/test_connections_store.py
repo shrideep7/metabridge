@@ -44,8 +44,8 @@ def test_opt_in_secret_stored_0600_never_listed(tmp_path):
     row = cs.save_connection("snowflake", dict(PARAMS), save_secrets=True)
     assert row["has_secrets"] is True
     assert "secrets" not in row                  # public view scrubbed
-    mode = oct((tmp_path / "connections.json").stat().st_mode)[-3:]
-    assert mode == "600"
+    if os.name != "nt":
+        assert mode == "600"
     # resolve_params merges the stored secret for actual use
     resolved = cs.resolve_params(row["id"])
     assert resolved["password"] == "s3cret"

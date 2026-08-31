@@ -1,5 +1,6 @@
 """Tests for the platform layer: connectors, governance, scaffold."""
 import json
+import sys
 from pathlib import Path
 
 import pytest
@@ -10,7 +11,8 @@ from metabridge.connectors.emit import (
     dbt_profile, idmc_connection, powercenter_connection, split_secrets,
 )
 from metabridge.governance.engine import (
-    classify_pipeline, evaluate_policy, govern, load_policy,
+    DEFAULT_POLICY, POLICY_FINDING_CODES, RULES, classify_pipeline,
+    evaluate_policy, govern, load_policy, policy_coverage,
 )
 from metabridge.parsers.dbt_parser import parse_dbt_project
 from metabridge.scaffold import scaffold
@@ -118,6 +120,124 @@ def test_custom_policy_masking(retail_pipeline, tmp_path):
     cls = classify_pipeline(retail_pipeline)
     findings = evaluate_policy(retail_pipeline, cls, load_policy(str(pf)), "eu")
     assert any(f.code == "MASKING_REQUIRED" for f in findings)
+
+
+# --- the policy document itself (GET /api/governance/policy) --------------
+
+def test_policy_coverage_uses_the_evaluators_matcher():
+    r"""Coverage must agree with evaluate_policy about what a glob reaches.
+
+    `pii.*` compiles to `pii\..*`, so it reaches every dotted pii category and
+    nothing outside pii. Asserting the counts rather than a hardcoded list
+    keeps this honest if the taxonomy grows.
+    """
+    cov = {c["category"]: c for c in policy_coverage(DEFAULT_POLICY)}
+    assert cov.keys() == {r.category for r in RULES}, "one row per category"
+    assert all(cov[c]["residency"] for c in cov if c.startswith("pii.")),         "residency rule pii.* must reach every pii category"
+    assert cov["pii.gov_id.ssn"]["masking"] is True
+    assert cov["pii.direct.email"]["masking"] is False
+
+
+def test_policy_coverage_reports_ungoverned_categories():
+    """The baseline classifies financial data but governs almost none of it.
+
+    No residency rule matches any `financial.*` category, so an account number
+    can land in any region and produce no finding at all. This is a real gap in
+    DEFAULT_POLICY, not a test artefact — if someone adds a financial residency
+    rule this test should be updated, not deleted.
+    """
+    cov = {c["category"]: c for c in policy_coverage(DEFAULT_POLICY)}
+    assert not any(cov[c]["residency"] for c in cov if c.startswith("financial."))
+    ungoverned = [c for c in cov
+                  if not cov[c]["residency"] and not cov[c]["masking"]]
+    assert set(ungoverned) == {"financial.account", "financial.salary"}
+
+
+def test_policy_coverage_follows_the_policy_given():
+    """Coverage is computed from the argument, never from the baseline."""
+    cov = {c["category"]: c
+           for c in policy_coverage({"residency": {"rules": []},
+                                     "masking": [{"match": "financial.*",
+                                                  "require": "hash"}]})}
+    assert cov["financial.account"]["masking"] is True
+    assert cov["pii.gov_id.ssn"]["masking"] is False
+    assert not any(v["residency"] for v in cov.values())
+
+
+def test_policy_coverage_tolerates_an_empty_policy():
+    cov = policy_coverage({})
+    assert cov and not any(c["residency"] or c["masking"] for c in cov)
+
+
+def test_govern_records_the_policy_it_applied(retail_pipeline):
+    """A finding is only auditable if the rules that produced it travel with it."""
+    result = govern(retail_pipeline, target_region="us")
+    assert result["policy"]["residency"]["rules"], "policy must be in the report"
+    assert any(f["code"] == "RESIDENCY" for f in result["policy_findings"])
+
+
+def test_govern_does_not_alias_the_default_policy(retail_pipeline):
+    """Mutating one report's policy must not rewrite the baseline."""
+    result = govern(retail_pipeline, target_region="eu")
+    result["policy"]["masking"].append({"match": "oops", "require": "nope"})
+    assert not any(m["match"] == "oops" for m in DEFAULT_POLICY["masking"])
+    assert not any(m["match"] == "oops"
+                   for m in govern(retail_pipeline)["policy"]["masking"])
+
+
+def test_govern_report_policy_survives_json(retail_pipeline):
+    result = govern(retail_pipeline, target_region="us")
+    assert json.loads(json.dumps(result))["policy"] == result["policy"]
+
+
+@pytest.fixture()
+def client(tmp_path, monkeypatch):
+    monkeypatch.setenv("METABRIDGE_DATA_DIR", str(tmp_path))
+    saved = {m: sys.modules.pop(m, None)
+             for m in ("web.app", "web.auth", "web")}
+    from fastapi.testclient import TestClient
+    import web.app as webapp
+    c = TestClient(webapp.app)
+    c.post("/auth/signup", json={"email": "o@x.com", "password": "Pw123456!",
+                                 "name": "Owner"})
+    yield c
+    for m, orig in saved.items():
+        if orig is not None:
+            sys.modules[m] = orig
+        else:
+            sys.modules.pop(m, None)
+
+
+def test_api_governance_policy_shape(client):
+    d = client.get("/api/governance/policy").json()
+    assert d["source"] == "built-in"
+    assert d["editable"] is False
+    assert d["policy"]["residency"]["rules"]
+    assert d["policy"]["masking"]
+    assert [c["code"] for c in d["codes"]] ==         [c["code"] for c in POLICY_FINDING_CODES]
+
+
+def test_api_governance_policy_yaml_is_the_real_document(client):
+    """The viewer renders `yaml`; it must be the policy, not a lookalike."""
+    d = client.get("/api/governance/policy").json()
+    assert yaml.safe_load(d["yaml"]) == d["policy"]
+
+
+def test_api_governance_policy_reports_the_coverage_gap(client):
+    d = client.get("/api/governance/policy").json()
+    cov = d["coverage"]
+    assert set(cov["ungoverned"]) == {"financial.account", "financial.salary"}
+    assert cov["categories"] == policy_coverage(DEFAULT_POLICY)
+
+
+def test_api_governance_policy_is_not_the_agent_thresholds(client):
+    """The bug this endpoint exists to fix: /api/agents' `governance` field is
+    two numbers, and was the only thing a client could previously mistake for
+    the policy document."""
+    pol = client.get("/api/governance/policy").json()["policy"]
+    assert "approval_threshold" not in pol and "deny_floor" not in pol
+    agents = client.get("/api/agents").json()["governance"]
+    assert "residency" not in agents and "masking" not in agents
 
 
 # ---------------------------------------------------------------------------

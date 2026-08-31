@@ -19,6 +19,7 @@ is a starting inventory for a DPO, not a legal opinion, and the report says so.
 """
 from __future__ import annotations
 
+import copy
 import datetime
 import html
 import json
@@ -264,6 +265,25 @@ class PolicyFinding:
         return self.__dict__.copy()
 
 
+# Every code `evaluate_policy` can emit, with the condition that emits it.
+# Kept here rather than in the API layer so the vocabulary a caller renders and
+# the vocabulary the evaluator actually produces cannot drift apart.
+POLICY_FINDING_CODES = [
+    {"code": "RESIDENCY", "severity": "VIOLATION",
+     "trigger": "A classified column reaches a target whose region is not in "
+                "the matched rule's allowed_target_regions."},
+    {"code": "RESIDENCY_UNKNOWN", "severity": "WARNING",
+     "trigger": "A matched rule declares allowed regions but no target region "
+                "was declared, so residency cannot be decided either way."},
+    {"code": "MASKING_REQUIRED", "severity": "VIOLATION",
+     "trigger": "A matched column reaches the target with no hash/mask/"
+                "tokenize/encrypt expression anywhere in its graph."},
+    {"code": "NO_SENSITIVE_TARGETS", "severity": "INFO",
+     "trigger": "No classified column reaches any target, so no residency or "
+                "masking obligation applies."},
+]
+
+
 def load_policy(path: str = "") -> dict:
     if not path:
         return DEFAULT_POLICY
@@ -331,6 +351,34 @@ def evaluate_policy(pipeline: Pipeline, classifications: List[Classification],
     return findings
 
 
+def policy_coverage(policy: dict) -> List[dict]:
+    """Which classifier categories each half of `policy` actually reaches.
+
+    A policy is a set of glob patterns; the taxonomy is a fixed list of dotted
+    categories. Whether `pii.*` reaches `pii.special.health` is not obvious by
+    eye, and a category no rule matches is silently ungoverned — the engine
+    classifies the column, then says nothing about it. This makes that visible.
+
+    Deliberately reuses `_match`, the evaluator's own matcher, rather than
+    reimplementing the glob rules: a coverage report that disagreed with
+    `evaluate_policy` about what a pattern reaches would be worse than none.
+
+    One row per category, sorted, with a bool per obligation.
+    """
+    res_rules = (policy.get("residency", {}) or {}).get("rules", []) or []
+    mask_rules = policy.get("masking", []) or []
+    return [
+        {
+            "category": cat,
+            "residency": any(_match(str(r.get("match", "")), cat)
+                             for r in res_rules),
+            "masking": any(_match(str(r.get("match", "")), cat)
+                           for r in mask_rules),
+        }
+        for cat in sorted({r.category for r in RULES})
+    ]
+
+
 # ---------------------------------------------------------------------------
 # Processing register (GDPR Art. 30 style)
 # ---------------------------------------------------------------------------
@@ -395,6 +443,17 @@ def govern(pipeline: Pipeline, policy_path: str = "", source_region: str = "",
             "warnings": len([f for f in findings if f.severity == "WARNING"]),
         },
         "classifications": [c.to_dict() for c in classifications],
+        # The rules that produced `policy_findings`, recorded alongside them.
+        # A finding that says "VIOLATION: RESIDENCY" is not auditable unless the
+        # policy it was judged against travels with it — the default can change
+        # between runs, and `--policy` can point anywhere.
+        #
+        # Deep-copied because `load_policy("")` hands back the module-level
+        # DEFAULT_POLICY by reference. Without the copy every report in a
+        # long-running server would alias one mutable dict, and a caller
+        # editing its own report's `policy` would silently rewrite the
+        # compliance baseline for every scan that followed.
+        "policy": copy.deepcopy(policy),
         "policy_findings": [f.to_dict() for f in findings],
         "processing_register": register,
         "disclaimer": "Automated inventory generated from pipeline metadata — "

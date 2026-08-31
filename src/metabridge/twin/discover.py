@@ -22,7 +22,7 @@ import fnmatch
 import json
 import re
 from pathlib import Path
-from typing import List, Optional
+from typing import Iterable, List, Optional
 
 from .model import DigitalTwin, node_id
 
@@ -32,6 +32,28 @@ _MART_RE = re.compile(r"^(fct_|fact_|dim_|mart_|rpt_|agg_)", re.I)
 # ===========================================================================
 # parsed pipeline projects (the 18 formats)
 # ===========================================================================
+
+# Two code paths name the same platform differently, so the twin ends up
+# holding both spellings and every consumer that groups by technology sees one
+# platform twice. A streaming job takes its technology from
+# StreamTransformation.engine ("aws_iot"), while the topics and application
+# beside it take cer.source_platform ("awsiot", the registry key). The Wave
+# simulation then offers "awsiot (1)" AND "aws_iot (1)" — two options that each
+# select half the nodes, so either choice silently plans a partial migration.
+#
+# Keys are the off-spelling, values the registry key in connectors/catalog.py.
+# Deliberately explicit rather than a de-underscoring rule: "kafka_connect" is
+# a real engine name with no registry entry and must stay exactly as it is.
+_TECH_ALIASES = {
+    "aws_iot": "awsiot",
+}
+
+
+def _norm_tech(technology: str) -> str:
+    """One spelling per platform, so grouping by technology is trustworthy."""
+    t = (technology or "").strip()
+    return _TECH_ALIASES.get(t.lower(), t)
+
 
 def add_pipeline_project(twin: DigitalTwin, pipeline,
                          source: str = "") -> None:
@@ -101,10 +123,10 @@ def add_pipeline_project(twin: DigitalTwin, pipeline,
 def add_event_estate(twin: DigitalTwin, cer, source: str = "") -> None:
     src = source or ("events:%s" % cer.name)
     app = twin.add_node("application", cer.name, src,
-                        technology=cer.source_platform)
+                        technology=_norm_tech(cer.source_platform))
     for ch in cer.channels:
         t = twin.add_node("topic", ch.name, src,
-                          technology=cer.source_platform,
+                          technology=_norm_tech(cer.source_platform),
                           metadata={"kind": ch.kind,
                                     "partitions": ch.partitions,
                                     "delivery": ch.delivery})
@@ -129,7 +151,8 @@ def add_event_estate(twin: DigitalTwin, cer, source: str = "") -> None:
     # now their own kind and cer.resolve_stream is the single mapping.
     for t in cer.transformations:
         j = twin.add_node("streaming_job", t.name, src,
-                          technology=t.engine or cer.source_platform)
+                          technology=_norm_tech(t.engine
+                                                or cer.source_platform))
         for i in t.inputs:
             resolved = i if node_id("topic", i) in twin.nodes \
                 else cer.resolve_stream(i)
@@ -141,7 +164,7 @@ def add_event_estate(twin: DigitalTwin, cer, source: str = "") -> None:
             twin.add_edge(j.id, out.id, "writes", src)
     for cdc in cer.cdc_sources:
         db = twin.add_node("database", cdc.database or cdc.name, src,
-                           technology=cdc.flavor)
+                           technology=_norm_tech(cdc.flavor))
         for ch in cdc.output_channels:
             cid = node_id("topic", ch)
             if cid in twin.nodes:
@@ -212,19 +235,28 @@ def _view_sources(sql: str, dialect: Optional[str]) -> List[str]:
         return []
 
 
-def add_connections(twin: DigitalTwin) -> int:
+def add_connections(twin: DigitalTwin,
+                    only: Optional[Iterable[str]] = None) -> int:
     """Each saved connection becomes a system node; its introspected
     inventory (persisted on Analyze) becomes real table/view nodes with row,
     byte and column metadata, plus intra-system lineage parsed from view
     SQL. Without an inventory yet, the system still appears with its analyzed
-    object COUNT as metadata (so the estate is never empty)."""
+    object COUNT as metadata (so the estate is never empty).
+
+    ``only`` restricts the walk to those connection ids — an agent run is
+    scoped to the systems its requester picked, whereas a whole-estate twin
+    build (the default, ``only=None``) takes every saved connection.
+    """
     try:
         from ..connections_store import get_inventory, list_connections
         conns = list_connections()
     except Exception:  # noqa: BLE001 — store optional in tests
         return 0
+    picked = set(only) if only is not None else None
     for c in conns:
         cid = c.get("id", "")
+        if picked is not None and cid not in picked:
+            continue
         csrc = "connection:%s" % cid
         connector = str(c.get("connector", ""))
         kind = "warehouse" if connector in _WAREHOUSE_KEYS else "database"
@@ -458,7 +490,10 @@ def build_twin(paths: Optional[List[str]] = None,
                estate_docs: Optional[List[dict]] = None,
                include_connections: bool = True,
                jobs_dir: Optional[str] = None,
-               name: str = "estate") -> DigitalTwin:
+               name: str = "estate",
+               connection_ids: Optional[Iterable[str]] = None) -> DigitalTwin:
+    """``connection_ids`` scopes the connection walk to specific saved
+    systems (see ``add_connections``); None keeps the whole-estate default."""
     twin = DigitalTwin(name)
     for path in paths or []:
         p = Path(path)
@@ -498,7 +533,7 @@ def build_twin(paths: Optional[List[str]] = None,
         except Exception:  # noqa: BLE001 — declared, never silent
             twin.built_from.append(src + " (unrecognized)")
     if include_connections:
-        if add_connections(twin):
+        if add_connections(twin, only=connection_ids):
             twin.built_from.append("connections")
     if jobs_dir:
         add_jobs(twin, Path(jobs_dir))

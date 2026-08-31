@@ -963,10 +963,13 @@ def _snowflake_connect(params: Dict[str, str],
         # Actionable message instead of a bare "No module named 'snowflake'":
         # the deployment was built without the live-connector driver.
         raise RuntimeError(
-            "The Snowflake driver is not installed in this deployment. "
-            "Rebuild the image with the connectors extra — "
-            "pip install 'metabridge[web,dtd,connectors]' "
-            "(adds snowflake-connector-python) — then retry Test connection."
+            "Snowflake live connections are not available on this "
+            "deployment — the driver was not included when it was "
+            "built. Ask a workspace owner or whoever operates this "
+            "server to enable it; you cannot change it from the "
+            "console. Administrator step: rebuild with the connectors "
+            "extra — pip install 'metabridge[web,dtd,connectors]' "
+            "(adds snowflake-connector-python)."
         ) from e
     kw = {
         "account": params.get("account", ""),
@@ -995,10 +998,13 @@ def _databricks_connect(params: Dict[str, str]):
         import databricks.sql as databricks_sql  # optional dep
     except ModuleNotFoundError as e:
         raise RuntimeError(
-            "The Databricks driver is not installed in this deployment. "
-            "Rebuild the image with the connectors extra — "
-            "pip install 'metabridge[web,dtd,connectors]' "
-            "(adds databricks-sql-connector) — then retry Test connection."
+            "Databricks live connections are not available on this "
+            "deployment — the driver was not included when it was "
+            "built. Ask a workspace owner or whoever operates this "
+            "server to enable it; you cannot change it from the "
+            "console. Administrator step: rebuild with the connectors "
+            "extra — pip install 'metabridge[web,dtd,connectors]' "
+            "(adds databricks-sql-connector)."
         ) from e
     token = _secret("databricks", "token", params)
     if not token:
@@ -1485,10 +1491,13 @@ def _psycopg_connect(key: str, params: Dict[str, str]):
         import psycopg2  # driver import deferred: optional dep
     except ModuleNotFoundError as e:
         raise RuntimeError(
-            "The PostgreSQL driver is not installed in this deployment. "
-            "Rebuild the image with the connectors extra — "
+            "PostgreSQL live connections are not available on this "
+            "deployment — the driver was not included when it was built. "
+            "Ask a workspace owner or whoever operates this server to "
+            "enable it; you cannot change it from the console. "
+            "Administrator step: rebuild with the connectors extra — "
             "pip install 'metabridge[web,dtd,connectors]' "
-            "(adds psycopg2-binary) — then retry Test connection."
+            "(adds psycopg2-binary)."
         ) from e
     default_port = 5439 if key == "redshift" else 5432
     kw = {
@@ -2181,10 +2190,13 @@ def _oracle_connect(params: Dict[str, str]):
         import oracledb  # driver import deferred: optional dep
     except ModuleNotFoundError as e:
         raise RuntimeError(
-            "The Oracle driver is not installed in this deployment. "
-            "Rebuild the image with the connectors extra — "
-            "pip install 'metabridge[web,dtd,connectors]' "
-            "(adds oracledb) — then retry Test connection."
+            "Oracle live connections are not available on this "
+            "deployment — the driver was not included when it was "
+            "built. Ask a workspace owner or whoever operates this "
+            "server to enable it; you cannot change it from the "
+            "console. Administrator step: rebuild with the connectors "
+            "extra — pip install 'metabridge[web,dtd,connectors]' "
+            "(adds oracledb)."
         ) from e
     conn = oracledb.connect(
         user=params.get("user", ""), password=password,

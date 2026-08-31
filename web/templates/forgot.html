@@ -73,8 +73,9 @@
   <h1>Reset your password</h1>
   <div class="sub" id="subtitle">Enter your account email and we&rsquo;ll start a secure reset.</div>
   <form id="f">
-    <label>Email</label>
-    <input type="email" name="email" placeholder="you@company.com" required autofocus>
+    <label for="email">Email</label>
+    <input type="email" id="email" name="email" autocomplete="username email"
+           placeholder="you@company.com" required autofocus>
     <button class="btn" type="submit">Send reset instructions →</button>
     <div class="err" id="err"></div>
     <div class="ok" id="ok"></div>

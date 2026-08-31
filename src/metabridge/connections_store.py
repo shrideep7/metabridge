@@ -40,9 +40,36 @@ def _load() -> List[dict]:
     if not p.exists():
         return []
     try:
-        return json.loads(p.read_text(encoding="utf-8")) or []
+        rows = json.loads(p.read_text(encoding="utf-8")) or []
     except (json.JSONDecodeError, OSError):
         return []
+
+    dirty = False
+    for r in rows:
+        if not r.get("created_by"):
+            try:
+                from .workspace_ctx import active_data_dir
+                wdir = active_data_dir()
+                ws_file = wdir / "workspaces.json"
+                if ws_file.exists():
+                    ws_data = json.loads(ws_file.read_text(encoding="utf-8"))
+                    if isinstance(ws_data, list) and ws_data:
+                        ws0 = ws_data[0]
+                        owner_email = ws0.get("created_by")
+                        if not owner_email and ws0.get("members"):
+                            owner_email = next((m for m, role in ws0["members"].items() if role == "owner"), next(iter(ws0["members"]), ""))
+                        if owner_email:
+                            r["created_by"] = owner_email
+                            dirty = True
+            except Exception:
+                pass
+    if dirty:
+        try:
+            p.write_text(json.dumps(rows, indent=2), encoding="utf-8")
+        except OSError:
+            pass
+
+    return rows
 
 
 def _write(rows: List[dict]) -> None:
@@ -130,7 +157,8 @@ def get_connection(conn_id: str) -> Optional[dict]:
 def save_connection(connector: str, params: Dict[str, str],
                     name: str = "", save_secrets: bool = False,
                     last_test: Optional[dict] = None,
-                    conn_id: str = "") -> dict:
+                    conn_id: str = "",
+                    created_by: str = "") -> dict:
     if get_registry().get(connector) is None:
         raise ValueError("Unknown connector: %s" % connector)
     # NB: required-field validation is enforced at the API boundary
@@ -158,6 +186,8 @@ def save_connection(connector: str, params: Dict[str, str],
                                      "type — create a new connection instead")
                 params_changed = r.get("params") != safe
                 r.update(name=name, params=safe, updated=now)
+                if not r.get("created_by") and created_by:
+                    r["created_by"] = created_by
                 if last_test is not None:
                     r["last_test"] = last_test
                 elif params_changed:
@@ -183,6 +213,8 @@ def save_connection(connector: str, params: Dict[str, str],
         if r["connector"] == connector and r.get("params") == safe:
             r.update(name=name, updated=now,
                      last_test=last_test or r.get("last_test"))
+            if not r.get("created_by") and created_by:
+                r["created_by"] = created_by
             if save_secrets and secrets:
                 r["secrets"] = secrets
             _write(rows)
@@ -190,6 +222,7 @@ def save_connection(connector: str, params: Dict[str, str],
     row = {"id": uuid.uuid4().hex[:10], "connector": connector,
            "name": name, "params": safe, "status": "active",
            "created": now, "updated": now,
+           "created_by": created_by,
            "last_test": last_test}
     if save_secrets and secrets:
         row["secrets"] = secrets

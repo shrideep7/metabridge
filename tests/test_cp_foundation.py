@@ -136,8 +136,10 @@ def test_resolve_context_blocks_suspended_tenant(engine):
 
 
 def test_rbac_permission_matrix():
-    assert rbac.has_permission("cp_owner", "member:manage")
-    assert not rbac.has_permission("cp_viewer", "member:manage")
+    assert rbac.has_permission("cp_owner", "members.view")
+    assert rbac.has_permission("cp_owner", "members.deactivate")
+    assert not rbac.has_permission("cp_viewer", "members.view")
+    assert not rbac.has_permission("cp_viewer", "members.deactivate")
     assert rbac.has_permission("SUPER_ADMIN", "anything:at-all")
     assert not rbac.has_permission("nonexistent-role", "flags:read")  # closed
     assert rbac.map_product_role("owner") == "cp_owner"

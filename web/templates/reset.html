@@ -79,16 +79,19 @@
   <h1 id="title">Choose a new password</h1>
   <div class="sub" id="subtitle">Checking your reset link…</div>
   <form id="f" style="display:none">
-    <label>New password</label>
+    <label for="pw">New password</label>
     <div class="field">
-      <input type="password" name="password" id="pw" placeholder="8+ characters" required minlength="8">
+      <input type="password" name="password" id="pw" autocomplete="new-password"
+             placeholder="At least 8 characters" required minlength="8">
       <button type="button" class="toggle" id="tg">SHOW</button>
     </div>
     <div class="meter"><i id="meterBar"></i></div>
-    <div class="hint" id="hint">Use 12+ characters with a mix of cases, numbers and symbols.</div>
-    <label>Confirm new password</label>
+    <div class="hint" id="hint">At least 8 characters. 12+ with mixed cases,
+      numbers and symbols is much stronger.</div>
+    <label for="pw2">Confirm new password</label>
     <div class="field">
-      <input type="password" name="confirm" id="pw2" placeholder="Repeat the password" required minlength="8">
+      <input type="password" name="confirm" id="pw2" autocomplete="new-password"
+             placeholder="Repeat the password" required minlength="8">
       <button type="button" class="toggle" id="tg2">SHOW</button>
     </div>
     <button class="btn" type="submit">Set new password →</button>
@@ -105,13 +108,22 @@
 // Token arrives in the URL FRAGMENT (#token=…), which the browser never
 // sends to the server — so the one-time secret stays out of access logs.
 // (A legacy ?token= query is still honored for any link already mailed.)
+// sessionStorage is the third fallback: the fragment is stripped from the
+// address bar below right after being read, so a refresh or an F5 after a
+// mistyped confirmation had nothing left to recover the token from — the
+// still-valid link the user's browser tab held became unusable, and the only
+// offered next step ("Request a new one") invalidates that very token.
+const RESET_TOKEN_KEY = 'mb_reset_token';
 function readToken() {
   const h = (window.location.hash || '').replace(/^#/, '');
   const fromHash = new URLSearchParams(h).get('token');
   if (fromHash) return fromHash;
-  return new URLSearchParams(window.location.search).get('token') || '';
+  const fromQuery = new URLSearchParams(window.location.search).get('token');
+  if (fromQuery) return fromQuery;
+  return sessionStorage.getItem(RESET_TOKEN_KEY) || '';
 }
 const token = readToken();
+if (token) sessionStorage.setItem(RESET_TOKEN_KEY, token);
 // drop the secret from the address bar so it isn't shoulder-surfed or kept
 // in history once we've read it
 if (window.history && window.location.hash) {
@@ -162,6 +174,7 @@ form.onsubmit = async ev => {
       body: JSON.stringify({ token: token, password: pw.value }) });
     const d = await r.json();
     if (!r.ok) throw new Error(d.detail || 'Could not reset the password');
+    sessionStorage.removeItem(RESET_TOKEN_KEY);
     ok.textContent = 'Password updated. Redirecting you to sign in…';
     ok.style.display = 'block';
     btn.textContent = 'Password updated';

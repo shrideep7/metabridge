@@ -7,8 +7,9 @@ from pathlib import Path
 
 import pytest
 
-CONSOLE = (Path(__file__).resolve().parents[1]
-           / "web" / "templates" / "console.html").read_text(encoding="utf-8")
+_WEB = Path(__file__).resolve().parents[1] / "web"
+CONSOLE = ((_WEB / "templates" / "console.html").read_text(encoding="utf-8")
+           + (_WEB / "static" / "js" / "console.js").read_text(encoding="utf-8"))
 
 
 @pytest.fixture()

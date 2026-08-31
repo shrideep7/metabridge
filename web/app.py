@@ -38,10 +38,10 @@ app = FastAPI(
                 "connector marketplace, and US/EU data governance.",
 )
 
-# Compress responses over 1 KB. The console shell alone is ~570 KB of inlined
-# CSS/JS and is served no-store (see console()), so EVERY page load re-sent it
-# uncompressed; text this repetitive gzips to roughly a quarter of its size.
-# Applies to /api JSON too. Starlette skips it unless the client sends
+# Compress responses over 1 KB. console.js/console.css are ~500 KB combined and,
+# unlike the console shell, are cacheable (see console()) but still worth
+# gzipping on first load; text this repetitive gzips to roughly a quarter of its
+# size. Applies to /api JSON too. Starlette skips it unless the client sends
 # Accept-Encoding: gzip, and already-compressed downloads (the job .zip
 # StreamingResponse) gain nothing but lose nothing either.
 app.add_middleware(GZipMiddleware, minimum_size=1000)
@@ -257,12 +257,28 @@ def _at(path: str, prefix: str) -> bool:
     return path == prefix or path.startswith(prefix + "/")
 
 
-def _required_permission(path: str, method: str) -> str:
+def _required_permission(path: str, method: str, perms: Optional[set] = None) -> str:
     """Map an API route to the RBAC permission it needs."""
     if _at(path, "/api/v1/me"):
         return "jobs:read"   # self-service profile: any authenticated role
     if _at(path, "/api/users"):
-        return "users:manage"
+        if "/deactivate" in path:
+            return "members.deactivate"
+        if "/activate" in path:
+            return "members.activate"
+        if "/reset-link" in path:
+            return "members.update"
+        if method == "GET":
+            return "members.view"
+        if method == "POST":
+            return "members.invite"
+        if method in ("PATCH", "PUT"):
+            if perms and "members.role_change" in perms and "members.update" not in perms:
+                return "members.role_change"
+            return "members.update"
+        if method == "DELETE":
+            return "members.remove"
+        return "members.view"
     if _at(path, "/api/settings"):
         return "jobs:read" if method == "GET" else "settings:manage"
     # approving/claiming a governed agent action needs a DISTINCT permission
@@ -289,6 +305,11 @@ def _required_permission(path: str, method: str) -> str:
     # acknowledging one's own notifications is a read-side action
     if _at(path, "/api/system/notifications/seen"):
         return "jobs:read"
+    # Batched report reads. POST only because the id list goes in the body (a
+    # 20-id query string is fragile); it reads and writes nothing, so it must
+    # stay jobs:read or a viewer could not load the Dashboard at all.
+    if _at(path, "/api/jobs/reports"):
+        return "jobs:read"
     # workspaces: listing and switching your OWN active workspace are
     # read-side (any member); creating a workspace and managing its member
     # roster are authorized in-handler (account admin / workspace admin)
@@ -296,7 +317,17 @@ def _required_permission(path: str, method: str) -> str:
             _at(path, "/api/workspaces") and method == "GET"):
         return "jobs:read"
     if _at(path, "/api/workspaces") and "/members" in path:
-        return "users:manage"
+        if method == "GET":
+            return "members.view"
+        if method == "POST":
+            return "members.invite"
+        if method in ("PATCH", "PUT"):
+            if perms and "members.role_change" in perms and "members.update" not in perms:
+                return "members.role_change"
+            return "members.update"
+        if method == "DELETE":
+            return "members.remove"
+        return "members.view"
     if _at(path, "/api/workspaces"):
         return "jobs:read"          # create/rename: handler enforces admin
     if method in ("POST", "PUT", "PATCH"):
@@ -344,7 +375,7 @@ async def access_guard(request: Request, call_next):
                 return JSONResponse({"detail": "Authentication required"},
                                     status_code=401)
             if path.startswith("/api"):
-                needed = _required_permission(path, request.method)
+                needed = _required_permission(path, request.method, perms)
                 if "*" not in perms and needed not in perms:
                     who = (user or {}).get("role", "api key")
                     return JSONResponse(
@@ -394,20 +425,30 @@ def reset_password_page() -> str:
 _CONSOLE_BUILD: dict = {"key": None, "id": ""}
 
 
+_CONSOLE_ASSETS = (
+    _TPL / "console.html",
+    _STATIC / "css" / "console.css",
+    _STATIC / "js" / "console.js",
+)
+
+
 def _console_build_id() -> str:
-    """Short content hash of the console template — the BUILD STAMP. Shown in
-    the UI and returned by /api/v1/info so "which bytes is this browser
-    actually running?" is answerable at a glance (a stale cached page or an
-    image built from older code shows a different id)."""
-    f = _TPL / "console.html"
+    """Short content hash of the console shell + its CSS/JS — the BUILD STAMP.
+    Shown in the UI and returned by /api/v1/info so "which bytes is this
+    browser actually running?" is answerable at a glance (a stale cached page
+    or an image built from older code shows a different id). Also embedded as
+    a cache-busting query param on the CSS/JS <link>/<script> tags, since those
+    two files (unlike the shell) are served cacheable."""
     try:
-        st = f.stat()
+        key = tuple((f.stat().st_mtime_ns, f.stat().st_size) for f in _CONSOLE_ASSETS)
     except OSError:
         return "unknown"
-    key = (st.st_mtime_ns, st.st_size)
     if _CONSOLE_BUILD["key"] != key:
         import hashlib
-        _CONSOLE_BUILD["id"] = hashlib.sha256(f.read_bytes()).hexdigest()[:8]
+        h = hashlib.sha256()
+        for f in _CONSOLE_ASSETS:
+            h.update(f.read_bytes())
+        _CONSOLE_BUILD["id"] = h.hexdigest()[:8]
         _CONSOLE_BUILD["key"] = key
     return _CONSOLE_BUILD["id"]
 
@@ -417,12 +458,15 @@ def console() -> HTMLResponse:
     # NEVER cache the console shell: browsers heuristically cache HTML served
     # without cache headers, which pinned users to a stale build across
     # rebuilds (sections rendering blank because their JS/HTML no longer
-    # matched the server).
+    # matched the server). console.css/console.js are cache-busted instead via
+    # the ?v= build id below, so THEY can be served cacheable by StaticFiles.
+    build_id = _console_build_id()
     html = (_TPL / "console.html").read_text(encoding="utf-8")
+    html = html.replace("{{CONSOLE_BUILD_ID}}", build_id)
     return HTMLResponse(html, headers={
         "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
         "Pragma": "no-cache",
-        "X-MetaBridge-Build": _console_build_id()})
+        "X-MetaBridge-Build": build_id})
 
 
 # ---------------------------------------------------------------------------
@@ -466,7 +510,7 @@ def _session_response(user: dict, workspace: str = "") -> JSONResponse:
 async def auth_signup(request: Request):
     body = await request.json()
     if AUTH.has_users() and not has_permission(_request_user(request),
-                                               "users:manage"):
+                                               "members.invite"):
         raise HTTPException(403, "This instance already has an owner — ask "
                             "an admin to add you from Settings, or sign in.")
     first = not AUTH.has_users()
@@ -492,6 +536,8 @@ async def auth_login(request: Request):
                             str(body.get("password", "")))
     if user is None:
         raise HTTPException(401, "Incorrect email or password")
+    if user.get("status") == "deactivated":
+        raise HTTPException(403, "Account deactivated. Your account has been deactivated by the workspace owner. Please contact your workspace owner for access.")
     return _session_response(user, _default_workspace_for(user["email"]))
 
 
@@ -744,7 +790,14 @@ async def auth_reset(request: Request):
 def me(request: Request):
     user = _request_user(request)
     perms = sorted(permissions_for(user["role"])) if user else []
+    # The whole matrix, not just this caller's row. The console's "View as
+    # role" preview has to answer "what would a viewer see?" without the
+    # caller holding members.view (which /api/users requires and an engineer
+    # does not have), and duplicating the table in the browser would let the
+    # two drift. Publishing it grants nothing: every request is still
+    # authorized server-side against the SESSION's role.
     out = {"user": user, "permissions": perms,
+           "role_permissions": {r: sorted(permissions_for(r)) for r in ROLES},
            "first_run": not AUTH.has_users()}
     if user:
         acct_admin = bool(user.get("account_admin"))
@@ -1000,9 +1053,16 @@ def _workspace_members(wsid: str) -> list:
 @app.get("/api/users")
 def list_users(request: Request):
     """Members of the ACTIVE workspace with their per-workspace role."""
-    wsid = (_request_user(request) or {}).get("workspace", "")
-    return {"users": _workspace_members(wsid), "roles": [
-        {"role": r, "description": ROLE_DESCRIPTIONS[r]} for r in ROLES]}
+    user = _request_user(request)
+    if user and not has_permission(user, "members.view"):
+        raise HTTPException(403, "Your role does not allow viewing members (needs members.view)")
+    wsid = (user or {}).get("workspace", "")
+    return JSONResponse(
+        content={"users": _workspace_members(wsid), "roles": [
+            {"role": r, "description": ROLE_DESCRIPTIONS[r]} for r in ROLES]},
+        headers={"Cache-Control": "no-cache, no-store, must-revalidate, max-age=0",
+                 "Pragma": "no-cache"}
+    )
 
 
 def _caller_is_owner(request: Request) -> bool:
@@ -1026,6 +1086,9 @@ async def create_user(request: Request):
     account if the email is new; an existing account is simply granted
     membership (Databricks-style: identity is account-level, access is
     per-workspace)."""
+    user = _request_user(request)
+    if user and not has_permission(user, "members.invite"):
+        raise HTTPException(403, "Your role does not allow inviting members (needs members.invite)")
     body = await _json_object(request)
     role = normalize_role(str(body.get("role", "engineer")))
     email = str(body.get("email", "")).strip().lower()
@@ -1077,35 +1140,55 @@ async def create_user(request: Request):
 async def change_role(email: str, request: Request):
     body = await _json_object(request)
     email_norm = email.strip().lower()
-    new_role = normalize_role(str(body.get("role", "")))
     me_user = _request_user(request)
     wsid = (me_user or {}).get("workspace", "")
-    if me_user and me_user["email"] == email_norm and \
-            new_role != me_user["role"]:
-        raise HTTPException(422, "You cannot change your own role")
     cur = WS.member_role(wsid, email_norm)
     if cur is None:
         raise HTTPException(422, "Not a member of this workspace")
-    if new_role == "owner" or normalize_role(cur) == "owner":
-        _require_owner_for_owner_role(
-            request, "Only a workspace owner can grant or revoke the owner "
-                     "role")
-    try:
-        WS.set_role(wsid, email_norm, new_role)
-    except WorkspaceError as e:
-        raise HTTPException(422, str(e))
+
+    has_role_field = "role" in body
+    has_details_field = any(k in body for k in ("name", "company"))
+
+    if has_role_field:
+        if me_user and not has_permission(me_user, "members.role_change"):
+            raise HTTPException(403, "Your role does not allow changing member roles (needs members.role_change)")
+        new_role = normalize_role(str(body.get("role", "")))
+        if me_user and me_user["email"] == email_norm and \
+                new_role != me_user["role"]:
+            raise HTTPException(422, "You cannot change your own role")
+        if new_role == "owner" or normalize_role(cur) == "owner":
+            _require_owner_for_owner_role(
+                request, "Only a workspace owner can grant or revoke the owner "
+                         "role")
+        try:
+            WS.set_role(wsid, email_norm, new_role)
+        except WorkspaceError as e:
+            raise HTTPException(422, str(e))
+
+    if has_details_field:
+        if me_user and not has_permission(me_user, "members.update"):
+            raise HTTPException(403, "Your role does not allow updating member details (needs members.update)")
+        if "name" in body:
+            AUTH.set_name(email_norm, str(body.get("name", "")))
+
+    if not has_role_field and not has_details_field:
+        # If neither role nor details are passed in body, fallback check
+        if me_user and not (has_permission(me_user, "members.role_change") or has_permission(me_user, "members.update")):
+            raise HTTPException(403, "Your role does not allow updating members")
+
     acct = next((u for u in AUTH.list_users() if u["email"] == email_norm),
                 {"email": email_norm, "name": email_norm})
-    if normalize_role(cur) != new_role:
+    curr_role = WS.member_role(wsid, email_norm) or cur
+    if has_role_field and normalize_role(cur) != normalize_role(curr_role):
         try:
             from metabridge import notify
             notify.role_changed(
-                email_norm, acct.get("name", ""), new_role,
+                email_norm, acct.get("name", ""), curr_role,
                 _actor_name(request),
                 login_url=_abs_url(request, "login", True), center=_nc())
         except Exception:                    # noqa: BLE001 - best-effort
             pass
-    return {**acct, "role": new_role}
+    return {**acct, "role": curr_role}
 
 
 @app.delete("/api/users/{email}")
@@ -1113,6 +1196,8 @@ async def delete_user(email: str, request: Request):
     email_norm = email.strip().lower()
     me_user = _request_user(request)
     wsid = (me_user or {}).get("workspace", "")
+    if me_user and not has_permission(me_user, "members.remove"):
+        raise HTTPException(403, "Your role does not allow removing members (needs members.remove)")
     if me_user and me_user["email"] == email_norm:
         raise HTTPException(422, "You cannot remove yourself from a workspace")
     cur = WS.member_role(wsid, email_norm)
@@ -1209,10 +1294,13 @@ async def workspaces_rename(wsid: str, request: Request):
 
 @app.post("/api/users/{email}/reset-link")
 async def mint_reset_link(email: str, request: Request):
-    """Mint a one-time password-reset link for a member (users:manage via
+    """Mint a one-time password-reset link for a member (members.update via
     the access middleware). This is the no-SMTP delivery path: the admin
     hands the link to the account holder out-of-band. The link works once
     and expires after 60 minutes; minting again replaces it."""
+    me_user = _request_user(request)
+    if me_user and not has_permission(me_user, "members.update"):
+        raise HTTPException(403, "Your role does not allow updating member credentials (needs members.update)")
     target = next((u for u in AUTH.list_users()
                    if u["email"] == email.strip().lower()), None)
     if target is not None and target["role"] == "owner":
@@ -1244,6 +1332,52 @@ async def mint_reset_link(email: str, request: Request):
             "reset_link": link, "emailed": emailed,
             "expires_in_minutes": RESET_TOKEN_TTL_SECONDS // 60,
             "one_time": True}
+
+
+@app.post("/api/users/{email}/deactivate")
+async def deactivate_user(email: str, request: Request):
+    email_norm = email.strip().lower()
+    me_user = _request_user(request)
+    wsid = (me_user or {}).get("workspace", "")
+    if me_user and not has_permission(me_user, "members.deactivate"):
+        raise HTTPException(403, "Only the workspace owner can deactivate members (needs members.deactivate)")
+    if me_user and me_user["email"] == email_norm:
+        raise HTTPException(422, "You cannot deactivate your own account")
+    cur = WS.member_role(wsid, email_norm)
+    if cur is None:
+        raise HTTPException(422, "Not a member of this workspace")
+    if normalize_role(cur) == "owner":
+        _require_owner_for_owner_role(
+            request, "Only a workspace owner can manage an owner account, and owner accounts cannot be deactivated")
+        raise HTTPException(422, "Owner accounts cannot be deactivated")
+    try:
+        acct = AUTH.set_status(email_norm, "deactivated")
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+    import logging
+    logger = logging.getLogger("metabridge.audit")
+    logger.info("Member deactivated: Actor=%s, Target=%s, Workspace=%s", _actor_name(request), email_norm, wsid)
+    return {**acct, "role": cur, "status": "deactivated"}
+
+
+@app.post("/api/users/{email}/activate")
+async def activate_user(email: str, request: Request):
+    email_norm = email.strip().lower()
+    me_user = _request_user(request)
+    wsid = (me_user or {}).get("workspace", "")
+    if me_user and not has_permission(me_user, "members.activate"):
+        raise HTTPException(403, "Only the workspace owner can activate members (needs members.activate)")
+    cur = WS.member_role(wsid, email_norm)
+    if cur is None:
+        raise HTTPException(422, "Not a member of this workspace")
+    try:
+        acct = AUTH.set_status(email_norm, "active")
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+    import logging
+    logger = logging.getLogger("metabridge.audit")
+    logger.info("Member activated: Actor=%s, Target=%s, Workspace=%s", _actor_name(request), email_norm, wsid)
+    return {**acct, "role": cur, "status": "active"}
 
 
 @app.get("/api/settings/ai")
@@ -1319,6 +1453,39 @@ def _finish_job(job_dir: Path, **extra) -> dict:
                     datetime.datetime.now().isoformat(timespec="seconds"))
     (job_dir / "meta.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
     return meta
+
+
+def _objects_job_scope(job_dir: Path, meta: dict) -> dict:
+    """The database/schema an `objects` run actually read.
+
+    New runs record this at finish time. Runs made before that only carry it
+    inside output/object_inventory.json, and that artifact is ~200 KB — reading
+    one per row would make the job list proportional to total history rather
+    than to the page returned. So the answer is copied into meta.json the first
+    time it is needed and read from there forever after; a job is opened at
+    most once. A job whose artifact is gone stays unattributed rather than
+    being guessed at, and the console labels it as such.
+    """
+    if "database" in meta:
+        return {}
+    artifact = job_dir / "output" / "object_inventory.json"
+    if not artifact.exists():
+        return {}
+    try:
+        doc = json.loads(artifact.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    inv = doc.get("inventory") or {}
+    scope = {"database": inv.get("database", "") or "",
+             "schema": inv.get("schema", "") or ""}
+    try:
+        meta_file = job_dir / "meta.json"
+        stored = json.loads(meta_file.read_text(encoding="utf-8"))
+        stored.update(scope)
+        meta_file.write_text(json.dumps(stored, indent=2), encoding="utf-8")
+    except (OSError, ValueError):
+        pass          # re-reading the artifact next time beats failing the list
+    return scope
 
 
 def _job_dir(job_id: str) -> Path:
@@ -1477,6 +1644,8 @@ def list_jobs(kind: str = "", status: str = "", limit: int = 100):
         except OSError:
             meta.setdefault("has_findings", False)
             meta.setdefault("has_download", False)
+        if meta.get("kind") == "objects":
+            meta.update(_objects_job_scope(job_dir, meta))
         jobs.append(meta)
     return {"jobs": jobs, "total": total, "returned": len(jobs),
             "truncated": total > len(jobs)}
@@ -3009,6 +3178,10 @@ def _today() -> str:
     return datetime.datetime.now().strftime("%Y-%m-%d")
 
 
+def _now_iso() -> str:
+    return datetime.datetime.now().isoformat(timespec="seconds")
+
+
 @app.get("/api/agents")
 def agents_roster():
     """The agent roster (roles, risk classes, dependencies), the default
@@ -3021,30 +3194,66 @@ def agents_roster():
 
 @app.post("/api/agents/run")
 async def agents_run(request: Request):
-    """{"files":[...] | "from_job": id, "source_format"?, "target_region"?,
-    "task_types"?: [...]} -> run the agent swarm over the uploaded/selected
-    project. Every action is scored, governed and audited; consequential
-    (GENERATE) proposals are ALWAYS held for approval — the run requester
-    cannot pre-authorize their own consequential actions (segregation of
-    duties). Approval is a separate, permissioned, audited decision."""
+    """{"files":[...] | "from_job": id, "connection_ids"?: [...],
+    "source_format"?, "target_region"?, "task_types"?: [...]} -> run the agent
+    swarm over the uploaded project, the selected saved connections, or BOTH
+    (the folder supplies the pipelines to convert, the connection supplies the
+    live estate they land in). Every action is scored, governed and audited;
+    consequential (GENERATE) proposals are ALWAYS held for approval — the run
+    requester cannot pre-authorize their own consequential actions
+    (segregation of duties). Approval is a separate, permissioned, audited
+    decision."""
     body = await _json_object(request)
     user = _require_account(request)
+    conn_ids = body.get("connection_ids") or []
+    if not isinstance(conn_ids, list):
+        raise HTTPException(422, "connection_ids must be a list")
+    conn_ids = [str(c) for c in conn_ids if str(c).strip()]
+    # Validate the selection BEFORE creating a job, so a stopped or unknown
+    # connection is a clean 422 instead of a failed job in the history.
+    conn_rows = _resolve_agent_connections(conn_ids) if conn_ids else []
+    if not conn_ids and not body.get("files") and not body.get("from_job"):
+        raise HTTPException(422, "Choose a project folder or at least one "
+                                 "connected system to run the agents on.")
     job_dir = _new_job("agents")
     try:
+        paths = []
         if body.get("from_job"):
-            root = _job_input_root(_job_dir(str(body["from_job"])))
-        else:
+            paths.append(str(_job_input_root(_job_dir(str(body["from_job"])))))
+        elif body.get("files"):
             root = _write_tree_files(body.get("files"), job_dir / "input")
             entries = [p for p in root.iterdir()
                        if not p.name.startswith(".")]
             if len(entries) == 1 and entries[0].is_dir():
                 root = entries[0]
+            paths.append(str(root))
+        live = {"views_written": 0, "notes": []}
+        if conn_rows:
+            # UNDER input/, not beside it. Everything that reads a job's source
+            # tree later — documentation via `from_job`, conversion, analysis —
+            # resolves it through _job_input_root, so SQL written anywhere else
+            # is invisible to them. It used to go to a sibling connections/
+            # dir, and because _new_job pre-creates an EMPTY input/, `from_job`
+            # silently resolved to that empty dir and produced blank documents
+            # for a connection-only run instead of failing loudly.
+            #
+            # Appended as its own path rather than collapsing both sources to
+            # input/: as siblings they are disjoint (so nothing is walked
+            # twice) AND each still gets its own format detection, where the
+            # collapsed root was classified "path:input (unrecognized)".
+            live = _materialize_connection_sql(
+                conn_rows, job_dir / "input" / "_connections")
+            if live.get("dir"):
+                paths.append(live["dir"])
         from metabridge.agents import SharedContext
         ctx = SharedContext(
-            paths=[str(root)],
+            paths=paths,
             source_format=str(body.get("source_format", "") or ""),
             target_region=str(body.get("target_region", "") or ""),
-            project=str(body.get("project", "") or "estate"))
+            project=str(body.get("project", "") or "estate"),
+            connection_ids=conn_ids)
+        ctx.connection_notes = list(live.get("notes") or [])
+        ctx.has_upload = bool(body.get("files") or body.get("from_job"))
         task_types = body.get("task_types") or None
         if task_types is not None and not isinstance(task_types, list):
             raise HTTPException(422, "task_types must be a list")
@@ -3054,7 +3263,7 @@ async def agents_run(request: Request):
         report = _agents_orch().run(
             ctx, task_types=task_types,
             requested_by=user.get("email", "") or "operator",
-            created_at=_today())
+            created_at=_now_iso())
         _finish_job(job_dir, run_id=report["run_id"],
                     project=_inline_label(body, "agent_run"))
         _announce_pending_approvals(report["run_id"],
@@ -3472,6 +3681,12 @@ def system_insights(request: Request):
     for j in j7:
         k = j.get("kind", "other")
         by_kind7[k] = by_kind7.get(k, 0) + 1
+    # All-time totals, for the Overview KPI strip. `jobs` is every readable
+    # meta.json in the jobs dir, so both are LOWER BOUNDS: a run whose meta
+    # could not be parsed above was skipped and is counted nowhere. `running`
+    # is current state rather than a window — a job is running or it is not.
+    jobs_total = len(jobs)
+    jobs_running = sum(1 for j in jobs if j.get("status") == "running")
     if fail7:
         note("warning", "%d job(s) failed in the last 7 days" % fail7,
              "Open the job history to see what failed and re-run.",
@@ -3577,6 +3792,9 @@ def system_insights(request: Request):
         "attention": attention[:12],
         "activity": activity,
         "usage": {"jobs_7d": len(j7), "jobs_30d": len(j30),
+                  "jobs_total": jobs_total,
+                  "jobs_running": jobs_running,
+                  "jobs_failed_7d": fail7,
                   "success_rate_7d_pct":
                       int(round(100.0 * done7 / finished7))
                       if finished7 else None,
@@ -3890,6 +4108,94 @@ def _ensure_connection_inventories() -> None:
                 record_inventory(cid, rep)
         except Exception:                    # noqa: BLE001 - per-connection
             continue
+
+
+def _resolve_agent_connections(conn_ids: list) -> list:
+    """Validate a run's selected connections and return their public rows.
+
+    Hard-fails on an unknown or STOPPED connection: the requester picked it
+    explicitly, so silently dropping it would produce a run that looks like it
+    covered a system it never touched. Stopped is the manual gate (see
+    connections_store.resolve_params), and saying so is the useful error."""
+    from metabridge.connections_store import get_connection
+    rows = []
+    for cid in conn_ids:
+        row = get_connection(cid)
+        if row is None:
+            raise HTTPException(422, "Unknown connection: %s" % cid)
+        if row.get("status") != "active":
+            raise HTTPException(
+                422, "Connection '%s' is stopped — start it before running "
+                     "agents against it." % (row.get("name") or cid))
+        rows.append(row)
+    return rows
+
+
+# Snowflake and SQL Server return the WHOLE `CREATE OR REPLACE VIEW ... AS
+# SELECT ...` statement in view_definition; Postgres and MySQL return only the
+# SELECT body. Wrapping unconditionally produced `CREATE VIEW x AS CREATE OR
+# REPLACE VIEW x AS SELECT ...` — invalid SQL that parsed to nothing.
+_CREATE_VIEW_RE = re.compile(
+    r"^\s*create\s+(or\s+replace\s+)?(force\s+)?(secure\s+)?"
+    r"(recursive\s+)?(materialized\s+)?view\b", re.I | re.S)
+
+
+def _materialize_connection_sql(conn_rows: list, out_dir: Path) -> dict:
+    """Capture an inventory for each selected connection that lacks one, then
+    write every introspected view definition out as a .sql file.
+
+    This is what lets a connected system feed the PARSE-dependent agents: a
+    warehouse has no ETL project to upload, but its view SQL is real,
+    parseable evidence, so parse -> semantic -> migration -> validation ->
+    testing score on it exactly as they would on an uploaded folder. Reading
+    is bounded and read-only (INFORMATION_SCHEMA selects); an unreachable
+    system degrades to 'system node only' rather than failing the run."""
+    from metabridge.connections_store import (get_inventory, record_inventory,
+                                              resolve_params)
+    from metabridge.livecheck import introspect, live_support
+    out_dir.mkdir(parents=True, exist_ok=True)
+    written, notes = 0, []
+    for c in conn_rows:
+        cid, connector = c.get("id", ""), str(c.get("connector", ""))
+        label = c.get("name") or connector or cid
+        try:
+            inv = get_inventory(cid)
+            if not inv and live_support(connector).get("introspect"):
+                rep = introspect(connector, resolve_params(cid))
+                if rep.get("ok") and rep.get("mode") != "databases":
+                    record_inventory(cid, rep)
+                    inv = get_inventory(cid)
+                elif not rep.get("ok"):
+                    notes.append("%s: %s" % (label,
+                                             str(rep.get("error", ""))[:120]))
+            if not inv:
+                notes.append("%s: no object inventory — discovered as a "
+                             "system only" % label)
+                continue
+            for v in inv.get("views") or []:
+                sql = str(v.get("definition") or "").strip()
+                if not sql:
+                    continue
+                stem = "__".join(filter(None, (
+                    _safe_name(connector), _safe_name(str(v.get("schema", ""))),
+                    _safe_name(str(v.get("name", ""))))))
+                # Only add the CREATE VIEW header when the driver did not
+                # already give us one (see _CREATE_VIEW_RE) — a bare SELECT
+                # parses, but the target name is what makes it a named
+                # transformation in the IR.
+                qual = ".".join(filter(None, (str(v.get("schema", "")),
+                                              str(v.get("name", "")))))
+                stmt = sql if _CREATE_VIEW_RE.match(sql) else (
+                    "CREATE VIEW %s AS\n%s" % (qual, sql))
+                (out_dir / ("%s.sql" % (stem or "view_%d" % written))).write_text(
+                    stmt.rstrip().rstrip(";") + ";\n", encoding="utf-8")
+                written += 1
+        except PermissionError as e:                 # stopped mid-run
+            notes.append("%s: %s" % (label, str(e)[:120]))
+        except Exception as e:                       # noqa: BLE001
+            notes.append("%s: %s" % (label, str(e)[:120]))
+    return {"views_written": written, "dir": str(out_dir) if written else "",
+            "notes": notes}
 
 
 @app.post("/api/twin/build")
@@ -4468,10 +4774,17 @@ async def objects_inventory(request: Request):
     out = job_dir / "output"
     out.mkdir(parents=True, exist_ok=True)
     write_inventory_report(inv_doc, classification, str(out))
+    # WHICH system this run read, recorded on the job itself. Without it the
+    # console can only match a stored run to a system by connector, so every
+    # Snowflake system offers every Snowflake run as if it were its own.
     meta = _finish_job(job_dir, source_format=row["connector"],
                        target_format=target,
                        project=str(body.get("project", "") or "")
                        or "%s_objects" % row["connector"],
+                       connection_id=cid,
+                       connection_name=row.get("name", ""),
+                       database=inv_doc.get("database", "") or "",
+                       schema=inv_doc.get("schema", "") or "",
                        summary={"objects": classification["objects_total"],
                                 "automation_pct":
                                     classification["automation_pct"]})
@@ -4520,8 +4833,15 @@ async def objects_convert(request: Request):
     out.mkdir(parents=True, exist_ok=True)
     manifest = generate_object_package(inv, classification, target,
                                        str(out / "objects"))
+    # WHICH classification this package was generated from. Without it a
+    # package can only be matched back by source+target format, and two systems
+    # on the same platform heading for the same target are indistinguishable —
+    # the same coarse key that had every Snowflake system claiming every
+    # Snowflake run as its own. Packages made before this stay unattributed
+    # rather than being guessed at; they remain listed under Modernize.
     meta = _finish_job(job_dir, source_format=inv.connector,
                        target_format=target, summary=manifest,
+                       inventory_id=inv_id,
                        project=str(body.get("project", "") or "")
                        or "%s_objects" % inv.connector)
     return {"package_id": meta["id"], "target": target, **manifest,
@@ -4969,6 +5289,37 @@ def job_report_json(job_id: str):
     raise HTTPException(404, "Report not found")
 
 
+@app.post("/api/jobs/reports")
+async def job_reports_batch(request: Request):
+    """Several jobs' report.json in ONE request.
+
+    The Dashboard summarises N recent conversions, which meant N separate
+    /report.json round-trips on every load (~20 on a populated workspace) just
+    to paint six tiles. Jobs with no report are returned as null rather than
+    404-ing the batch, so one reportless run cannot fail the whole page.
+    Capped so a hand-rolled request cannot ask for the world.
+    """
+    body = await _json_object(request)
+    ids = body.get("ids")
+    if not isinstance(ids, list):
+        raise HTTPException(422, "ids must be a list of job ids")
+    if len(ids) > 200:
+        raise HTTPException(422, "at most 200 ids per request")
+    out: dict = {}
+    for raw in ids:
+        job_id = str(raw)
+        out[job_id] = None
+        for name in ("conversion_report.json", "governance_report.json"):
+            f = _job_dir(job_id) / "output" / name
+            if f.exists():
+                try:
+                    out[job_id] = json.loads(f.read_text(encoding="utf-8"))
+                except (ValueError, OSError):
+                    out[job_id] = None
+                break
+    return {"reports": out}
+
+
 @app.get("/api/jobs/{job_id}/migration-report", response_class=HTMLResponse)
 def job_migration_report(job_id: str) -> str:
     """The client-facing 15-section Migration Report (HTML)."""
@@ -5174,6 +5525,46 @@ async def autofix_apply(job_id: str, request: Request):
 # ---------------------------------------------------------------------------
 # Governance
 # ---------------------------------------------------------------------------
+
+@app.get("/api/governance/policy")
+def governance_policy():
+    """The residency/masking policy every governance scan here is judged against.
+
+    NOT the agent thresholds: `GET /api/agents`'s `governance` field is
+    `approval_threshold`/`deny_floor`, an unrelated pair of numbers. This is the
+    document `governance/engine.py` evaluates — residency rules, masking
+    obligations, and which classifier categories they actually reach.
+
+    Read-only, and `editable` says so on the wire rather than leaving the client
+    to infer it. `--policy` exists on the CLI but no HTTP route accepts one, so
+    every scan this app runs uses the built-in baseline; the flag flips here on
+    the day that stops being true, and the UI follows without a change.
+
+    `yaml` is rendered server-side so the viewer shows the real document rather
+    than a re-serialisation the client invented — and so no YAML writer has to
+    ship in the browser bundle. It is ~460 bytes.
+    """
+    import yaml as _yaml
+    from metabridge.governance.engine import (
+        DEFAULT_POLICY, POLICY_FINDING_CODES, load_policy, policy_coverage,
+    )
+    policy = load_policy()          # no path -> the built-in baseline
+    coverage = policy_coverage(policy)
+    return {
+        "source": "built-in" if policy is DEFAULT_POLICY else "file",
+        "editable": False,
+        "yaml": _yaml.safe_dump(policy, sort_keys=False, allow_unicode=True),
+        "policy": policy,
+        "codes": POLICY_FINDING_CODES,
+        "coverage": {
+            "categories": coverage,
+            # Classified as sensitive, matched by no rule at all — the gap a
+            # DPO reading this screen is actually looking for.
+            "ungoverned": [c["category"] for c in coverage
+                           if not c["residency"] and not c["masking"]],
+        },
+    }
+
 
 @app.post("/api/govern")
 async def api_govern(
@@ -5464,9 +5855,60 @@ async def v1_ai_ask(request: Request):
 # ---------------------------------------------------------------------------
 
 @app.get("/api/v1/connections")
-def v1_connections_list():
+def v1_connections_list(request: Request):
+    import hashlib
     from metabridge.connections_store import list_connections
-    return {"connections": list_connections()}
+    conns = list_connections()
+    users_by_email = {}
+    if AUTH:
+        try:
+            users_doc = AUTH._load(AUTH.users_file)
+            users_by_email = {k.lower(): AUTH._public(u) for k, u in users_doc.items()}
+        except Exception:
+            pass
+
+    fallback_user = None
+    if users_by_email:
+        from .auth import normalize_role
+        fallback_user = next((u for u in users_by_email.values()
+                             if normalize_role(u.get("role", "")) == "owner"), None)
+        if not fallback_user:
+            fallback_user = next(iter(users_by_email.values()), None)
+
+    for c in conns:
+        creator_email = (c.get("created_by") or "").strip().lower()
+        u = users_by_email.get(creator_email) if creator_email else fallback_user
+        if u:
+            fn = (u.get("first_name") or "").strip()
+            ln = (u.get("last_name") or "").strip()
+            user_id = u.get("id") or hashlib.sha256(u["email"].lower().encode()).hexdigest()[:16]
+            c["creator"] = {
+                "id": user_id,
+                "first_name": fn,
+                "last_name": ln
+            }
+            c["creator_id"] = user_id
+        elif creator_email:
+            parts = creator_email.split("@")[0].replace(".", " ").replace("_", " ").split(maxsplit=1)
+            fn = parts[0].title() if parts else ""
+            ln = parts[1].title() if len(parts) > 1 else ""
+            user_id = hashlib.sha256(creator_email.encode()).hexdigest()[:16]
+            c["creator"] = {
+                "id": user_id,
+                "first_name": fn,
+                "last_name": ln
+            }
+            c["creator_id"] = user_id
+        else:
+            c["creator"] = {
+                "id": "unknown",
+                "first_name": "Unknown",
+                "last_name": ""
+            }
+            c["creator_id"] = "unknown"
+        c.pop("created_by", None)
+
+    return {"connections": conns}
 
 
 # readiness keys that are neither tables nor views — the object classes the
@@ -5492,10 +5934,10 @@ def _estate_cards(scope: list, aggregate: bool, convert_jobs: int) -> list:
         return [
             {"n": len(connected) or "--", "label": "Connected systems",
              "sub": "%d saved" % len(scope)},
-            {"n": len(analyzed) or "--", "label": "Systems analyzed",
+            {"n": len(analyzed) or "--", "label": "Systems analysed",
              "sub": ""},
             {"n": tables or "--", "label": "Tables",
-             "sub": "across analyzed systems" if analyzed
+             "sub": "across analysed systems" if analyzed
                     else "run Analyze on a connection"},
             {"n": "{:,}".format(rows) if rows else "--", "label": "Rows",
              "sub": ""},
@@ -5515,7 +5957,7 @@ def _estate_cards(scope: list, aggregate: bool, convert_jobs: int) -> list:
          "sub": c.get("connector", "")},
         {"n": (la.get("tables") if la.get("tables") is not None else "--"),
          "label": "Tables",
-         "sub": "live metadata analysis" if la else "run Analyze on this system"},
+         "sub": "from last analysis" if la else "run Analyze on this system"},
         {"n": (la.get("views") if la.get("views") is not None else "--"),
          "label": "Views", "sub": ""},
         {"n": (other or ("0" if la else "--")), "label": "Other objects",
@@ -5524,7 +5966,7 @@ def _estate_cards(scope: list, aggregate: bool, convert_jobs: int) -> list:
         {"n": "{:,}".format(la["total_rows"]) if la.get("total_rows")
               else ("0" if la else "--"), "label": "Rows", "sub": ""},
         {"n": (la.get("at", "") or "never").split("T")[0],
-         "label": "Last analyzed",
+         "label": "Last analysed",
          "sub": la.get("verdict", "") or ""},
     ]
 
@@ -5584,6 +6026,8 @@ async def v1_connections_save(request: Request):
     body = await request.json()
     connector = str(body.get("connector", ""))
     params = dict(body.get("params") or {})
+    req_user = _request_user(request)
+    created_by_email = req_user["email"] if req_user else ""
     # required-field validation at the API boundary — the console form runs
     # the same check, so UI and API reject the same incomplete inputs
     missing = _missing_required(connector, params)
@@ -5597,7 +6041,8 @@ async def v1_connections_save(request: Request):
             name=str(body.get("name", "") or ""),
             save_secrets=bool(body.get("save_secrets", False)),
             last_test=body.get("last_test"),
-            conn_id=str(body.get("id", "") or ""))
+            conn_id=str(body.get("id", "") or ""),
+            created_by=created_by_email)
     except KeyError:
         raise HTTPException(404, "Unknown connection")
     except ValueError as e:

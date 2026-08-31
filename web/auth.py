@@ -39,7 +39,9 @@ ROLES = ("owner", "admin", "engineer", "viewer")
 PERMISSIONS = {
     "owner":    {"*"},                                           # everything
     "admin":    {"jobs:read", "jobs:run", "jobs:delete",
-                 "settings:manage", "users:manage", "agents:approve"},
+                 "settings:manage", "members.view", "members.invite",
+                 "members.update", "members.role_change", "members.remove",
+                 "agents:approve"},
     "engineer": {"jobs:read", "jobs:run", "jobs:delete"},
     "viewer":   {"jobs:read"},                                   # audit-only
 }
@@ -143,6 +145,7 @@ class AuthStore:
                 "company": company.strip(),
                 "role": "owner" if not users
                         else normalize_role(role or "engineer"),
+                "status": "active",
                 "salt": salt, "hash": self._hash(password, salt),
                 "created": time.strftime("%Y-%m-%dT%H:%M:%S"),
             }
@@ -158,9 +161,18 @@ class AuthStore:
             from urllib.parse import quote
             avatar["url"] = "/api/v1/users/%s/avatar?v=%s" % (
                 quote(u["email"]), u.get("avatar_updated", 0))
-        return {"email": u["email"], "name": u.get("name", ""),
+        fn = (u.get("first_name") or "").strip()
+        ln = (u.get("last_name") or "").strip()
+        if not fn and not ln and u.get("name"):
+            parts = u.get("name", "").strip().split(maxsplit=1)
+            fn = parts[0] if parts else ""
+            ln = parts[1] if len(parts) > 1 else ""
+        user_id = hashlib.sha256(u["email"].lower().encode()).hexdigest()[:16]
+        return {"id": user_id, "email": u["email"], "name": u.get("name", ""),
+                "first_name": fn, "last_name": ln,
                 "company": u.get("company", ""),
                 "role": normalize_role(u.get("role", "")),
+                "status": u.get("status", "active"),
                 "created": u.get("created", ""), "avatar": avatar}
 
     # -- profile photo / avatar --------------------------------------------
@@ -239,6 +251,23 @@ class AuthStore:
             self._save(self.users_file, users)
             return self._public(u)
 
+    def set_status(self, email: str, status: str) -> dict:
+        status = (status or "").strip().lower()
+        if status not in ("active", "deactivated"):
+            raise ValueError("Status must be active or deactivated")
+        with self._locked():
+            users = self._load(self.users_file)
+            u = users.get(email.strip().lower())
+            if not u:
+                raise ValueError("No such user")
+            if status == "deactivated" and normalize_role(u.get("role", "")) == "owner":
+                raise ValueError("Cannot deactivate an owner account")
+            u["status"] = status
+            self._save(self.users_file, users)
+        if status == "deactivated":
+            self.revoke_sessions(email)
+        return self._public(u)
+
     def remove_user(self, email: str) -> None:
         email = email.strip().lower()
         with self._locked():
@@ -313,6 +342,8 @@ class AuthStore:
         users = self._load(self.users_file)
         u = users.get(s["email"])
         if not u:
+            return None
+        if u.get("status", "active") == "deactivated":
             return None
         return self._public(u)
 

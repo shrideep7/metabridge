@@ -19,11 +19,14 @@ from .errors import PermissionDenied
 # ---------------------------------------------------------------- customer
 CUSTOMER_PERMISSIONS: dict[str, frozenset] = {
     "cp_owner": frozenset({
-        "org:manage", "workspace:manage", "member:manage",
+        "org:manage", "workspace:manage", "members.view", "members.invite",
+        "members.update", "members.role_change", "members.remove",
+        "members.deactivate", "members.activate",
         "flags:manage", "flags:read", "audit:read", "tenant:read",
     }),
     "cp_admin": frozenset({
-        "org:manage", "workspace:manage", "member:manage",
+        "org:manage", "workspace:manage", "members.view", "members.invite",
+        "members.update", "members.role_change", "members.remove",
         "flags:read", "audit:read", "tenant:read",
     }),
     "cp_member": frozenset({

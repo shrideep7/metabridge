@@ -245,8 +245,8 @@ def create_user(engine: Engine, *, email: str, display_name: str = "",
     concurrent creator's row is returned rather than surfacing IntegrityError.
     """
     if not system:
-        if ctx is None or not rbac.has_permission(ctx.role, "member:manage"):
-            raise PermissionDenied("member:manage",
+        if ctx is None or not rbac.has_permission(ctx.role, "members.invite"):
+            raise PermissionDenied("members.invite",
                                    ctx.role if ctx else "-")
     actor = "system" if system else ctx.user_id
     email = (email or "").strip().lower()
@@ -277,7 +277,7 @@ def create_user(engine: Engine, *, email: str, display_name: str = "",
 
 def add_membership(engine: Engine, ctx: TenantContext, *, user_id: str,
                    role_code: str) -> str:
-    ctx.require("member:manage")
+    ctx.require("members.invite")
     if role_code not in rbac.CUSTOMER_PERMISSIONS:
         raise ValidationError(f"unknown customer role: {role_code}")
     # privilege-escalation guard: never grant a role that outranks the caller
@@ -307,7 +307,7 @@ def add_membership(engine: Engine, ctx: TenantContext, *, user_id: str,
 
 def revoke_membership(engine: Engine, ctx: TenantContext,
                       membership_id: str) -> None:
-    ctx.require("member:manage")
+    ctx.require("members.remove")
     with engine.begin() as conn:
         before = require_scoped(conn, schema.memberships, ctx, membership_id)
         target_role = before["role_code"]
