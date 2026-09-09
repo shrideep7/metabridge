@@ -41,9 +41,16 @@ def test_no_surface_renders_a_finished_run_as_a_green_done():
 
 
 def test_every_run_status_rendering_goes_through_the_one_helper():
-    """Four surfaces render run status: Dashboard, job detail, the Reports
-    table and System recent activity. All four must agree."""
-    assert CONSOLE.count("runStatusChip(") >= 5   # 1 definition + 4 call sites
+    """Three surfaces render run status: the Dashboard row, job detail and
+    the Reports table. All three must agree.
+
+    There were four. System recent activity (#sysActivity) was removed with
+    the Dashboard rework — the element is gone from the template, so this is
+    one fewer surface rather than one surface that started rendering status
+    its own way. The point of the count is that nobody hand-rolls a status
+    badge beside the helper, so it tracks the surfaces that exist.
+    """
+    assert CONSOLE.count("runStatusChip(") >= 4   # 1 definition + 3 call sites
 
 
 def test_generated_stays_neutral_and_is_the_unvalidated_fallback():

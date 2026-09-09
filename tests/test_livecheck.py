@@ -2160,8 +2160,13 @@ def test_every_asset_type_the_console_renders_is_also_filterable():
     contains, and this keeps the curated ORDER honest as well."""
     import re
     from pathlib import Path
-    html = (Path(__file__).resolve().parent.parent / "web" / "templates"
-            / "console.html").read_text(encoding="utf-8")
+    # The console's JS moved out of the template into its own bundle, so what
+    # used to be one file is now two. These assertions span both — a function
+    # body from the bundle, markup from the shell — so read the pair, which is
+    # the same convention test_compatibility and test_rbac use.
+    _w = Path(__file__).resolve().parent.parent / "web"
+    html = ((_w / "templates" / "console.html").read_text(encoding="utf-8")
+            + (_w / "static" / "js" / "console.js").read_text(encoding="utf-8"))
     body = html[html.index("function estateAssets"):]
     body = body[:body.index(chr(10) + "}" + chr(10))]
     pushed = set(re.findall(r"push\(d\.\w+,\s*'([^']+)'", body))
@@ -2182,8 +2187,13 @@ def test_the_chosen_scaffold_target_survives_a_page_load():
     generate produced Snowflake artifacts — profiles.yml of type snowflake,
     03_load_into_snowflake.sql — for a migration aimed at Databricks."""
     from pathlib import Path
-    html = (Path(__file__).resolve().parent.parent / "web" / "templates"
-            / "console.html").read_text(encoding="utf-8")
+    # The console's JS moved out of the template into its own bundle, so what
+    # used to be one file is now two. These assertions span both — a function
+    # body from the bundle, markup from the shell — so read the pair, which is
+    # the same convention test_compatibility and test_rbac use.
+    _w = Path(__file__).resolve().parent.parent / "web"
+    html = ((_w / "templates" / "console.html").read_text(encoding="utf-8")
+            + (_w / "static" / "js" / "console.js").read_text(encoding="utf-8"))
     fn = html[html.index("async function fillScaffoldSelects"):]
     fn = fn[:fn.index(chr(10) + "}" + chr(10))]
     assert "mb_scaf_target" in fn, "the target choice is not restored on load"

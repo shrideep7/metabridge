@@ -108,8 +108,10 @@ def test_flags_role_gating():
 
 # --- notifications --------------------------------------------------------
 
-def test_notifications_lifecycle():
-    n = NotificationCenter()
+def test_notifications_lifecycle(tmp_path):
+    # its own store: the center persists now, and a bare one loads whatever
+    # the running machine already had, which made the count machine-specific
+    n = NotificationCenter(data_dir=str(tmp_path / "nc"))
     n.notify("migration", "Done", "ok", "success")
     n.notify("observability", "SLA breach", "avail 80%", "warning")
     c = n.counts()
@@ -120,8 +122,8 @@ def test_notifications_lifecycle():
     assert n.notify("x", "t", severity="bogus")["severity"] == "info"
 
 
-def test_notifications_capped():
-    n = NotificationCenter()
+def test_notifications_capped(tmp_path):
+    n = NotificationCenter(data_dir=str(tmp_path / "nc"))
     for i in range(520):
         n.notify("t", "m%d" % i)
     assert n.counts()["total"] == 500

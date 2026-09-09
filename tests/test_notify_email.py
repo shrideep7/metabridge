@@ -294,8 +294,11 @@ def client(mailer, monkeypatch):
     monkeypatch.setattr(webapp, "_require_owner", lambda request: None)
     monkeypatch.setattr(webapp, "_request_user", lambda request: user)
     # the middleware runs before the handler: give the request full perms
+    # `perms` was added as a third parameter; the real function defaults it,
+    # but a stub with a fixed arity does not — every request through the auth
+    # middleware raised TypeError rather than reaching the route.
     monkeypatch.setattr(webapp, "_required_permission",
-                        lambda path, method: "jobs:read")
+                        lambda path, method, perms=None: "jobs:read")
     monkeypatch.setattr(webapp.AUTH, "has_users", lambda: False)
     monkeypatch.setattr(webapp, "API_KEY", "")
     return TestClient(webapp.app)
